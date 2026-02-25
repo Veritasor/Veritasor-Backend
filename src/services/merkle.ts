@@ -18,7 +18,25 @@ export class MerkleTree {
       typeof l === 'string' ? sha(Buffer.from(l)) : sha(l)
     );
 
-    // build upper levels
+    this._buildUpperLevels();
+  }
+
+  /**
+   * Build a tree from already-hashed leaves (no additional hashing of leaves).
+   * Use when inputs are 32-byte leaf hashes (e.g. from buildTree with kind 'leaves').
+   */
+  static fromHashedLeaves(hashedLeaves: Buffer[]): MerkleTree {
+    const tree = new MerkleTree([]);
+    if (!hashedLeaves || hashedLeaves.length === 0) {
+      return tree;
+    }
+    tree.levels[0] = [...hashedLeaves];
+    tree._buildUpperLevels();
+    return tree;
+  }
+
+  private _buildUpperLevels(): void {
+    if (!this.levels[0] || this.levels[0].length === 0) return;
     let level = this.levels[0];
     while (level.length > 1) {
       const next: Buffer[] = [];
@@ -58,6 +76,22 @@ export class MerkleTree {
 
   static verifyProof(leaf: string | Buffer, proof: string[], rootHex: string, leafIndex = 0): boolean {
     let hash = typeof leaf === 'string' ? sha(Buffer.from(leaf)) : sha(leaf);
+    let index = leafIndex;
+    for (const sibHex of proof) {
+      const sibling = Buffer.from(sibHex, 'hex');
+      if (index % 2 === 0) {
+        hash = sha(Buffer.concat([hash, sibling]));
+      } else {
+        hash = sha(Buffer.concat([sibling, hash]));
+      }
+      index = Math.floor(index / 2);
+    }
+    return hash.toString('hex') === rootHex;
+  }
+
+  /** Verify a proof when the leaf is already a 32-byte hash (e.g. from buildTree with kind 'leaves'). */
+  static verifyProofWithHashedLeaf(leafHash: Buffer, proof: string[], rootHex: string, leafIndex: number): boolean {
+    let hash = leafHash;
     let index = leafIndex;
     for (const sibHex of proof) {
       const sibling = Buffer.from(sibHex, 'hex');
