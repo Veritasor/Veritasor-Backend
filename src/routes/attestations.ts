@@ -1,27 +1,29 @@
-import { Router } from 'express'
-import { idempotencyMiddleware } from '../middleware/idempotency.js'
+import { Router } from "express";
+import { idempotencyMiddleware } from "../middleware/idempotency.js";
+import { requireAuth } from "../middleware/requireAuth.js";
 
-export const attestationsRouter = Router()
+export const attestationsRouter = Router();
 
-attestationsRouter.use(requireAuth)
+attestationsRouter.use(requireAuth);
 
 // Placeholder: list attestations (will integrate DB + Horizon later)
-attestationsRouter.get('/', (_req, res) => {
+attestationsRouter.get("/", (_req, res) => {
   res.json({
     attestations: [],
-    message: 'Attestation list will be populated from DB + Stellar',
-  })
-})
+    message: "Attestation list will be populated from DB + Stellar",
+  });
+});
 
 // Placeholder: submit attestation (will call Merkle engine + Soroban later). Idempotent by Idempotency-Key.
 attestationsRouter.post(
-  '/',
-  idempotencyMiddleware({ scope: 'attestations' }),
+  "/",
+  idempotencyMiddleware({ scope: "attestations" }),
   (req, res) => {
     res.status(201).json({
-      message: 'Attestation submission will invoke Merkle generator and Soroban contract',
+      message:
+        "Attestation submission will invoke Merkle generator and Soroban contract",
       business_id: req.body?.business_id ?? null,
       period: req.body?.period ?? null,
-    })
-  }
-)
+    });
+  },
+);

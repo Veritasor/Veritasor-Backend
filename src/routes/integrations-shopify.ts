@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from 'express'
 import { startConnect } from '../services/integrations/shopify/connect.js'
 import { handleCallback } from '../services/integrations/shopify/callback.js'
+import { requireAuth } from '../middleware/auth.js'
+import disconnectShopify from '../services/integrations/shopify/disconnect.js'
 
 export const integrationsShopifyRouter = Router()
 
@@ -46,3 +48,5 @@ integrationsShopifyRouter.get('/callback', async (req: Request, res: Response) =
   }
   res.status(400).json({ success: false, error: result.error })
 })
+
+integrationsShopifyRouter.delete('/', requireAuth, disconnectShopify)

@@ -2,8 +2,8 @@ import { Request, Response } from "express";
 import { businessRepository } from "../../repositories/business.js";
 
 export async function createBusiness(req: Request, res: Response) {
-  const userId = req.user!.userId;
-  const existing = businessRepository.findByUserId(userId);
+  const userId = req.user!.id;
+  const existing = await businessRepository.getByUserId(userId);
   if (existing) {
     return res
       .status(409)
@@ -13,12 +13,6 @@ export async function createBusiness(req: Request, res: Response) {
   if (!name) {
     return res.status(400).json({ error: "name is required" });
   }
-  const business = businessRepository.create({
-    userId,
-    name,
-    industry,
-    description,
-    website,
-  });
+  const business = await businessRepository.create({ userId, name, industry, description, website });
   return res.status(201).json(business);
 }
