@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { businessRepository } from '../../repositories/business.js';
 
 export async function createBusiness(req: Request, res: Response) {
-  const userId = req.user!.id;
+  const userId = req.user!.userId;
   const existing = businessRepository.findByUserId(userId);
   if (existing) {
     return res.status(409).json({ error: 'Business already exists for this user' });
