@@ -3,6 +3,8 @@ import { idempotencyMiddleware } from '../middleware/idempotency.js'
 
 export const attestationsRouter = Router()
 
+attestationsRouter.use(requireAuth)
+
 // Placeholder: list attestations (will integrate DB + Horizon later)
 attestationsRouter.get('/', (_req, res) => {
   res.json({
