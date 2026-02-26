@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js'
 import { listAttestedPeriodsForBusiness } from '../services/analytics/periods.js'
-import { getRevenueReport } from '../services/analytics/revenueReport.js'
+import { getRevenueReport } from '../services/analytics/revenueReports.js'
 
 export const analyticsRouter = Router()
 
