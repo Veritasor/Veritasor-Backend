@@ -6,7 +6,7 @@ import { integrationRepository } from '../../../repositories/integrations.js'
  * Expects { id } in the JSON body where id is the integration record id.
  */
 export async function disconnectRazorpay(req: Request, res: Response) {
-  const userId = req.user?.id
+  const userId = req.user?.userId
   if (!userId) return res.status(401).json({ error: 'Unauthorized' })
 
   const { id } = req.body ?? {}
