@@ -16,7 +16,10 @@ export type MonthlySummary = {
 };
 
 export function aggregateMonthly(entries: RevenueEntry[]): MonthlySummary[] {
-  const buckets = new Map<string, { total: number; refunds: number; currency: string }>();
+  const buckets = new Map<
+    string,
+    { total: number; refunds: number; currency: string }
+  >();
 
   for (const entry of entries) {
     const period = entry.date.slice(0, 7); // YYYY-MM
