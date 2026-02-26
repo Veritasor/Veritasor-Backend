@@ -1,3 +1,5 @@
+import crypto from "crypto";
+
 export type Attestation = {
   id: string;
   businessId: string;
@@ -44,6 +46,15 @@ export const attestationRepository = {
     return attestationStore
       .filter((attestation) => attestation.businessId === businessId)
       .sort((a, b) => b.attestedAt.localeCompare(a.attestedAt));
+  },
+  create(data: Omit<Attestation, "id" | "attestedAt">): Attestation {
+    const newAttestation: Attestation = {
+      ...data,
+      id: `att_${crypto.randomUUID()}`,
+      attestedAt: new Date().toISOString(),
+    };
+    attestationStore.push(newAttestation);
+    return newAttestation;
   },
 
   findById(id: string): Attestation | null {

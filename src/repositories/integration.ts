@@ -1,3 +1,5 @@
+import crypto from 'crypto'
+
 export interface Integration {
   id: string;
   userId: string;
