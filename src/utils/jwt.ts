@@ -81,3 +81,16 @@ export function sign(
   const secret = getSecret()
   return jwt.sign(payload, secret, options)
 }
+
+/**
+ * Verify and decode a JWT token
+ * @param token - JWT token string to verify
+ * @returns Decoded payload
+ * @throws JsonWebTokenError for invalid tokens
+ * @throws TokenExpiredError for expired tokens
+ * @throws NotBeforeError for tokens used before their nbf claim
+ */
+export function verify(token: string): string | object | jwt.JwtPayload {
+  const secret = getSecret()
+  return jwt.verify(token, secret)
+}
