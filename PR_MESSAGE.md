@@ -6,8 +6,8 @@ Implements a new service at `src/services/revenue/stripeFetch.ts` that fetches r
 
 ### What changed
 
-| File | Change |
-|---|---|
+| File                                  | Change                                                        |
+| ------------------------------------- | ------------------------------------------------------------- |
 | `src/services/revenue/stripeFetch.ts` | New service — `fetchRevenueForPeriod`, `fetchRevenueByUserId` |
 
 ### Details
