@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth } from '../middleware/requireAuth.js'
 import connectRazorpay from '../services/integrations/razorpay/connect.js'
 import disconnectRazorpay from '../services/integrations/razorpay/disconnect.js'
 

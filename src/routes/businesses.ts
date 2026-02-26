@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 import { createBusiness } from '../services/business/create.js';
 import { updateBusiness } from '../services/business/update.js';
 import { getMyBusiness, getBusinessById } from '../services/business/get.js';
