@@ -16,6 +16,7 @@ import {
 import businessRoutes from "./routes/businesses.js";
 import integrationsRazorpayRouter from "./routes/integrations-razorpay.js";
 import integrationsRouter from "./routes/integrations.js";
+import { stripeWebhookRouter } from "./routes/webhooks-stripe.js";
 
 export const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -23,6 +24,18 @@ const PORT = process.env.PORT ?? 3000;
 app.use(apiVersionMiddleware);
 app.use(versionResponseMiddleware);
 app.use(cors());
+
+app.use(
+  "/api/webhooks/stripe",
+  express.raw({ type: "application/json" }),
+  (req, _res, next) => {
+    (req as any).rawBody = req.body.toString("utf8");
+    req.body = JSON.parse((req as any).rawBody);
+    next();
+  },
+  stripeWebhookRouter,
+);
+
 app.use(express.json());
 
 // log each request before handing off to the routers
