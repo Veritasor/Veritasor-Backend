@@ -2,8 +2,8 @@ import { Request, Response } from "express";
 import { businessRepository } from "../../repositories/business.js";
 
 export async function getMyBusiness(req: Request, res: Response) {
-  const userId = req.user!.userId;
-  const business = businessRepository.findByUserId(userId);
+  const userId = req.user!.id;
+  const business = await businessRepository.getByUserId(userId);
   if (!business) {
     return res.status(404).json({ error: "Business not found" });
   }
@@ -20,7 +20,7 @@ const PUBLIC_FIELDS = [
 ] as const;
 
 export async function getBusinessById(req: Request, res: Response) {
-  const business = businessRepository.findById(req.params.id);
+  const business = await businessRepository.getById(req.params.id);
   if (!business) {
     return res.status(404).json({ error: "Business not found" });
   }
