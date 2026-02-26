@@ -721,3 +721,4 @@ describe('Auth flow integration', () => {
     expect(loginResponse.body).toHaveProperty('accessToken')
   })
 })
+//
