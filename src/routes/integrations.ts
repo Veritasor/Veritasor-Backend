@@ -19,8 +19,8 @@ const AVAILABLE_INTEGRATIONS: IntegrationType[] = [
 router.get("/", requireAuth, (req: Request, res: Response) => {
   const userId = (req as any).userId;
 
-  const connected = integrationRepository.findByUserId(userId);
-  const connectedSlugs = new Set(connected.map((i) => i.type));
+  const connected = await listByUserId(userId);
+  const connectedSlugs = new Set(connected.map((i) => i.provider));
 
   const available = AVAILABLE_INTEGRATIONS.map((integration) => ({
     ...integration,
@@ -31,8 +31,8 @@ router.get("/", requireAuth, (req: Request, res: Response) => {
     available,
     connected: connected.map((i) => ({
       id: i.id,
-      type: i.type,
-      connectedAt: i.connectedAt,
+      type: i.provider,
+      connectedAt: i.createdAt,
     })),
   });
 });

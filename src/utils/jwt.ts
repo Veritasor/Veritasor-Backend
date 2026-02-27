@@ -1,9 +1,37 @@
 import jwt from 'jsonwebtoken'
 import { SignOptions } from 'jsonwebtoken'
+import { config } from '../config/index.js'
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-key'
 const JWT_REFRESH_SECRET =
   process.env.JWT_REFRESH_SECRET ?? 'dev-refresh-secret-key'
+
+/**
+ * Internal function to retrieve JWT secret with fallback logic
+ * @returns JWT secret string
+ * @throws Error if secret is missing in production
+ */
+function getSecret(): string {
+  // Check config.jwtSecret first
+  if (config.jwtSecret) {
+    return config.jwtSecret
+  }
+  
+  // Fallback to JWT_SECRET environment variable
+  if (process.env.JWT_SECRET) {
+    return process.env.JWT_SECRET
+  }
+  
+  // In production, throw error if no secret is configured
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'JWT secret is required in production. Set JWT_SECRET environment variable or config.jwtSecret'
+    )
+  }
+  
+  // In development, return default secret
+  return 'dev-secret-key'
+}
 
 export interface TokenPayload {
   userId: string
@@ -38,4 +66,31 @@ export function verifyRefreshToken(token: string): TokenPayload | null {
   } catch (error) {
     return null
   }
+}
+
+/**
+ * Sign a JWT token with the given payload
+ * @param payload - Data to encode in the JWT (string, object, or Buffer)
+ * @param options - Optional JWT signing options (expiresIn, algorithm, etc.)
+ * @returns Signed JWT token string
+ */
+export function sign(
+  payload: string | object | Buffer,
+  options?: SignOptions
+): string {
+  const secret = getSecret()
+  return jwt.sign(payload, secret, options)
+}
+
+/**
+ * Verify and decode a JWT token
+ * @param token - JWT token string to verify
+ * @returns Decoded payload
+ * @throws JsonWebTokenError for invalid tokens
+ * @throws TokenExpiredError for expired tokens
+ * @throws NotBeforeError for tokens used before their nbf claim
+ */
+export function verify(token: string): string | object | jwt.JwtPayload {
+  const secret = getSecret()
+  return jwt.verify(token, secret)
 }

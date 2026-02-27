@@ -4,6 +4,19 @@ import cors from 'cors'
 import { config } from './config/index.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { requestLogger } from './middleware/requestLogger.js'
+<<<<<<< HEAD
+=======
+import { analyticsRouter } from './routes/analytics.js'
+import { healthRouter } from './routes/health.js'
+import { attestationsRouter } from './routes/attestations.js'
+import { integrationsShopifyRouter } from './routes/integrations-shopify.js'
+import { errorHandler } from "./middleware/errorHandler.js";
+
+import { errorHandler } from './middleware/errorHandler.js'
+
+import { analyticsRouter } from './routes/analytics.js'
+import { authRouter } from './routes/auth.js'
+>>>>>>> ad14fae445e200f1ee46ef7f493376bdc26f304c
 import {
   apiVersionMiddleware,
   versionResponseMiddleware,
@@ -17,6 +30,7 @@ import integrationsRazorpayRouter from './routes/integrations-razorpay.js'
 import integrationsRouter from './routes/integrations.js'
 import businessRoutes from './routes/businesses.js'
 import { attestationReminderJob } from './jobs/attestationReminder.js'
+
 
 export const app = express()
 const PORT = process.env.PORT ?? 3000
