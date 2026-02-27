@@ -169,3 +169,78 @@ describe("verifyRefreshToken", () => {
 		expect(verifyRefreshToken(accessToken)).toBeNull();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// sign (new function)
+// ---------------------------------------------------------------------------
+
+describe("sign", () => {
+	it("returns a non-empty string for valid payload", async () => {
+		const { sign } = await import("../../../src/utils/jwt");
+		const token = sign(payload);
+		expect(typeof token).toBe("string");
+		expect(token.length).toBeGreaterThan(0);
+	});
+
+	it("returns a valid JWT with three dot-separated segments", async () => {
+		const { sign } = await import("../../../src/utils/jwt");
+		const token = sign(payload);
+		expect(token.split(".")).toHaveLength(3);
+	});
+
+	it("supports expiresIn option", async () => {
+		const { sign } = await import("../../../src/utils/jwt");
+		const before = Math.floor(Date.now() / 1000);
+		const token = sign(payload, { expiresIn: "2h" });
+		const { exp } = jwt.decode(token) as { exp: number };
+		const after = Math.floor(Date.now() / 1000);
+		expect(exp).toBeGreaterThanOrEqual(before + 7200);
+		expect(exp).toBeLessThanOrEqual(after + 7200);
+	});
+
+	it("supports algorithm option", async () => {
+		const { sign } = await import("../../../src/utils/jwt");
+		const token = sign(payload, { algorithm: "HS256" });
+		const decoded = jwt.decode(token, { complete: true });
+		expect(decoded?.header.alg).toBe("HS256");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// verify (new function)
+// ---------------------------------------------------------------------------
+
+describe("verify", () => {
+	it("returns the decoded payload for a valid token", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const token = sign(payload);
+		const result = verify(token);
+		expect(result).toMatchObject(payload);
+	});
+
+	it("throws error for expired token", async () => {
+		const { verify } = await import("../../../src/utils/jwt");
+		const expired = makeExpiredToken(ACCESS_SECRET);
+		expect(() => verify(expired)).toThrow();
+	});
+
+	it("throws error for invalid token", async () => {
+		const { verify } = await import("../../../src/utils/jwt");
+		expect(() => verify("not.a.token")).toThrow();
+	});
+
+	it("throws error for tampered token", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const token = sign(payload);
+		const tampered = token.slice(0, -4) + "xxxx";
+		expect(() => verify(tampered)).toThrow();
+	});
+
+	it("round-trip: sign then verify returns equivalent payload", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const testPayload = { sub: "user-456", email: "roundtrip@test.com" };
+		const token = sign(testPayload);
+		const result = verify(token);
+		expect(result).toMatchObject(testPayload);
+	});
+});

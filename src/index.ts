@@ -19,6 +19,7 @@ import businessRoutes from "./routes/businesses.js";
 import { stripeWebhookRouter } from "./routes/webhooks-stripe.js";
 import { attestationReminderJob } from "./jobs/attestationReminder.js";
 
+
 export const app = express();
 const PORT = process.env.PORT ?? 3000;
 
