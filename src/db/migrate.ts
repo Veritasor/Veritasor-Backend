@@ -4,15 +4,12 @@
  *
  * Usage: npm run migrate (reads DATABASE_URL from .env or env)
  */
-import dotenv from 'dotenv'
 import pg from 'pg'
 import { readdir, readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const projectRoot = join(__dirname, '..', '..')
-dotenv.config({ path: join(projectRoot, '.env') })
 
 const MIGRATIONS_DIR = join(__dirname, 'migrations')
 

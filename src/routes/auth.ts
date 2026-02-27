@@ -96,7 +96,7 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response) => {
       res.status(401).json({ error: 'User not authenticated' })
       return
     }
-    const result = await me(req.user.userId)
+    const result = await me(req.user.id)
     res.json(result)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to get user'

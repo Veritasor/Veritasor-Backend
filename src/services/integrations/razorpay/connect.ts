@@ -7,7 +7,7 @@ import { integrationRepository } from '../../../repositories/integrations.js'
  * Verifies credentials by calling a lightweight Razorpay endpoint before storing.
  */
 export async function connectRazorpay(req: Request, res: Response) {
-  const userId = req.user?.id
+  const userId = req.user?.userId
   if (!userId) return res.status(401).json({ error: 'Unauthorized' })
 
   const { apiKeyId, apiKeySecret } = req.body ?? {}
