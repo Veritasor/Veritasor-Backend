@@ -23,26 +23,25 @@ function getAllowedOrigins(): string | string[] {
 }
 
 export const config = {
-	jwtSecret: process.env.JWT_SECRET,
 	cors: {
 		origin: getAllowedOrigins(),
 	},
 	jobs: {
 		attestationReminder: {
 			// Run every minute
-			schedule: '*/1 * * * *',
-		}
+			schedule: "*/1 * * * *",
+		},
 	},
 	soroban: {
 		/** Soroban RPC endpoint. Defaults to the public testnet node. */
 		rpcUrl:
 			process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org",
-		/** Deployed attestation contract address (C…). Required in production. */
+		/** Deployed attestation contract address (C...). Required in production. */
 		contractId: process.env.SOROBAN_CONTRACT_ID ?? "",
 		/**
 		 * Stellar network passphrase.
-		 * Testnet:  'Test SDF Network ; September 2015'
-		 * Mainnet:  'Public Global Stellar Network ; September 2015'
+		 * Testnet:  '"'"'Test SDF Network ; September 2015'"'"'
+		 * Mainnet:  '"'"'Public Global Stellar Network ; September 2015'"'"'
 		 */
 		networkPassphrase:
 			process.env.SOROBAN_NETWORK_PASSPHRASE ??

@@ -1,5 +1,5 @@
-import { rpc } from "@stellar/stellar-sdk";
-import { config } from "../../config";
+import { Networks, rpc, StrKey } from '@stellar/stellar-sdk';
+import { config } from '../../config/index.js';
 
 let _client: rpc.Server | null = null;
 
@@ -10,13 +10,13 @@ let _client: rpc.Server | null = null;
  * is non-HTTPS (local dev / CI), so production always requires TLS.
  */
 export function getSorobanClient(): rpc.Server {
-	if (!_client) {
-		_client = new rpc.Server(config.soroban.rpcUrl, {
-			allowHttp: !config.soroban.rpcUrl.startsWith("https"),
-		});
-	}
-	return _client;
-import { Networks, rpc, StrKey } from '@stellar/stellar-sdk';
+  if (!_client) {
+    _client = new rpc.Server(config.soroban.rpcUrl, {
+      allowHttp: !config.soroban.rpcUrl.startsWith('https'),
+    });
+  }
+  return _client;
+}
 
 export type SorobanClientConfig = {
   rpcUrl: string;
