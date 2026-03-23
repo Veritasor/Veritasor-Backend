@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS attestations (
   merkle_root TEXT NOT NULL,
   tx_hash TEXT,
   status VARCHAR(24) NOT NULL DEFAULT 'submitted',
+  version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT attestations_status_check

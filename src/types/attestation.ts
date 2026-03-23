@@ -28,6 +28,8 @@ export interface Attestation {
   txHash: string;
   /** Current attestation state */
   status: AttestationStatus;
+  /** Version number for optimistic locking (incremented on each update) */
+  version: number;
   /** Record creation timestamp */
   createdAt: Date;
   /** Last update timestamp */
@@ -95,4 +97,57 @@ export interface DbClient {
    * @returns Promise resolving to query result with rows array
    */
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+}
+
+/**
+ * Conflict error types for write conflict detection
+ * These errors are thrown when concurrent operations conflict
+ */
+export enum ConflictErrorType {
+  /** Duplicate key - business_id + period already exists */
+  CONFLICT_TYPE_DUPLICATE = 'DUPLICATE',
+  /** Version mismatch - record was modified by another process */
+  CONFLICT_TYPE_VERSION = 'VERSION_MISMATCH',
+  /** Foreign key constraint violation */
+  CONFLICT_TYPE_FOREIGN_KEY = 'FOREIGN_KEY_VIOLATION',
+  /** Record not found */
+  CONFLICT_TYPE_NOT_FOUND = 'NOT_FOUND',
+}
+
+/**
+ * Conflict error class for handling write conflicts
+ * Provides detailed information about the conflict for proper handling
+ */
+export class ConflictError extends Error {
+  public readonly type: ConflictErrorType;
+  public readonly details: Record<string, any>;
+  public readonly status: number;
+
+  constructor(
+    type: ConflictErrorType,
+    message: string,
+    details: Record<string, any> = {}
+  ) {
+    super(message);
+    this.name = 'ConflictError';
+    this.type = type;
+    this.details = details;
+    this.status = 409; // HTTP Conflict status code
+  }
+}
+
+/**
+ * Factory function to create a ConflictError with proper typing
+ * 
+ * @param type - The type of conflict that occurred
+ * @param message - Human-readable error message
+ * @param details - Additional context about the conflict
+ * @returns A new ConflictError instance
+ */
+export function createConflictError(
+  type: ConflictErrorType,
+  message: string,
+  details: Record<string, any> = {}
+): ConflictError {
+  return new ConflictError(type, message, details);
 }
