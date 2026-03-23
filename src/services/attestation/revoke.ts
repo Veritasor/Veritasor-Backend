@@ -21,7 +21,7 @@ export async function revokeAttestation(
   }
 
   // 2. Verify ownership — the attestation's business must belong to the user
-  const business = businessRepository.findById(attestation.businessId);
+  const business = await businessRepository.findById(attestation.businessId);
   if (!business || business.userId !== userId) {
     throw new Error(
       "Unauthorized: attestation does not belong to your business",

@@ -1,3 +1,5 @@
+import crypto from "crypto";
+
 type QueryResult<T> = {
   rows: T[];
 };
@@ -8,7 +10,7 @@ type DbClient = {
 
 const dbClient: DbClient = {
   async query() {
-    throw new Error('DB client is not configured');
+    throw new Error("DB client is not configured");
   },
 };
 
@@ -16,10 +18,6 @@ export interface Business {
   id: string;
   userId: string;
   name: string;
-  email: string;
-  industry?: string;
-  description?: string;
-  website?: string;
   industry: string | null;
   description: string | null;
   website: string | null;
@@ -27,41 +25,6 @@ export interface Business {
   updatedAt: string;
 }
 
-const businesses: Business[] = [
-  {
-    id: "biz_1",
-    userId: "user_1",
-    name: "Business 1",
-    email: "business1@example.com",
-    createdAt: "2025-10-01T12:00:00.000Z",
-  },
-  {
-    id: "biz_2",
-    userId: "user_2",
-    name: "Business 2",
-    email: "business2@example.com",
-    createdAt: "2025-10-01T12:00:00.000Z",
-  },
-];
-
-export const businessRepository = {
-  getAll: () => businesses,
-
-  findByUserId: (userId: string) =>
-    businesses.find((b) => b.userId === userId) ?? null,
-
-  findById: (id: string) =>
-    businesses.find((b) => b.id === id) ?? null,
-
-  create: (data: Omit<Business, 'id' | 'createdAt'>): Business => {
-    const business: Business = {
-      ...data,
-      id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    businesses.push(business);
-    return business;
-  },
 export type CreateBusinessData = {
   userId: string;
   name: string;
@@ -70,7 +33,7 @@ export type CreateBusinessData = {
   website?: string | null;
 };
 
-export type UpdateBusinessData = Partial<Omit<CreateBusinessData, 'userId'>>;
+export type UpdateBusinessData = Partial<Omit<CreateBusinessData, "userId">>;
 
 type BusinessRow = {
   id: string;
@@ -103,7 +66,13 @@ export async function create(data: CreateBusinessData): Promise<Business> {
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id, user_id, name, industry, description, website, created_at, updated_at
     `,
-    [data.userId, data.name, data.industry ?? null, data.description ?? null, data.website ?? null],
+    [
+      data.userId,
+      data.name,
+      data.industry ?? null,
+      data.description ?? null,
+      data.website ?? null,
+    ],
   );
 
   return toBusiness(result.rows[0]);
@@ -137,7 +106,21 @@ export async function getByUserId(userId: string): Promise<Business | null> {
   return result.rows[0] ? toBusiness(result.rows[0]) : null;
 }
 
-export async function update(id: string, data: UpdateBusinessData): Promise<Business | null> {
+export async function getAll(): Promise<Business[]> {
+  const result = await dbClient.query<BusinessRow>(
+    `
+      SELECT id, user_id, name, industry, description, website, created_at, updated_at
+      FROM businesses
+    `,
+  );
+
+  return result.rows.map(toBusiness);
+}
+
+export async function update(
+  id: string,
+  data: UpdateBusinessData,
+): Promise<Business | null> {
   const updates: string[] = [];
   const values: unknown[] = [];
 
@@ -167,7 +150,7 @@ export async function update(id: string, data: UpdateBusinessData): Promise<Busi
   const result = await dbClient.query<BusinessRow>(
     `
       UPDATE businesses
-      SET ${updates.join(', ')}, updated_at = NOW()
+      SET ${updates.join(", ")}, updated_at = NOW()
       WHERE id = $${values.length}
       RETURNING id, user_id, name, industry, description, website, created_at, updated_at
     `,
@@ -181,6 +164,7 @@ export const businessRepository = {
   create,
   getById,
   getByUserId,
+  getAll,
   update,
   findById: getById,
   findByUserId: getByUserId,

@@ -55,6 +55,7 @@ export const attestationRepository = {
     };
     attestationStore.push(newAttestation);
     return newAttestation;
+  },
 
   findById(id: string): Attestation | null {
     return attestationStore.find((a) => a.id === id) ?? null;
