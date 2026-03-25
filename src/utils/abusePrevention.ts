@@ -340,6 +340,8 @@ const COMMON_WEAK_PASSWORDS = new Set([
   "12345678",
   "123456789",
   "1234567890",
+  "password123!",
+  "password1234!",
   "qwerty",
   "qwerty123",
   "qwertyuiop",

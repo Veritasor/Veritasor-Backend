@@ -1,23 +1,45 @@
 import { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../utils/jwt.js";
+import { findUserById } from "../repositories/userRepository.js";
+
+// Extend Express Request to include user consistently across auth middlewares
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: string;
+        userId: string;
+        email?: string;
+      };
+    }
+  }
+}
 
 /**
  * Optional authentication middleware that attempts to authenticate requests
- * but allows unauthenticated requests to proceed.
+ * by verifying a JWT token in the Authorization header.
  *
- * Unlike requireAuth, this middleware:
- * - Never returns 401 responses
- * - Does not verify user exists in database
- * - Always calls next() regardless of authentication status
+ * Reliability & Consistency Improvements:
+ * - Uses async/await to support database verification
+ * - Verifies user existence in database if token is valid
+ * - Clears req.user if database check fails
+ * - Aligns with requireAuth naming conventions (id, userId)
  *
- * If a valid JWT token is present, req.user will be set.
- * If no token or invalid token, req.user remains undefined.
+ * Security Assumptions:
+ * - If no token is provided, request is treated as unauthenticated.
+ * - If token is provided but invalid, request is treated as unauthenticated.
+ * - If token is valid but user no longer exists in DB, request is treated as unauthenticated.
+ * - This middleware NEVER returns 401 Unauthorized; use requireAuth for protected routes.
+ *
+ * @param req - Express Request object
+ * @param res - Express Response object
+ * @param next - Express NextFunction
  */
-export function optionalAuth(
+export async function optionalAuth(
   req: Request,
   res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   try {
     // Extract Authorization header
     const authHeader = req.headers.authorization;
@@ -34,20 +56,28 @@ export function optionalAuth(
     // Verify token using existing JWT verification logic
     const payload = verifyToken(token);
 
-    // If token is valid, attach user to request
+    // If token is valid, verify user existence and attach to request
     if (payload) {
-      req.user = {
-        id: payload.userId,
-        userId: payload.userId,
-        email: payload.email,
-      };
+      const user = await findUserById(payload.userId);
+
+      if (user) {
+        req.user = {
+          id: user.id,
+          userId: user.id,
+          email: user.email,
+        };
+      } else {
+        // Token was valid but user was not found (e.g., deleted)
+        req.user = undefined;
+      }
     }
 
     // Always proceed to next handler
     next();
   } catch (error) {
     // Handle any unexpected errors gracefully
-    // Leave req.user undefined and proceed
+    // Ensure req.user is undefined on error and proceed
+    req.user = undefined;
     next();
   }
 }
