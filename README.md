@@ -70,6 +70,8 @@ veritasor-backend/
 
 Migrations live in `src/db/migrations/` as numbered SQL files (e.g. `001_create_users_table.sql`). The runner applies only pending migrations and records them in `schema_migrations`, so each runs once.
 
+To prevent concurrent deploys or parallel test jobs from applying the same migration twice, the runner acquires a PostgreSQL advisory lock before reading and executing migration files. The lock is session-scoped, released automatically on connection teardown, and retried for up to `MIGRATION_LOCK_TIMEOUT_MS` milliseconds before the process fails fast with a clear error. If unset, the timeout defaults to `30000`.
+
 **Local database setup (contributors)**  
 The repo does not include database credentials. Install PostgreSQL locally, create a database (and optionally a user), then set `DATABASE_URL` in your `.env` using your own username, password, and database name. Example after installing Postgres: create a DB (e.g. `createdb veritasor` or via your GUI), then use a connection string like `postgresql://localhost:5432/veritasor` (or with a username/password if you created one).
 

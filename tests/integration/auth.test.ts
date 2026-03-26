@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
+import { runMigrations, type MigrationClient } from "../../src/db/migrate.js";
 
 /**
  * Integration tests for authentication API endpoints
@@ -298,6 +299,39 @@ beforeEach(() => {
 afterAll(() => {
   // Cleanup if needed
 });
+
+type MockQueryCall = {
+  text: string;
+  params?: unknown[];
+};
+
+function createMockMigrationClient(
+  responses: Array<{ rows: Record<string, unknown>[] } | Error>,
+) {
+  const calls: MockQueryCall[] = [];
+  const query = vi.fn(async (text: string, params?: unknown[]) => {
+    calls.push({ text, params });
+    const response = responses.shift();
+
+    if (!response) {
+      return { rows: [] };
+    }
+
+    if (response instanceof Error) {
+      throw response;
+    }
+
+    return response;
+  });
+
+  const client: MigrationClient = {
+    connect: vi.fn(async () => undefined),
+    end: vi.fn(async () => undefined),
+    query,
+  };
+
+  return { client, calls, query };
+}
 
 describe("POST /api/auth/signup", () => {
   it("should create a new user with valid data", async () => {
@@ -643,6 +677,131 @@ describe("POST /api/auth/reset-password", () => {
       .expect(400);
 
     expect(response.body.error).toMatch(/invalid or expired/i);
+  });
+});
+
+describe("DB migration locking", () => {
+  it("should acquire a lock, apply pending migrations, and release the lock", async () => {
+    const { client, calls } = createMockMigrationClient([
+      { rows: [{ locked: true }] },
+      { rows: [] },
+      { rows: [{ version: "001_create_users_table" }] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+    ]);
+
+    const readdirFn = vi.fn(async () => [
+      "002_create_revenue_snapshots_table.sql",
+      "001_create_users_table.sql",
+    ]);
+    const readFileFn = vi.fn(async () => "CREATE TABLE revenue_snapshots ();");
+    const logger = {
+      log: vi.fn(),
+      error: vi.fn(),
+    };
+
+    await runMigrations({
+      client,
+      connectionString: "postgresql://example.test/veritasor",
+      readdirFn,
+      readFileFn,
+      logger,
+      lockKey: 77,
+    });
+
+    expect(client.connect).toHaveBeenCalledOnce();
+    expect(client.end).toHaveBeenCalledOnce();
+    expect(readdirFn).toHaveBeenCalledOnce();
+    expect(readFileFn).toHaveBeenCalledOnce();
+    expect(calls.map((call) => call.text)).toEqual([
+      "SELECT pg_try_advisory_lock($1) AS locked",
+      expect.stringContaining("CREATE TABLE IF NOT EXISTS schema_migrations"),
+      "SELECT version FROM schema_migrations",
+      "BEGIN",
+      "CREATE TABLE revenue_snapshots ();",
+      "INSERT INTO schema_migrations (version) VALUES ($1)",
+      "COMMIT",
+      "SELECT pg_advisory_unlock($1)",
+    ]);
+    expect(calls[0]?.params).toEqual([77]);
+    expect(calls[5]?.params).toEqual(["002_create_revenue_snapshots_table"]);
+    expect(calls[7]?.params).toEqual([77]);
+    expect(logger.log).toHaveBeenCalledWith("Skip (already applied): 001_create_users_table.sql");
+    expect(logger.log).toHaveBeenCalledWith("Applied: 002_create_revenue_snapshots_table.sql");
+  });
+
+  it("should wait and fail clearly when another runner keeps the migration lock", async () => {
+    const { client } = createMockMigrationClient([
+      { rows: [{ locked: false }] },
+      { rows: [{ locked: false }] },
+      { rows: [{ locked: false }] },
+    ]);
+
+    const sleep = vi.fn(async () => undefined);
+    const logger = {
+      log: vi.fn(),
+      error: vi.fn(),
+    };
+
+    await expect(
+      runMigrations({
+        client,
+        connectionString: "postgresql://example.test/veritasor",
+        lockKey: 99,
+        lockTimeoutMs: 0,
+        lockPollIntervalMs: 5,
+        sleep,
+        logger,
+      }),
+    ).rejects.toThrow(/timed out waiting for migration lock/i);
+
+    expect(sleep).not.toHaveBeenCalled();
+    expect(client.end).toHaveBeenCalledOnce();
+    expect(logger.log).not.toHaveBeenCalledWith(
+      "Migration lock released (key: 99).",
+    );
+  });
+
+  it("should roll back the active migration and still release the lock on failure", async () => {
+    const { client, calls } = createMockMigrationClient([
+      { rows: [{ locked: true }] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      new Error("syntax error at or near CREATE"),
+      { rows: [] },
+      { rows: [] },
+    ]);
+
+    const readFileFn = vi.fn(async () => "BROKEN SQL");
+    const logger = {
+      log: vi.fn(),
+      error: vi.fn(),
+    };
+
+    await expect(
+      runMigrations({
+        client,
+        connectionString: "postgresql://example.test/veritasor",
+        readdirFn: vi.fn(async () => ["003_broken.sql"]),
+        readFileFn,
+        logger,
+      }),
+    ).rejects.toThrow(/syntax error/i);
+
+    expect(calls.map((call) => call.text)).toEqual([
+      "SELECT pg_try_advisory_lock($1) AS locked",
+      expect.stringContaining("CREATE TABLE IF NOT EXISTS schema_migrations"),
+      "SELECT version FROM schema_migrations",
+      "BEGIN",
+      "BROKEN SQL",
+      "ROLLBACK",
+      "SELECT pg_advisory_unlock($1)",
+    ]);
+    expect(logger.log).toHaveBeenCalledWith("Migration lock released (key: 2147454701).");
+    expect(client.end).toHaveBeenCalledOnce();
   });
 });
 
