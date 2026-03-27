@@ -1,6 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
+import { authRouter } from "../../src/routes/auth.js";
+import * as emailResetService from "../../src/services/email/sendReset.js";
+import {
+  clearAllUsers,
+  findUserByEmail,
+} from "../../src/repositories/userRepository.js";
 
 /**
  * Integration tests for authentication API endpoints
@@ -14,8 +20,8 @@ import express, { Express } from "express";
  * - Forgot password flow
  * - Reset password flow
  *
- * Note: Auth routes are not yet implemented. These tests are ready
- * for when the auth router is added to the application.
+ * Note: Most legacy cases below still use a mock router. Reset-email retry
+ * handling is additionally validated against the real auth router.
  */
 
 // Mock user data for testing
@@ -727,5 +733,63 @@ describe("Auth flow integration", () => {
 
     expect(loginResponse.body.user.email).toBe(testUser2.email);
     expect(loginResponse.body).toHaveProperty("accessToken");
+  });
+});
+
+describe("POST /api/auth/forgot-password with real auth router", () => {
+  let realAuthApp: Express;
+
+  beforeAll(() => {
+    process.env.NODE_ENV = "test";
+    process.env.RESET_PASSWORD_URL = "http://localhost:3000/reset-password";
+
+    realAuthApp = express();
+    realAuthApp.use(express.json());
+    realAuthApp.use("/api/auth", authRouter);
+  });
+
+  beforeEach(async () => {
+    clearAllUsers();
+    vi.restoreAllMocks();
+
+    await request(realAuthApp).post("/api/auth/signup").send({
+      email: testUser.email,
+      password: testUser.password,
+    });
+  });
+
+  it("returns a retryable 503 when reset email delivery fails transiently", async () => {
+    vi.spyOn(emailResetService, "sendPasswordResetEmail").mockResolvedValue({
+      error: Object.assign(new Error("SMTP timeout"), { code: "ETIMEDOUT" }),
+      retryable: true,
+    });
+
+    const response = await request(realAuthApp)
+      .post("/api/auth/forgot-password")
+      .send({ email: testUser.email })
+      .expect(503);
+
+    expect(response.body).toEqual({
+      error: "Unable to send reset email right now. Please try again shortly.",
+      code: "RESET_EMAIL_RETRYABLE_FAILURE",
+    });
+
+    const user = await findUserByEmail(testUser.email);
+    expect(user?.resetToken).toBeUndefined();
+    expect(user?.resetTokenExpiry).toBeUndefined();
+  });
+
+  it("keeps the generic success response for unknown emails", async () => {
+    const sendMailSpy = vi.spyOn(emailResetService, "sendPasswordResetEmail");
+
+    const response = await request(realAuthApp)
+      .post("/api/auth/forgot-password")
+      .send({ email: "missing@example.com" })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      message: "If an account with this email exists, a reset link has been sent",
+    });
+    expect(sendMailSpy).not.toHaveBeenCalled();
   });
 });

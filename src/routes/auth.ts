@@ -11,6 +11,7 @@ import { forgotPassword } from "../services/auth/forgotPassword.js";
 import { resetPassword } from "../services/auth/resetPassword.js";
 import { me } from "../services/auth/me.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { AppError } from "../types/errors.js";
 
 export const authRouter = Router();
 
@@ -135,6 +136,14 @@ authRouter.post("/forgot-password", async (req: Request, res: Response) => {
     const result = await forgotPassword({ email });
     res.json(result);
   } catch (error) {
+    if (error instanceof AppError) {
+      res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+      });
+      return;
+    }
+
     const message =
       error instanceof Error ? error.message : "Forgot password request failed";
     res.status(400).json({ error: message });
