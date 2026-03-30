@@ -37,6 +37,10 @@ type HttpError = Error & {
   code: string;
 };
 
+type SorobanServiceError = Error & {
+  code?: string;
+};
+
 const localAttestationStore: RouteAttestation[] = [];
 export const attestationsRouter = Router();
 
@@ -168,22 +172,50 @@ async function revokeAttestation(id: string, reason?: string): Promise<RouteAtte
 
 async function submitOnChain(params: SubmitAttestationParams): Promise<SubmitAttestationResult> {
   const modulePath = '../services/soroban/submitAttestation.js';
+  let module: {
+    submitAttestation?: (value: SubmitAttestationParams) => Promise<SubmitAttestationResult>;
+  };
 
   try {
-    const module = (await import(modulePath)) as {
-      submitAttestation?: (value: SubmitAttestationParams) => Promise<SubmitAttestationResult>;
-    };
-
-    if (typeof module.submitAttestation === 'function') {
-      return await module.submitAttestation(params);
-    }
+    module = (await import(modulePath)) as typeof module;
   } catch (_error) {
     // Service is optional at route layer while other issue lands.
+    return {
+      txHash: `pending_${randomUUID()}`,
+    };
   }
 
-  return {
-    txHash: `pending_${randomUUID()}`,
-  };
+  if (typeof module.submitAttestation !== 'function') {
+    return {
+      txHash: `pending_${randomUUID()}`,
+    };
+  }
+
+  try {
+    return await module.submitAttestation(params);
+  } catch (error) {
+    const sorobanError = error as SorobanServiceError;
+
+    if (sorobanError?.code === 'VALIDATION_ERROR') {
+      throw createHttpError(400, sorobanError.code, sorobanError.message);
+    }
+
+    if (
+      sorobanError?.code === 'MISSING_SIGNER' ||
+      sorobanError?.code === 'SIGNER_MISMATCH'
+    ) {
+      throw createHttpError(503, sorobanError.code, 'Soroban submission is not available right now.');
+    }
+
+    if (
+      sorobanError?.code === 'SUBMIT_FAILED' ||
+      sorobanError?.code === 'SOROBAN_NETWORK_ERROR'
+    ) {
+      throw createHttpError(502, sorobanError.code, 'Soroban RPC request failed after applying the retry policy.');
+    }
+
+    throw error;
+  }
 }
 
 attestationsRouter.get(

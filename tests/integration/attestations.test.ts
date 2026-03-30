@@ -4,6 +4,17 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import request from 'supertest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { businessRepository } from '../../src/repositories/business.js'
+
+const { submitAttestationMock } = vi.hoisted(() => ({
+  submitAttestationMock: vi.fn(),
+}))
+
+vi.mock('../../src/services/soroban/submitAttestation.js', () => ({
+  submitAttestation: submitAttestationMock,
+}))
+
 import { app } from '../../src/app.js'
 import {
   validateSendTransactionResponse,
@@ -12,7 +23,17 @@ import {
   SorobanSubmissionError,
 } from '../../src/services/soroban/submitAttestation.js'
 
-const authHeader = { Authorization: 'Bearer test-token' }
+const authHeader = { 'x-user-id': 'user_1' }
+const business = {
+  id: 'biz_1',
+  userId: 'user_1',
+  name: 'Acme Inc',
+  industry: null,
+  description: null,
+  website: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+}
 
 // ---------------------------------------------------------------------------
 // Existing API integration tests
@@ -24,81 +45,169 @@ test('GET /api/attestations returns 401 when unauthenticated', async () => {
   assert.ok(res.body?.error === 'Unauthorized' || res.body?.message)
 })
 
-test('GET /api/attestations list returns empty when no data', async () => {
-  const res = await request(app).get('/api/attestations').set(authHeader)
-  assert.strictEqual(res.status, 200)
-  assert.ok(Array.isArray(res.body?.attestations))
-  assert.strictEqual(res.body.attestations.length, 0)
-  assert.ok(res.body?.message)
-})
+  it('returns 401 when listing attestations without authentication', async () => {
+    const res = await request(app).get('/api/attestations')
 
-test('GET /api/attestations list response has expected shape (with data case)', async () => {
-  const res = await request(app).get('/api/attestations').set(authHeader)
-  assert.strictEqual(res.status, 200)
-  assert.ok('attestations' in res.body)
-  assert.ok(Array.isArray(res.body.attestations))
-  // When backend returns data, items can be validated here
-})
+    expect(res.status).toBe(401)
+    expect(res.body).toEqual({ error: 'Unauthorized' })
+  })
 
-test('GET /api/attestations/:id returns 401 when unauthenticated', async () => {
-  const res = await request(app).get('/api/attestations/abc-123')
-  assert.strictEqual(res.status, 401)
-})
+  it('lists attestations for the authenticated business with pagination metadata', async () => {
+    const res = await request(app).get('/api/attestations').set(authHeader)
 
-test('GET /api/attestations/:id returns attestation by id when authenticated', async () => {
-  const res = await request(app).get('/api/attestations/abc-123').set(authHeader)
-  assert.strictEqual(res.status, 200)
-  assert.strictEqual(res.body?.id, 'abc-123')
-  assert.ok(res.body?.message)
-})
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('success')
+    expect(Array.isArray(res.body.data)).toBe(true)
+    expect(res.body.data.length).toBeGreaterThan(0)
+    expect(res.body.data[0].businessId).toBe('biz_1')
+    expect(res.body.pagination).toMatchObject({
+      page: 1,
+      limit: 20,
+      totalPages: 1,
+    })
+  })
 
-test('POST /api/attestations returns 401 when unauthenticated', async () => {
-  const res = await request(app)
-    .post('/api/attestations')
-    .set('Idempotency-Key', 'test-key')
-    .send({ business_id: 'b1', period: '2024-01' })
-  assert.strictEqual(res.status, 401)
-})
+  it('returns an attestation by id for the authenticated business', async () => {
+    const res = await request(app).get('/api/attestations/att_1').set(authHeader)
 
-test('POST /api/attestations submit succeeds with auth and Idempotency-Key', async () => {
-  const res = await request(app)
-    .post('/api/attestations')
-    .set(authHeader)
-    .set('Idempotency-Key', 'integration-test-submit-1')
-    .send({ business_id: 'b1', period: '2024-01' })
-  assert.strictEqual(res.status, 201)
-  assert.ok(res.body?.message)
-  assert.strictEqual(res.body?.business_id, 'b1')
-  assert.strictEqual(res.body?.period, '2024-01')
-})
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('success')
+    expect(res.body.data).toMatchObject({
+      id: 'att_1',
+      businessId: 'biz_1',
+    })
+  })
 
-test('POST /api/attestations duplicate request returns same response (idempotent)', async () => {
-  const key = 'integration-test-idempotent-' + Date.now()
-  const first = await request(app)
-    .post('/api/attestations')
-    .set(authHeader)
-    .set('Idempotency-Key', key)
-    .send({ business_id: 'b2', period: '2024-02' })
-  assert.strictEqual(first.status, 201)
-  const second = await request(app)
-    .post('/api/attestations')
-    .set(authHeader)
-    .set('Idempotency-Key', key)
-    .send({ business_id: 'b2', period: '2024-02' })
-  assert.strictEqual(second.status, 201)
-  assert.deepStrictEqual(second.body, first.body)
-})
+  it('submits an attestation and persists the Soroban transaction hash', async () => {
+    submitAttestationMock.mockResolvedValue({
+      txHash: 'tx_success_123',
+    })
 
-test('DELETE /api/attestations/:id revoke returns 401 when unauthenticated', async () => {
-  const res = await request(app).delete('/api/attestations/xyz-456')
-  assert.strictEqual(res.status, 401)
-})
+    const res = await request(app)
+      .post('/api/attestations')
+      .set(authHeader)
+      .set('Idempotency-Key', 'integration-submit-success')
+      .send({
+        period: '2026-02',
+        merkleRoot: 'abc123',
+        timestamp: 1700000000,
+        version: '1.2.0',
+      })
 
-test('DELETE /api/attestations/:id revoke succeeds when authenticated', async () => {
-  const res = await request(app).delete('/api/attestations/xyz-456').set(authHeader)
-  assert.strictEqual(res.status, 200)
-  assert.strictEqual(res.body?.id, 'xyz-456')
-  assert.ok(res.body?.message)
+    expect(res.status).toBe(201)
+    expect(res.body.status).toBe('success')
+    expect(res.body.txHash).toBe('tx_success_123')
+    expect(res.body.data).toMatchObject({
+      businessId: 'biz_1',
+      period: '2026-02',
+      merkleRoot: 'abc123',
+      timestamp: 1700000000,
+      version: '1.2.0',
+      txHash: 'tx_success_123',
+      status: 'submitted',
+    })
+    expect(submitAttestationMock).toHaveBeenCalledTimes(1)
+    expect(submitAttestationMock).toHaveBeenCalledWith({
+      business: 'biz_1',
+      period: '2026-02',
+      merkleRoot: 'abc123',
+      timestamp: 1700000000,
+      version: '1.2.0',
+    })
+  })
+
+  it('returns the cached response for duplicate idempotent submissions', async () => {
+    submitAttestationMock.mockResolvedValue({
+      txHash: 'tx_cached_123',
+    })
+
+    const key = `integration-idempotent-${Date.now()}`
+    const payload = {
+      period: '2026-03',
+      merkleRoot: 'root-123',
+      timestamp: 1700000100,
+      version: '1.0.0',
+    }
+
+    const first = await request(app)
+      .post('/api/attestations')
+      .set(authHeader)
+      .set('Idempotency-Key', key)
+      .send(payload)
+
+    const second = await request(app)
+      .post('/api/attestations')
+      .set(authHeader)
+      .set('Idempotency-Key', key)
+      .send(payload)
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(201)
+    expect(second.body).toEqual(first.body)
+    expect(submitAttestationMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns 400 when the idempotency key is missing', async () => {
+    const res = await request(app)
+      .post('/api/attestations')
+      .set(authHeader)
+      .send({
+        period: '2026-04',
+        merkleRoot: 'root-456',
+      })
+
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ error: 'Missing Idempotency-Key header' })
+  })
+
+  it('maps Soroban RPC failures to a 502 response', async () => {
+    submitAttestationMock.mockRejectedValue(
+      Object.assign(new Error('retry budget exhausted'), {
+        code: 'SUBMIT_FAILED',
+      }),
+    )
+
+    const res = await request(app)
+      .post('/api/attestations')
+      .set(authHeader)
+      .set('Idempotency-Key', `integration-submit-failure-${Date.now()}`)
+      .send({
+        period: '2026-05',
+        merkleRoot: 'root-789',
+      })
+
+    expect(res.status).toBe(502)
+    expect(res.body).toMatchObject({
+      status: 'error',
+      code: 'SUBMIT_FAILED',
+      message: 'Soroban RPC request failed after applying the retry policy.',
+    })
+  })
+
+  it('maps signer configuration failures to a 503 response without leaking secrets', async () => {
+    submitAttestationMock.mockRejectedValue(
+      Object.assign(new Error('signerSecret does not match sourcePublicKey.'), {
+        code: 'SIGNER_MISMATCH',
+      }),
+    )
+
+    const res = await request(app)
+      .post('/api/attestations')
+      .set(authHeader)
+      .set('Idempotency-Key', `integration-signer-failure-${Date.now()}`)
+      .send({
+        period: '2026-06',
+        merkleRoot: 'root-999',
+      })
+
+    expect(res.status).toBe(503)
+    expect(res.body).toMatchObject({
+      status: 'error',
+      code: 'SIGNER_MISMATCH',
+      message: 'Soroban submission is not available right now.',
+    })
+    expect(res.body.message).not.toContain('signerSecret')
+  })
 })
 
 // ---------------------------------------------------------------------------
