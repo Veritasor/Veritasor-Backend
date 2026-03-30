@@ -3,23 +3,61 @@ import { getMailTransport } from './client.js';
 const MAIL_FROM = process.env.MAIL_FROM ?? process.env.SMTP_USER ?? 'noreply@veritasor.local';
 const IS_DEV = process.env.NODE_ENV !== 'production';
 
+export interface PasswordResetEmailResult {
+  error?: Error;
+  retryable: boolean;
+}
+
+const RETRYABLE_EMAIL_ERROR_CODES = new Set([
+  'ECONNECTION',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'ESOCKET',
+  'ETIMEDOUT',
+]);
+
+interface EmailErrorShape extends Error {
+  code?: string;
+  responseCode?: number;
+}
+
+export function isRetryableEmailError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const emailError = error as EmailErrorShape;
+
+  if (typeof emailError.responseCode === 'number') {
+    return emailError.responseCode >= 400 && emailError.responseCode < 500;
+  }
+
+  if (emailError.code && RETRYABLE_EMAIL_ERROR_CODES.has(emailError.code)) {
+    return true;
+  }
+
+  return /timeout|temporar|try again/i.test(emailError.message);
+}
+
 /**
- * Send a password reset email. Does not throw; logs errors and optionally returns them
- * so the auth flow is never blocked by email failure.
+ * Send a password reset email. Does not throw; callers can decide whether to retry
+ * or degrade gracefully based on the returned classification.
  */
 export async function sendPasswordResetEmail(
   email: string,
   resetLink: string
-): Promise<{ error?: Error }> {
+): Promise<PasswordResetEmailResult> {
   const transport = getMailTransport();
 
   if (!transport) {
     if (IS_DEV) {
-      console.info('[email] (dev stub) Password reset link:', resetLink, '→', email);
-      return {};
+      console.info('[email] (dev stub) Password reset link:', resetLink, '->', email);
+      return { retryable: false };
     }
+
     console.warn('[email] No SMTP config; skipping password reset email to', email);
-    return { error: new Error('Email not configured') };
+    return { error: new Error('Email not configured'), retryable: false };
   }
 
   try {
@@ -30,10 +68,11 @@ export async function sendPasswordResetEmail(
       text: `Use this link to reset your password: ${resetLink}`,
       html: `<!DOCTYPE html><html><body><p>Use this link to reset your password:</p><p><a href="${resetLink}">${resetLink}</a></p></body></html>`,
     });
-    return {};
+
+    return { retryable: false };
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    console.error('[email] Failed to send password reset:', error.message, '→', email);
-    return { error };
+    console.error('[email] Failed to send password reset:', error.message, '->', email);
+    return { error, retryable: isRetryableEmailError(error) };
   }
 }

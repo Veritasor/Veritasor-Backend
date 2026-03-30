@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
 import { errorHandler, notFoundHandler } from "../../src/middleware/errorHandler.js";
@@ -23,8 +23,8 @@ import {
  * - Reset password flow
  * - Error envelope standardization
  *
- * Note: Auth routes are not yet implemented. These tests are ready
- * for when the auth router is added to the application.
+ * Note: Most legacy cases below still use a mock router. Reset-email retry
+ * handling is additionally validated against the real auth router.
  */
 
 // Mock user data for testing

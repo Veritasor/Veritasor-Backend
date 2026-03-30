@@ -144,6 +144,14 @@ authRouter.post("/forgot-password", authRouteRateLimiters.forgotPassword, async 
     const result = await forgotPassword({ email });
     res.json(result);
   } catch (error) {
+    if (error instanceof AppError) {
+      res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+      });
+      return;
+    }
+
     const message =
       error instanceof Error ? error.message : "Forgot password request failed";
     res.status(400).json({ error: message });
