@@ -1,9 +1,10 @@
 /**
- * Anomaly detection placeholder for monthly revenue series.
+ * Anomaly detection for monthly revenue series.
  *
- * Current implementation uses a simple month-over-month percentage change
- * algorithm. Replace the body of `scoreSeriesAnomaly` with a real model
- * (e.g. z-score, IQR, Prophet) without changing the public API.
+ * Uses a simple month-over-month percentage change algorithm by default.
+ * Calibration hooks allow callers to override thresholds or inject a custom
+ * scoring function per consecutive pair, making it easy to swap in a real
+ * model (z-score, IQR, Prophet) without touching the public API.
  */
 
 // ---------------------------------------------------------------------------
@@ -33,20 +34,71 @@ export type AnomalyResult = {
 };
 
 // ---------------------------------------------------------------------------
-// Thresholds (adjust or move to config when a real model lands)
+// Calibration types
 // ---------------------------------------------------------------------------
 
-/** Month-over-month drop that triggers `unusual_drop` (fraction, e.g. 0.4 = 40%). */
+/**
+ * Optional calibration parameters for `detectRevenueAnomaly`.
+ *
+ * All fields are optional — omitting a field falls back to the module default.
+ */
+export type CalibrationConfig = {
+	/**
+	 * Month-over-month fractional drop that triggers `unusual_drop`.
+	 * E.g. 0.3 = flag when revenue drops ≥ 30%. Default: 0.4.
+	 */
+	dropThreshold?: number;
+	/**
+	 * Month-over-month fractional rise that triggers `unusual_spike`.
+	 * E.g. 2.0 = flag when revenue rises ≥ 200%. Default: 3.0.
+	 */
+	spikeThreshold?: number;
+	/**
+	 * Minimum number of data points required to attempt detection.
+	 * Default: 2.
+	 */
+	minDataPoints?: number;
+	/**
+	 * Optional per-pair score hook called for every consecutive `(prev, curr)`.
+	 *
+	 * - Return `{ score, flag }` to override built-in logic for that pair.
+	 * - Return `null` to fall back to the built-in threshold comparison.
+	 *
+	 * `change` is the signed fractional MoM change: `(curr − prev) / prev`.
+	 */
+	scoreHook?: (
+		prev: MonthlyRevenue,
+		curr: MonthlyRevenue,
+		change: number
+	) => { score: number; flag: AnomalyFlag } | null;
+};
+
+/**
+ * Statistical thresholds derived by `calibrateFromSeries`.
+ * Can be spread directly into `CalibrationConfig`.
+ */
+export type CalibrationResult = {
+	/** Calibrated drop threshold (fraction). */
+	dropThreshold: number;
+	/** Calibrated spike threshold (fraction). */
+	spikeThreshold: number;
+	/** Mean of all valid MoM changes in the training series. */
+	mean: number;
+	/** Population standard deviation of MoM changes in the training series. */
+	stdDev: number;
+};
+
+// ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
+
 const DROP_THRESHOLD = 0.4;
-
-/** Month-over-month rise that triggers `unusual_spike` (fraction, e.g. 3.0 = 300%). */
 const SPIKE_THRESHOLD = 3.0;
-
-/** Minimum number of data points required to attempt detection. */
 const MIN_DATA_POINTS = 2;
+const DEFAULT_SIGMA_MULTIPLIER = 2;
 
 // ---------------------------------------------------------------------------
-// Core function
+// Public API
 // ---------------------------------------------------------------------------
 
 /**
@@ -57,45 +109,133 @@ const MIN_DATA_POINTS = 2;
  * internally by the `period` string, which works correctly for ISO
  * year-month strings (`"YYYY-MM"`).
  *
- * @param series  Array of `{ period, amount }` data points.
- * @returns       `AnomalyResult` with `score`, `flag`, and `detail`.
+ * @param series       Array of `{ period, amount }` data points.
+ * @param calibration  Optional calibration config to override defaults or
+ *                     inject a custom score hook.
+ * @returns            `AnomalyResult` with `score`, `flag`, and `detail`.
  *
  * @example
+ * // Default usage
  * const result = detectRevenueAnomaly([
  *   { period: '2026-01', amount: 10_000 },
  *   { period: '2026-02', amount: 10_500 },
- *   { period: '2026-03', amount: 3_000 },   // sharp drop
- * ])
+ *   { period: '2026-03', amount: 3_000 },
+ * ]);
  * // → { score: 0.7, flag: 'unusual_drop', detail: '...' }
+ *
+ * @example
+ * // With calibrated thresholds from historical data
+ * const cal = calibrateFromSeries(historicalSeries);
+ * const result = detectRevenueAnomaly(currentSeries, cal);
  */
-export function detectRevenueAnomaly(series: MonthlyRevenue[]): AnomalyResult {
-	if (!series || series.length < MIN_DATA_POINTS) {
+export function detectRevenueAnomaly(
+	series: MonthlyRevenue[],
+	calibration: CalibrationConfig = {}
+): AnomalyResult {
+	const minDataPoints = calibration.minDataPoints ?? MIN_DATA_POINTS;
+
+	if (!series || series.length < minDataPoints) {
 		return {
 			score: 0,
 			flag: "insufficient_data",
-			detail: `Need at least ${MIN_DATA_POINTS} data points; received ${series?.length ?? 0}.`,
+			detail: `Need at least ${minDataPoints} data points; received ${series?.length ?? 0}.`,
 		};
 	}
 
 	// Sort ascending by period string (works for "YYYY-MM" and "YYYY-QN").
 	const sorted = [...series].sort((a, b) => a.period.localeCompare(b.period));
 
-	return scoreSeriesAnomaly(sorted);
+	return scoreSeriesAnomaly(sorted, calibration);
+}
+
+/**
+ * Derive calibration thresholds from a historical revenue series using
+ * mean ± N standard deviations of month-over-month fractional changes.
+ *
+ * The returned object can be spread directly into `CalibrationConfig` and
+ * passed to `detectRevenueAnomaly`:
+ *
+ * ```ts
+ * const cal = calibrateFromSeries(historicalData);
+ * const result = detectRevenueAnomaly(currentData, cal);
+ * ```
+ *
+ * Falls back to module defaults when the series has fewer than 2 points or
+ * all previous-period amounts are zero.
+ *
+ * @param series           Training series — the more months the better.
+ * @param options.sigmaMultiplier  Number of standard deviations from the mean
+ *                                 used to set the thresholds. Default: 2.
+ */
+export function calibrateFromSeries(
+	series: MonthlyRevenue[],
+	options: { sigmaMultiplier?: number } = {}
+): CalibrationResult {
+	const sigma = options.sigmaMultiplier ?? DEFAULT_SIGMA_MULTIPLIER;
+
+	if (!series || series.length < 2) {
+		return {
+			dropThreshold: DROP_THRESHOLD,
+			spikeThreshold: SPIKE_THRESHOLD,
+			mean: 0,
+			stdDev: 0,
+		};
+	}
+
+	const sorted = [...series].sort((a, b) => a.period.localeCompare(b.period));
+
+	// Collect all valid MoM fractional changes.
+	const changes: number[] = [];
+	for (let i = 1; i < sorted.length; i++) {
+		const prev = sorted[i - 1];
+		if (prev.amount !== 0) {
+			changes.push((sorted[i].amount - prev.amount) / prev.amount);
+		}
+	}
+
+	if (changes.length === 0) {
+		return {
+			dropThreshold: DROP_THRESHOLD,
+			spikeThreshold: SPIKE_THRESHOLD,
+			mean: 0,
+			stdDev: 0,
+		};
+	}
+
+	const mean = changes.reduce((s, c) => s + c, 0) / changes.length;
+	const variance =
+		changes.reduce((s, c) => s + (c - mean) ** 2, 0) / changes.length;
+	const stdDev = Math.sqrt(variance);
+
+	// Drop threshold: magnitude of (mean − N·σ), or fall back to default.
+	const dropBound = mean - sigma * stdDev;
+	const dropThreshold = dropBound < 0 ? Math.abs(dropBound) : DROP_THRESHOLD;
+
+	// Spike threshold: (mean + N·σ), or fall back to default.
+	const spikeBound = mean + sigma * stdDev;
+	const spikeThreshold = spikeBound > 0 ? spikeBound : SPIKE_THRESHOLD;
+
+	return { dropThreshold, spikeThreshold, mean, stdDev };
 }
 
 // ---------------------------------------------------------------------------
-// Internal algorithm (swap this out for a real model later)
+// Internal algorithm
 // ---------------------------------------------------------------------------
 
 /**
- * Simple month-over-month percentage change detector.
- *
- * Iterates through consecutive pairs and reports the worst deviation found.
- * Score is the absolute fractional change clamped to [0, 1].
+ * Iterates consecutive pairs, applies calibration config, and returns the
+ * worst anomaly found.
  *
  * @internal
  */
-function scoreSeriesAnomaly(sorted: MonthlyRevenue[]): AnomalyResult {
+function scoreSeriesAnomaly(
+	sorted: MonthlyRevenue[],
+	calibration: CalibrationConfig
+): AnomalyResult {
+	const dropThreshold = calibration.dropThreshold ?? DROP_THRESHOLD;
+	const spikeThreshold = calibration.spikeThreshold ?? SPIKE_THRESHOLD;
+	const { scoreHook } = calibration;
+
 	let worstScore = 0;
 	let worstFlag: AnomalyFlag = "ok";
 	let worstDetail = "No anomaly detected.";
@@ -108,16 +248,32 @@ function scoreSeriesAnomaly(sorted: MonthlyRevenue[]): AnomalyResult {
 		if (prev.amount === 0) continue;
 
 		const change = (curr.amount - prev.amount) / prev.amount; // signed fraction
+
+		// Delegate to the score hook when provided; null means use built-in logic.
+		if (scoreHook) {
+			const hookResult = scoreHook(prev, curr, change);
+			if (hookResult !== null) {
+				if (hookResult.score > worstScore) {
+					worstScore = hookResult.score;
+					worstFlag = hookResult.flag;
+					worstDetail =
+						`Hook scored ${hookResult.flag} at ${curr.period} ` +
+						`(score ${hookResult.score.toFixed(3)}).`;
+				}
+				continue;
+			}
+		}
+
 		const absChange = Math.abs(change);
 		const score = Math.min(absChange, 1); // clamp to [0, 1]
 
-		if (change <= -DROP_THRESHOLD && score > worstScore) {
+		if (change <= -dropThreshold && score > worstScore) {
 			worstScore = score;
 			worstFlag = "unusual_drop";
 			worstDetail =
 				`Revenue dropped ${(absChange * 100).toFixed(1)}% from ` +
 				`${prev.period} (${prev.amount}) to ${curr.period} (${curr.amount}).`;
-		} else if (change >= SPIKE_THRESHOLD && score > worstScore) {
+		} else if (change >= spikeThreshold && score > worstScore) {
 			worstScore = score;
 			worstFlag = "unusual_spike";
 			worstDetail =
