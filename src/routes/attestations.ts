@@ -44,25 +44,37 @@ type SorobanServiceError = Error & {
 const localAttestationStore: RouteAttestation[] = [];
 export const attestationsRouter = Router();
 
+/**
+ * @notice NatSpec: Schema for listing attestations. 
+ * @dev Enforces strict query parameters and sets maximum bounds to prevent DoS.
+ */
 const listQuerySchema = z.object({
-  businessId: z.string().min(1).optional(),
-  period: z.string().min(1).optional(),
+  businessId: z.string().min(1).max(255).optional(),
+  period: z.string().min(1).max(50).optional(),
   status: z.enum(['submitted', 'revoked']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
-});
+}).strict();
 
+/**
+ * @notice NatSpec: Schema for submitting an attestation. 
+ * @dev Enforces strict body payload to prevent prototype pollution and arbitrary field injection.
+ */
 const submitBodySchema = z.object({
-  businessId: z.string().min(1).optional(),
-  period: z.string().min(1),
-  merkleRoot: z.string().min(1),
+  businessId: z.string().min(1).max(255).optional(),
+  period: z.string().min(1).max(50),
+  merkleRoot: z.string().min(1).max(1024),
   timestamp: z.coerce.number().int().nonnegative().optional(),
-  version: z.string().min(1).default('1.0.0'),
-});
+  version: z.string().min(1).max(50).default('1.0.0'),
+}).strict();
 
+/**
+ * @notice NatSpec: Schema for revoking an attestation.
+ * @dev Limits reason length and strictly prevents extra fields.
+ */
 const revokeBodySchema = z.object({
-  reason: z.string().trim().min(1).optional(),
-});
+  reason: z.string().trim().min(1).max(1000).optional(),
+}).strict();
 
 function createHttpError(status: number, code: string, message: string): HttpError {
   const error = new Error(message) as HttpError;

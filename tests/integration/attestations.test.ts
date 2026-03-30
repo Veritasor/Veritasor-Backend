@@ -215,6 +215,43 @@ describe("GET /api/attestations", () => {
   })
 })
 
+
+  describe("Validation Hardenings", () => {
+    it("should reject submit payload with extra fields (strict)", async () => {
+      const res = await request(app)
+        .post('/api/attestations')
+        .set({ 'x-user-id': 'user_1' })
+        .set('Idempotency-Key', 'test-strict-submit')
+        .send({
+          period: '2026-02',
+          merkleRoot: 'abc12345',
+          timestamp: 1700000000,
+          version: '1.2.0',
+          maliciousField: 'admin'
+        });
+      expect(res.status).toBe(400);
+    });
+
+    it("should reject query with extra parameters (strict)", async () => {
+      const res = await request(app)
+        .get('/api/attestations?page=1&maliciousParam=true')
+        .set({ 'x-user-id': 'user_1' });
+      expect(res.status).toBe(400);
+    });
+
+    it("should reject payload with fields exceeding max length", async () => {
+      const res = await request(app)
+        .post('/api/attestations')
+        .set({ 'x-user-id': 'user_1' })
+        .set('Idempotency-Key', 'test-max-length')
+        .send({
+          period: 'a'.repeat(51), // Max is 50
+          merkleRoot: 'abc12345',
+        });
+      expect(res.status).toBe(400);
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // Soroban submit attestation response validation tests
 // ---------------------------------------------------------------------------
