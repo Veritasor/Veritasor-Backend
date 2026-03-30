@@ -129,3 +129,58 @@ afterAll(async () => {
 - Verify security requirements (401, 403, etc.)
 - Test OAuth state validation and expiration
 - Ensure tokens and credentials are not leaked in responses
+
+## End-to-End (E2E) Testing Plan
+
+The E2E tests verify the complete system flow, including the API, backend services, database, and Soroban contract interactions.
+
+### Testing Philosophy
+E2E tests should focus on the "Happy Path" user journeys and critical failure points that integration tests might miss due to mocks.
+
+### E2E Scenarios
+
+#### 1. Complete Attestation Lifecycle
+- **Goal**: Verify a merchant can fetch revenue and submit a verified attestation on-chain.
+- **Steps**:
+    1. Merchant logs into the dashboard.
+    2. Merchant initiates a sync for a specific period (e.g., "2025-Q1").
+    3. Backend fetches data from connected integrations (Shopify/Razorpay).
+    4. Backend generates a Merkle root.
+    5. Backend submits the root to the Soroban contract.
+    6. Verify the transaction hash is recorded and the root is queryable on the Stellar network.
+
+#### 2. Multi-Source Integration Sync
+- **Goal**: Ensure revenue data from multiple sources is correctly aggregated.
+- **Steps**:
+    1. User connects both Stripe and Shopify.
+    2. Initiate a consolidated sync.
+    3. Verify that the Merkle tree leaves contain data from both sources accurately.
+
+### Security & Resilience Testing
+- **Rate Limiting**: Verify that excessive requests from a single IP/User are throttled.
+- **Idempotency**: Ensure that re-submitting an attestation with the same `Idempotency-Key` does not create duplicate on-chain transactions.
+- **Auth Resilience**: Test deep-link authentication and token rotation flows.
+
+### Performance & Scaling
+- **Load Testing**: Simulate 100+ concurrent attestation submissions to ensure the Soroban RPC and DB pool can handle the load.
+- **Large Dataset Aggregation**: Test sync operations with 10,000+ line items.
+
+## Security Assumptions & Validations
+
+The following security assumptions are baked into the system and must be validated by the E2E suite:
+
+1. **Isolation of Business Data**:
+    - *Assumption*: A user cannot sync or view revenue for a business they do not own.
+    - *Validation*: E2E tests must attempt unauthorized sync requests and verify `403 Forbidden` responses.
+
+2. **Tamper-Proof Merkle Proofs**:
+    - *Assumption*: The Merkle root submitted on-chain accurately represents the source data.
+    - *Validation*: Verify that changing a single revenue entry locally results in a Merkle proof mismatch against the on-chain root.
+
+3. **Key Management**:
+    - *Assumption*: Private keys are never exposed in logs or API responses.
+    - *Validation*: Audit log assertions in E2E tests must scan for sensitive strings (G... or S... keys).
+
+4. **Idempotency Integrity**:
+    - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
+    - *Validation*: Check local database for single record entry after multiple POST bursts.

@@ -11,8 +11,17 @@ import { forgotPassword } from "../services/auth/forgotPassword.js";
 import { resetPassword } from "../services/auth/resetPassword.js";
 import { me } from "../services/auth/me.js";
 import { requireAuth } from "../middleware/requireAuth.js";
+import { rateLimiter } from "../middleware/rateLimiter.js";
 
 export const authRouter = Router();
+
+const authRouteRateLimiters = {
+  login: rateLimiter({ bucket: "auth:login", max: 10 }),
+  refresh: rateLimiter({ bucket: "auth:refresh", max: 20 }),
+  forgotPassword: rateLimiter({ bucket: "auth:forgot-password", max: 5 }),
+  resetPassword: rateLimiter({ bucket: "auth:reset-password", max: 5 }),
+  me: rateLimiter({ bucket: "auth:me", max: 60 }),
+};
 
 /**
  * Extract client IP address from request.
@@ -31,7 +40,7 @@ function getClientIp(req: Request): string {
  * POST /api/v1/auth/login
  * Login with email and password
  */
-authRouter.post("/login", async (req: Request, res: Response) => {
+authRouter.post("/login", authRouteRateLimiters.login, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const result = await login({ email, password });
@@ -46,7 +55,7 @@ authRouter.post("/login", async (req: Request, res: Response) => {
  * POST /api/v1/auth/refresh
  * Refresh access token using refresh token
  */
-authRouter.post("/refresh", async (req: Request, res: Response) => {
+authRouter.post("/refresh", authRouteRateLimiters.refresh, async (req: Request, res: Response) => {
   try {
     const { refreshToken } = req.body;
     const result = await refresh({ refreshToken });
@@ -129,7 +138,7 @@ authRouter.get("/signup/availability", (req: Request, res: Response) => {
  * POST /api/v1/auth/forgot-password
  * Request password reset link
  */
-authRouter.post("/forgot-password", async (req: Request, res: Response) => {
+authRouter.post("/forgot-password", authRouteRateLimiters.forgotPassword, async (req: Request, res: Response) => {
   try {
     const { email } = req.body;
     const result = await forgotPassword({ email });
@@ -145,7 +154,7 @@ authRouter.post("/forgot-password", async (req: Request, res: Response) => {
  * POST /api/v1/auth/reset-password
  * Reset password with reset token
  */
-authRouter.post("/reset-password", async (req: Request, res: Response) => {
+authRouter.post("/reset-password", authRouteRateLimiters.resetPassword, async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body;
     const result = await resetPassword({ token, newPassword });
@@ -161,7 +170,7 @@ authRouter.post("/reset-password", async (req: Request, res: Response) => {
  * GET /api/v1/auth/me
  * Get current user info (protected route)
  */
-authRouter.get("/me", requireAuth, async (req: Request, res: Response) => {
+authRouter.get("/me", authRouteRateLimiters.me, requireAuth, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       res.status(401).json({ error: "User not authenticated" });

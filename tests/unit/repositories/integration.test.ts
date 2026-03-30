@@ -31,7 +31,7 @@ describe('Integration Repository - update function', () => {
 
     // Update only the token
     const newToken = { apiKey: 'new_key', secret: 'secret_123' }
-    const updated = await update(created.id, { token: newToken })
+    const updated = await update(created.userId, created.id, { token: newToken })
 
     expect(updated).not.toBeNull()
     expect(updated!.token).toEqual(newToken)
@@ -58,7 +58,7 @@ describe('Integration Repository - update function', () => {
 
     // Update only the metadata
     const newMetadata = { plan: 'premium', features: ['feature1', 'feature2'] }
-    const updated = await update(created.id, { metadata: newMetadata })
+    const updated = await update(created.userId, created.id, { metadata: newMetadata })
 
     expect(updated).not.toBeNull()
     expect(updated!.metadata).toEqual(newMetadata)
@@ -83,7 +83,7 @@ describe('Integration Repository - update function', () => {
     // Update both fields
     const newToken = { accessToken: 'new_token', refreshToken: 'refresh_123' }
     const newMetadata = { storeName: 'New Store', domain: 'newstore.myshopify.com' }
-    const updated = await update(created.id, { token: newToken, metadata: newMetadata })
+    const updated = await update(created.userId, created.id, { token: newToken, metadata: newMetadata })
 
     expect(updated).not.toBeNull()
     expect(updated!.token).toEqual(newToken)
@@ -93,7 +93,7 @@ describe('Integration Repository - update function', () => {
   })
 
   it('should return null for non-existent integration ID', async () => {
-    const result = await update('non-existent-id', { token: { key: 'value' } })
+    const result = await update('user-1', 'non-existent-id', { token: { key: 'value' } })
     expect(result).toBeNull()
   })
 
@@ -108,7 +108,7 @@ describe('Integration Repository - update function', () => {
     })
 
     // Update with new data
-    const updated = await update(created.id, { 
+    const updated = await update(created.userId, created.id, { 
       token: { apiKey: 'new_key' },
       metadata: { plan: 'premium' }
     })
@@ -119,6 +119,52 @@ describe('Integration Repository - update function', () => {
     expect(updated!.provider).toBe(created.provider)
     expect(updated!.externalId).toBe(created.externalId)
     expect(updated!.createdAt).toBe(created.createdAt)
+  })
+
+  it('should deny updates from a different tenant scope', async () => {
+    const created = await create({
+      userId: 'user-tenant-a',
+      provider: 'stripe',
+      externalId: 'acct_cross_tenant',
+      token: { apiKey: 'original' },
+      metadata: { plan: 'basic' }
+    })
+
+    const result = await update('user-tenant-b', created.id, {
+      token: { apiKey: 'tampered' },
+      metadata: { plan: 'enterprise' }
+    })
+
+    expect(result).toBeNull()
+
+    const stored = await listByUserId(created.userId)
+    expect(stored).toHaveLength(1)
+    expect(stored[0].token).toEqual({ apiKey: 'original' })
+    expect(stored[0].metadata).toEqual({ plan: 'basic' })
+  })
+
+  it('should not leak nested token or metadata mutations through returned objects', async () => {
+    const created = await create({
+      userId: 'user-5',
+      provider: 'stripe',
+      externalId: 'acct_nested',
+      token: { oauth: { accessToken: 'token-1' } },
+      metadata: { account: { region: 'eu' } }
+    })
+
+    created.token.oauth.accessToken = 'tampered'
+    created.metadata.account.region = 'us'
+
+    const listed = await listByUserId('user-5')
+    expect(listed[0].token).toEqual({ oauth: { accessToken: 'token-1' } })
+    expect(listed[0].metadata).toEqual({ account: { region: 'eu' } })
+
+    listed[0].token.oauth.accessToken = 'tampered-again'
+    listed[0].metadata.account.region = 'apac'
+
+    const afterMutation = await listByUserId('user-5')
+    expect(afterMutation[0].token).toEqual({ oauth: { accessToken: 'token-1' } })
+    expect(afterMutation[0].metadata).toEqual({ account: { region: 'eu' } })
   })
 })
 
@@ -139,7 +185,7 @@ describe('Integration Repository - deleteById function', () => {
     })
 
     // Delete the integration
-    const result = await deleteById(created.id)
+    const result = await deleteById(created.userId, created.id)
 
     expect(result).toBe(true)
 
@@ -149,7 +195,7 @@ describe('Integration Repository - deleteById function', () => {
   })
 
   it('should return false for non-existent integration ID', async () => {
-    const result = await deleteById('non-existent-id')
+    const result = await deleteById('user-1', 'non-existent-id')
     expect(result).toBe(false)
   })
 
@@ -164,11 +210,11 @@ describe('Integration Repository - deleteById function', () => {
     })
 
     // Delete the integration first time
-    const firstDelete = await deleteById(created.id)
+    const firstDelete = await deleteById(created.userId, created.id)
     expect(firstDelete).toBe(true)
 
     // Delete the same integration second time
-    const secondDelete = await deleteById(created.id)
+    const secondDelete = await deleteById(created.userId, created.id)
     expect(secondDelete).toBe(false)
   })
 
@@ -191,12 +237,30 @@ describe('Integration Repository - deleteById function', () => {
     })
 
     // Delete only the first integration
-    await deleteById(integration1.id)
+    await deleteById(integration1.userId, integration1.id)
 
     // Verify the second integration still exists
     const integrations = await listByUserId('user-3')
     expect(integrations).toHaveLength(1)
     expect(integrations[0].id).toBe(integration2.id)
+  })
+
+  it('should deny deletes from a different tenant scope', async () => {
+    const created = await create({
+      userId: 'user-delete-a',
+      provider: 'stripe',
+      externalId: 'acct_delete_scope',
+      token: { apiKey: 'key_123' },
+      metadata: { plan: 'basic' }
+    })
+
+    const deleted = await deleteById('user-delete-b', created.id)
+
+    expect(deleted).toBe(false)
+
+    const integrations = await listByUserId(created.userId)
+    expect(integrations).toHaveLength(1)
+    expect(integrations[0].id).toBe(created.id)
   })
 })
 

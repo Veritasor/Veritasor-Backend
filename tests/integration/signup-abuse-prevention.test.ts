@@ -21,6 +21,7 @@ import {
 } from "../../src/services/auth/signup.js";
 import {
   resetSignupRateLimitStore,
+  getSignupRateLimitStore,
   createSignupRateLimitStore,
 } from "../../src/utils/signupRateLimiter.js";
 import {
@@ -238,7 +239,7 @@ describe("Signup Service - Abuse Prevention", () => {
           password: "Password123!",
           ipAddress: "192.168.1.1",
         }),
-      ).rejects.toThrow("too common");
+      ).rejects.toThrow("Password does not meet security requirements");
     });
   });
 
@@ -584,7 +585,7 @@ describe("Auth Router - Signup Endpoint", () => {
     it("should show limited availability after max attempts", async () => {
       const ip = "192.168.1.51";
 
-      const rateLimiter = createSignupRateLimitStore({ maxAttemptsPerIp: 2 });
+      const rateLimiter = getSignupRateLimitStore({ maxAttemptsPerIp: 2 });
 
       rateLimiter.recordAttempt(ip, "user1@example.com");
       rateLimiter.recordAttempt(ip, "user2@example.com");

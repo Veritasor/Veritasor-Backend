@@ -25,6 +25,10 @@ npm run dev
 
 API runs at `http://localhost:3000`. Use `PORT` env var to override.
 
+## Rate Limiting
+
+The shared rate limiter in [src/middleware/rateLimiter.ts](src/middleware/rateLimiter.ts) supports explicit route-level buckets. Apply a stable bucket name per sensitive route so bursts against one endpoint do not consume the budget for another endpoint. Auth routes use this for login, refresh, forgot-password, reset-password, and `me`, while signup keeps its dedicated abuse-prevention limiter.
+
 ## Scripts
 
 | Command          | Description                    |

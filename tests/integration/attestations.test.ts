@@ -2,12 +2,21 @@
  * Integration tests for attestations API.
  * Uses requireAuth; expects 401 when unauthenticated.
  */
-import { test } from 'node:test'
-import assert from 'node:assert'
+import { describe, it, expect, vi } from 'vitest'
 import request from 'supertest'
 import { app } from '../../src/app.js'
+import {
+  validateSendTransactionResponse,
+  waitForConfirmation,
+  validateConfirmedResult,
+  SorobanSubmissionError,
+} from '../../src/services/soroban/submitAttestation.js'
 
 const authHeader = { Authorization: 'Bearer test-token' }
+
+// ---------------------------------------------------------------------------
+// Existing API integration tests
+// ---------------------------------------------------------------------------
 
 test('GET /api/attestations returns 401 when unauthenticated', async () => {
   const res = await request(app).get('/api/attestations')
@@ -90,4 +99,203 @@ test('DELETE /api/attestations/:id revoke succeeds when authenticated', async ()
   assert.strictEqual(res.status, 200)
   assert.strictEqual(res.body?.id, 'xyz-456')
   assert.ok(res.body?.message)
+})
+
+// ---------------------------------------------------------------------------
+// Soroban submit attestation response validation tests
+// ---------------------------------------------------------------------------
+
+const VALID_TX_HASH = 'a'.repeat(64)
+
+test('validateSendTransactionResponse accepts valid PENDING response', () => {
+  const response = { hash: VALID_TX_HASH, status: 'PENDING' }
+  assert.doesNotThrow(() =>
+    validateSendTransactionResponse(response as any)
+  )
+})
+
+test('validateSendTransactionResponse accepts valid DUPLICATE response', () => {
+  const response = { hash: VALID_TX_HASH, status: 'DUPLICATE' }
+  assert.doesNotThrow(() =>
+    validateSendTransactionResponse(response as any)
+  )
+})
+
+test('validateSendTransactionResponse accepts ERROR status (validated before error mapping)', () => {
+  const response = { hash: VALID_TX_HASH, status: 'ERROR' }
+  assert.doesNotThrow(() =>
+    validateSendTransactionResponse(response as any)
+  )
+})
+
+test('validateSendTransactionResponse rejects null response', () => {
+  assert.throws(
+    () => validateSendTransactionResponse(null as any),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'INVALID_RESPONSE')
+      return true
+    }
+  )
+})
+
+test('validateSendTransactionResponse rejects missing hash', () => {
+  assert.throws(
+    () => validateSendTransactionResponse({ status: 'PENDING' } as any),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'INVALID_RESPONSE')
+      assert.ok(err.message.includes('invalid transaction hash'))
+      return true
+    }
+  )
+})
+
+test('validateSendTransactionResponse rejects malformed hash', () => {
+  const response = { hash: 'not-a-hex-hash', status: 'PENDING' }
+  assert.throws(
+    () => validateSendTransactionResponse(response as any),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'INVALID_RESPONSE')
+      return true
+    }
+  )
+})
+
+test('validateSendTransactionResponse rejects short hash', () => {
+  const response = { hash: 'abcdef1234', status: 'PENDING' }
+  assert.throws(
+    () => validateSendTransactionResponse(response as any),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'INVALID_RESPONSE')
+      return true
+    }
+  )
+})
+
+test('validateSendTransactionResponse rejects uppercase hash', () => {
+  const response = { hash: 'A'.repeat(64), status: 'PENDING' }
+  assert.throws(
+    () => validateSendTransactionResponse(response as any),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'INVALID_RESPONSE')
+      return true
+    }
+  )
+})
+
+test('validateSendTransactionResponse rejects unknown status', () => {
+  const response = { hash: VALID_TX_HASH, status: 'UNKNOWN_STATUS' }
+  assert.throws(
+    () => validateSendTransactionResponse(response as any),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'INVALID_RESPONSE')
+      assert.ok(err.message.includes('unexpected status'))
+      return true
+    }
+  )
+})
+
+test('waitForConfirmation resolves on immediate SUCCESS', async () => {
+  const mockServer = {
+    getTransaction: async () => ({
+      status: 'SUCCESS',
+      ledger: 12345,
+      returnValue: null,
+    }),
+  }
+
+  const result = await waitForConfirmation(mockServer as any, VALID_TX_HASH, 10, 3)
+  assert.strictEqual(result.status, 'SUCCESS')
+})
+
+test('waitForConfirmation resolves after NOT_FOUND then SUCCESS', async () => {
+  let callCount = 0
+  const mockServer = {
+    getTransaction: async () => {
+      callCount++
+      if (callCount < 3) {
+        return { status: 'NOT_FOUND' }
+      }
+      return { status: 'SUCCESS', ledger: 99999, returnValue: null }
+    },
+  }
+
+  const result = await waitForConfirmation(mockServer as any, VALID_TX_HASH, 10, 5)
+  assert.strictEqual(result.status, 'SUCCESS')
+  assert.strictEqual(callCount, 3)
+})
+
+test('waitForConfirmation throws CONFIRMATION_FAILED on FAILED status', async () => {
+  const mockServer = {
+    getTransaction: async () => ({ status: 'FAILED' }),
+  }
+
+  await assert.rejects(
+    () => waitForConfirmation(mockServer as any, VALID_TX_HASH, 10, 3),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'CONFIRMATION_FAILED')
+      return true
+    }
+  )
+})
+
+test('waitForConfirmation throws CONFIRMATION_TIMEOUT after max attempts', async () => {
+  const mockServer = {
+    getTransaction: async () => ({ status: 'NOT_FOUND' }),
+  }
+
+  await assert.rejects(
+    () => waitForConfirmation(mockServer as any, VALID_TX_HASH, 10, 3),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'CONFIRMATION_TIMEOUT')
+      assert.ok(err.message.includes('3 polling attempts'))
+      return true
+    }
+  )
+})
+
+test('validateConfirmedResult throws when returnValue is undefined', () => {
+  const merkleRoot = '0xdeadbeef1234567890abcdef'
+
+  assert.throws(
+    () => validateConfirmedResult({ returnValue: undefined } as any, merkleRoot),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'RESULT_VALIDATION_FAILED')
+      assert.ok(err.message.includes('no return value'))
+      return true
+    }
+  )
+})
+
+test('validateConfirmedResult throws on null returnValue', () => {
+  assert.throws(
+    () => validateConfirmedResult({ returnValue: null } as any, 'root'),
+    (err: any) => {
+      assert.ok(err instanceof SorobanSubmissionError)
+      assert.strictEqual(err.code, 'RESULT_VALIDATION_FAILED')
+      return true
+    }
+  )
+})
+
+test('SorobanSubmissionError has correct name and code', () => {
+  const err = new SorobanSubmissionError('test message', 'TEST_CODE')
+  assert.strictEqual(err.name, 'SorobanSubmissionError')
+  assert.strictEqual(err.code, 'TEST_CODE')
+  assert.strictEqual(err.message, 'test message')
+  assert.ok(err instanceof Error)
+})
+
+test('SorobanSubmissionError preserves cause', () => {
+  const cause = new Error('original')
+  const err = new SorobanSubmissionError('wrapped', 'WRAP', cause)
+  assert.strictEqual(err.cause, cause)
 })

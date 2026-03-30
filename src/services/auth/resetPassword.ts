@@ -13,6 +13,16 @@ export interface ResetPasswordResponse {
   message: string
 }
 
+/**
+ * Resets a user's password using a valid reset token.
+ *
+ * Security checks:
+ * - requires both token and new password
+ * - enforces a minimum password length
+ * - rejects invalid or expired reset tokens
+ * - expects the successful password reset path to consume the reset token,
+ *   preventing token reuse
+ */
 export async function resetPassword(
   request: ResetPasswordRequest
 ): Promise<ResetPasswordResponse> {

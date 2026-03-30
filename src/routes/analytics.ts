@@ -5,7 +5,7 @@ import { getRevenueReport } from '../services/analytics/revenueReports.js'
 
 export const analyticsRouter = Router()
 
-analyticsRouter.get('/periods', requireBusinessAuth, (_req, res) => {
+analyticsRouter.get('/periods', requireBusinessAuth, ( req, res ) => {
   const businessId = res.locals.businessId as string
   const periods = listAttestedPeriodsForBusiness(businessId)
   res.json({ periods })

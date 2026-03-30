@@ -1,8 +1,11 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from "express";
+
+type RateLimiterBucketResolver = string | ((req: Request) => string);
 
 interface RateLimiterOptions {
   windowMs?: number;
   max?: number;
+  bucket?: RateLimiterBucketResolver;
 }
 
 interface RateLimitRecord {
@@ -10,55 +13,110 @@ interface RateLimitRecord {
   resetTime: number;
 }
 
-// Simple in-memory store for rate limiting
+const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
+const DEFAULT_MAX = 100;
 const store = new Map<string, RateLimitRecord>();
 
-// Cleanup interval to prevent memory leaks by removing expired records
-setInterval(() => {
-  const now = Date.now();
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getClientIdentifier(req: Request): string {
+  if (req.user?.userId) {
+    return `user:${req.user.userId}`;
+  }
+
+  const forwardedFor = req.headers["x-forwarded-for"];
+  if (typeof forwardedFor === "string" && forwardedFor.trim().length > 0) {
+    return `ip:${forwardedFor.split(",")[0].trim()}`;
+  }
+
+  return `ip:${req.ip || req.socket.remoteAddress || "unknown"}`;
+}
+
+function getDefaultBucket(req: Request): string {
+  const routePath = req.route?.path;
+  const normalizedRoute = typeof routePath === "string" ? routePath : req.path || req.originalUrl || "unknown";
+  return `${req.method}:${req.baseUrl || ""}${normalizedRoute}`;
+}
+
+function resolveBucket(req: Request, bucket: RateLimiterBucketResolver | undefined): string {
+  if (typeof bucket === "function") {
+    const resolved = bucket(req).trim();
+    return resolved.length > 0 ? resolved : getDefaultBucket(req);
+  }
+
+  if (typeof bucket === "string" && bucket.trim().length > 0) {
+    return bucket.trim();
+  }
+
+  return getDefaultBucket(req);
+}
+
+function applyRateLimitHeaders(
+  res: Response,
+  bucket: string,
+  max: number,
+  record: RateLimitRecord,
+  now: number,
+): void {
+  const retryAfterSeconds = Math.max(1, Math.ceil((record.resetTime - now) / 1000));
+  const remaining = Math.max(0, max - record.count);
+
+  res.setHeader("Retry-After", retryAfterSeconds.toString());
+  res.setHeader("X-RateLimit-Bucket", bucket);
+  res.setHeader("X-RateLimit-Limit", max.toString());
+  res.setHeader("X-RateLimit-Remaining", remaining.toString());
+  res.setHeader("X-RateLimit-Reset", record.resetTime.toString());
+}
+
+export function cleanupRateLimiterStore(now = Date.now()): void {
   for (const [key, record] of store.entries()) {
     if (now > record.resetTime) {
       store.delete(key);
     }
   }
-}, 60 * 1000).unref(); // Run every minute, unref so it doesn't block Node exit
+}
 
+setInterval(() => {
+  cleanupRateLimiterStore();
+}, 60 * 1000).unref();
+
+/**
+ * Create an in-memory rate limiter with optional route-level buckets.
+ *
+ * Bucketed limits isolate sensitive routes from one another so abuse against
+ * one endpoint does not consume the request budget for a different endpoint.
+ */
 export const rateLimiter = (options: RateLimiterOptions = {}) => {
-  // Use provided options or default to env variables / sane defaults
-  // e.g. 15 minutes window, 100 maximum requests per window
-  const windowMs = options.windowMs ?? parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10);
-  const max = options.max ?? parseInt(process.env.RATE_LIMIT_MAX || '100', 10);
+  const windowMs = options.windowMs ?? parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, DEFAULT_WINDOW_MS);
+  const max = options.max ?? parsePositiveInteger(process.env.RATE_LIMIT_MAX, DEFAULT_MAX);
 
   return (req: Request, res: Response, next: NextFunction): void => {
-    // Determine the identifier (user ID if authenticated, otherwise IP address)
-    // Add type cast to 'any' for req.user to avoid typescript issues
-    const user = (req as any).user;
-    
-    let identifier: string;
-    if (user && user.userId) {
-      identifier = `user:${user.userId}`;
-    } else {
-      identifier = `ip:${req.ip || req.socket.remoteAddress || 'unknown'}`;
-    }
-
+    const bucket = resolveBucket(req, options.bucket);
+    const identifier = getClientIdentifier(req);
+    const key = `${bucket}:${identifier}`;
     const now = Date.now();
-    let record = store.get(identifier);
 
-    // If no record exists or the current window has expired, reset the counter
+    let record = store.get(key);
     if (!record || now > record.resetTime) {
       record = { count: 0, resetTime: now + windowMs };
-      store.set(identifier, record);
+      store.set(key, record);
     }
 
-    // Increment request count
-    record.count++;
+    record.count += 1;
+    applyRateLimitHeaders(res, bucket, max, record, now);
 
-    // Check if limits exceeded
     if (record.count > max) {
-      res.status(429).json({ error: 'Too many requests, please try again later.' });
+      res.status(429).json({ error: "Too many requests, please try again later." });
       return;
     }
 
     next();
   };
 };
+
+export function resetRateLimiterStore(): void {
+  store.clear();
+}

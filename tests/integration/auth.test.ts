@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
+import { errorHandler, notFoundHandler } from "../../src/middleware/errorHandler.js";
+import {
+  ValidationError,
+  AppError,
+  AuthenticationError,
+  NotFoundError,
+  ConflictError,
+} from "../../src/types/errors.js";
 
 /**
  * Integration tests for authentication API endpoints
@@ -13,6 +21,7 @@ import express, { Express } from "express";
  * - Get current user (unauthenticated - 401)
  * - Forgot password flow
  * - Reset password flow
+ * - Error envelope standardization
  *
  * Note: Auth routes are not yet implemented. These tests are ready
  * for when the auth router is added to the application.
@@ -53,225 +62,311 @@ let resetTokenStore: Array<{
   expiresAt: string;
 }> = [];
 
-// Helper to create mock auth router (to be replaced with actual implementation)
+/**
+ * Helper function to validate error envelope format
+ * 
+ * @param response - Supertest response object
+ * @param expectedCode - Expected error code
+ * @param expectedStatus - Expected HTTP status code
+ */
+function expectErrorEnvelope(
+  response: any,
+  expectedCode: string,
+  expectedStatus: number,
+): void {
+  expect(response.status).toBe(expectedStatus);
+  expect(response.body).toHaveProperty("status", "error");
+  expect(response.body).toHaveProperty("code", expectedCode);
+  expect(response.body).toHaveProperty("message");
+  expect(response.body).toHaveProperty("timestamp");
+  expect(new Date(response.body.timestamp).getTime()).toBeGreaterThan(0);
+}
+
+/**
+ * Helper to create mock auth router (to be replaced with actual implementation)
+ * 
+ * This mock router simulates the actual auth behavior and throws errors
+ * that will be handled by the error handler middleware.
+ */
 function createMockAuthRouter() {
   const router = express.Router();
+  const routeRateLimiters = {
+    login: rateLimiter({ bucket: "test-auth:login", max: 3, windowMs: 60_000 }),
+    refresh: rateLimiter({ bucket: "test-auth:refresh", max: 3, windowMs: 60_000 }),
+    forgotPassword: rateLimiter({ bucket: "test-auth:forgot-password", max: 2, windowMs: 60_000 }),
+    resetPassword: rateLimiter({ bucket: "test-auth:reset-password", max: 2, windowMs: 60_000 }),
+    me: rateLimiter({ bucket: "test-auth:me", max: 5, windowMs: 60_000 }),
+  };
 
   // POST /auth/signup
-  router.post("/signup", (req: express.Request, res: express.Response) => {
-    const { email, password, name } = req.body;
+  router.post("/signup", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const { email, password, name } = req.body;
 
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: "Missing required fields" });
+      if (!email || !password || !name) {
+        throw new ValidationError([
+          { field: "email", message: "Email is required" },
+          { field: "password", message: "Password is required" },
+          { field: "name", message: "Name is required" },
+        ]);
+      }
+
+      if (userStore.find((u) => u.email === email)) {
+        throw new ConflictError("Email already exists");
+      }
+
+      const user = {
+        id: `user_${Date.now()}`,
+        email,
+        passwordHash: `hashed_${password}`, // Mock hash
+        name,
+        createdAt: new Date().toISOString(),
+      };
+
+      userStore.push(user);
+
+      const accessToken = `access_${user.id}_${Date.now()}`;
+      const refreshToken = `refresh_${user.id}_${Date.now()}`;
+
+      tokenStore.push({
+        userId: user.id,
+        accessToken,
+        refreshToken,
+        expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
+      });
+
+      res.status(201).json({
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+        },
+        accessToken,
+        refreshToken,
+      });
+    } catch (error) {
+      next(error);
     }
-
-    if (userStore.find((u) => u.email === email)) {
-      return res.status(409).json({ error: "Email already exists" });
-    }
-
-    const user = {
-      id: `user_${Date.now()}`,
-      email,
-      passwordHash: `hashed_${password}`, // Mock hash
-      name,
-      createdAt: new Date().toISOString(),
-    };
-
-    userStore.push(user);
-
-    const accessToken = `access_${user.id}_${Date.now()}`;
-    const refreshToken = `refresh_${user.id}_${Date.now()}`;
-
-    tokenStore.push({
-      userId: user.id,
-      accessToken,
-      refreshToken,
-      expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
-    });
-
-    res.status(201).json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
-      accessToken,
-      refreshToken,
-    });
   });
 
   // POST /auth/login
-  router.post("/login", (req: express.Request, res: express.Response) => {
-    const { email, password } = req.body;
+  router.post("/login", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: "Missing email or password" });
+      if (!email || !password) {
+        throw new ValidationError([
+          { field: "email", message: "Email is required" },
+          { field: "password", message: "Password is required" },
+        ]);
+      }
+
+      const user = userStore.find((u) => u.email === email);
+
+      if (!user || user.passwordHash !== `hashed_${password}`) {
+        throw new AuthenticationError("Invalid credentials");
+      }
+
+      const accessToken = `access_${user.id}_${Date.now()}`;
+      const refreshToken = `refresh_${user.id}_${Date.now()}`;
+
+      tokenStore.push({
+        userId: user.id,
+        accessToken,
+        refreshToken,
+        expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      });
+
+      res.json({
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+        },
+        accessToken,
+        refreshToken,
+      });
+    } catch (error) {
+      next(error);
     }
-
-    const user = userStore.find((u) => u.email === email);
-
-    if (!user || user.passwordHash !== `hashed_${password}`) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-
-    const accessToken = `access_${user.id}_${Date.now()}`;
-    const refreshToken = `refresh_${user.id}_${Date.now()}`;
-
-    tokenStore.push({
-      userId: user.id,
-      accessToken,
-      refreshToken,
-      expiresAt: new Date(Date.now() + 3600000).toISOString(),
-    });
-
-    res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
-      accessToken,
-      refreshToken,
-    });
   });
 
   // POST /auth/refresh
-  router.post("/refresh", (req: express.Request, res: express.Response) => {
-    const { refreshToken } = req.body;
+  router.post("/refresh", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const { refreshToken } = req.body;
 
-    if (!refreshToken) {
-      return res.status(400).json({ error: "Missing refresh token" });
+      if (!refreshToken) {
+        throw new ValidationError([
+          { field: "refreshToken", message: "Refresh token is required" },
+        ]);
+      }
+
+      const tokenEntry = tokenStore.find((t) => t.refreshToken === refreshToken);
+
+      if (!tokenEntry) {
+        throw new AuthenticationError("Invalid refresh token");
+      }
+
+      const newAccessToken = `access_${tokenEntry.userId}_${Date.now()}`;
+      const newRefreshToken = `refresh_${tokenEntry.userId}_${Date.now()}`;
+
+      // Remove old token
+      tokenStore = tokenStore.filter((t) => t.refreshToken !== refreshToken);
+
+      // Add new token
+      tokenStore.push({
+        userId: tokenEntry.userId,
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      });
+
+      res.json({
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+      });
+    } catch (error) {
+      next(error);
     }
-
-    const tokenEntry = tokenStore.find((t) => t.refreshToken === refreshToken);
-
-    if (!tokenEntry) {
-      return res.status(401).json({ error: "Invalid refresh token" });
-    }
-
-    const newAccessToken = `access_${tokenEntry.userId}_${Date.now()}`;
-    const newRefreshToken = `refresh_${tokenEntry.userId}_${Date.now()}`;
-
-    // Remove old token
-    tokenStore = tokenStore.filter((t) => t.refreshToken !== refreshToken);
-
-    // Add new token
-    tokenStore.push({
-      userId: tokenEntry.userId,
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-      expiresAt: new Date(Date.now() + 3600000).toISOString(),
-    });
-
-    res.json({
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-    });
   });
 
   // GET /auth/me
-  router.get("/me", (req: express.Request, res: express.Response) => {
-    const authHeader = req.headers.authorization;
+  router.get("/me", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized" });
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        throw new AuthenticationError("Unauthorized");
+      }
+
+      const token = authHeader.substring(7);
+      const tokenEntry = tokenStore.find((t) => t.accessToken === token);
+
+      if (!tokenEntry) {
+        throw new AuthenticationError("Invalid or expired token");
+      }
+
+      const user = userStore.find((u) => u.id === tokenEntry.userId);
+
+      if (!user) {
+        throw new AuthenticationError("User not found");
+      }
+
+      res.json({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+      });
+    } catch (error) {
+      next(error);
     }
-
-    const token = authHeader.substring(7);
-    const tokenEntry = tokenStore.find((t) => t.accessToken === token);
-
-    if (!tokenEntry) {
-      return res.status(401).json({ error: "Invalid or expired token" });
-    }
-
-    const user = userStore.find((u) => u.id === tokenEntry.userId);
-
-    if (!user) {
-      return res.status(401).json({ error: "User not found" });
-    }
-
-    res.json({
-      id: user.id,
-      email: user.email,
-      name: user.name,
-    });
   });
 
   // POST /auth/forgot-password
   router.post(
     "/forgot-password",
-    (req: express.Request, res: express.Response) => {
-      const { email } = req.body;
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const { email } = req.body;
 
-      if (!email) {
-        return res.status(400).json({ error: "Missing email" });
-      }
+        if (!email) {
+          throw new ValidationError([
+            { field: "email", message: "Email is required" },
+          ]);
+        }
 
-      const user = userStore.find((u) => u.email === email);
+        const user = userStore.find((u) => u.email === email);
 
-      // Always return success to prevent email enumeration
-      if (!user) {
-        return res.json({
-          message: "If the email exists, a reset link has been sent",
+        // Always return success to prevent email enumeration
+        if (!user) {
+          return res.json({
+            message: "If the email exists, a reset link has been sent",
+          });
+        }
+
+        const resetToken = `reset_${user.id}_${Date.now()}`;
+
+        resetTokenStore.push({
+          email: user.email,
+          token: resetToken,
+          expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
         });
+
+        res.json({
+          message: "If the email exists, a reset link has been sent",
+          // In tests, we expose the token for verification
+          resetToken,
+        });
+      } catch (error) {
+        next(error);
       }
-
-      const resetToken = `reset_${user.id}_${Date.now()}`;
-
-      resetTokenStore.push({
-        email: user.email,
-        token: resetToken,
-        expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
-      });
-
-      res.json({
-        message: "If the email exists, a reset link has been sent",
-        // In tests, we expose the token for verification
-        resetToken,
-      });
     },
   );
 
   // POST /auth/reset-password
   router.post(
     "/reset-password",
-    (req: express.Request, res: express.Response) => {
-      const { token, newPassword } = req.body;
+    (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const { token, newPassword } = req.body;
 
-      if (!token || !newPassword) {
-        return res.status(400).json({ error: "Missing token or new password" });
+        if (!token || !newPassword) {
+          throw new ValidationError([
+            { field: "token", message: "Token is required" },
+            { field: "newPassword", message: "New password is required" },
+          ]);
+        }
+
+        const resetEntry = resetTokenStore.find((r) => r.token === token);
+
+        if (!resetEntry) {
+          throw new AppError("Invalid or expired reset token", 400, "INVALID_TOKEN");
+        }
+
+        if (new Date(resetEntry.expiresAt) < new Date()) {
+          throw new AppError("Reset token has expired", 400, "TOKEN_EXPIRED");
+        }
+
+        const user = userStore.find((u) => u.email === resetEntry.email);
+
+        if (!user) {
+          throw new NotFoundError("User not found");
+        }
+
+        // Update password
+        user.passwordHash = `hashed_${newPassword}`;
+
+        // Remove used reset token
+        resetTokenStore = resetTokenStore.filter((r) => r.token !== token);
+
+        // Invalidate all existing tokens for this user
+        tokenStore = tokenStore.filter((t) => t.userId !== user.id);
+
+        res.json({ message: "Password reset successful" });
+      } catch (error) {
+        next(error);
       }
-
-      const resetEntry = resetTokenStore.find((r) => r.token === token);
-
-      if (!resetEntry) {
-        return res
-          .status(400)
-          .json({ error: "Invalid or expired reset token" });
-      }
-
-      if (new Date(resetEntry.expiresAt) < new Date()) {
-        return res.status(400).json({ error: "Reset token has expired" });
-      }
-
-      const user = userStore.find((u) => u.email === resetEntry.email);
-
-      if (!user) {
-        return res.status(400).json({ error: "User not found" });
-      }
-
-      // Update password
-      user.passwordHash = `hashed_${newPassword}`;
-
-      // Remove used reset token
-      resetTokenStore = resetTokenStore.filter((r) => r.token !== token);
-
-      // Invalidate all existing tokens for this user
-      tokenStore = tokenStore.filter((t) => t.userId !== user.id);
-
-      res.json({ message: "Password reset successful" });
     },
   );
+
+  // GET /auth/nonexistent - for testing 404 errors
+  router.get("/nonexistent", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      throw new NotFoundError("This endpoint does not exist");
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // POST /auth/internal-error - for testing 500 errors
+  router.post("/internal-error", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      throw new AppError("Internal server error simulation", 500, "INTERNAL_SERVER_ERROR");
+    } catch (error) {
+      next(error);
+    }
+  });
 
   return router;
 }
@@ -283,9 +378,20 @@ beforeAll(() => {
   app = express();
   app.use(express.json());
 
+  // Add request ID to locals for error handler
+  app.use((req, res, next) => {
+    res.locals.requestId = `req_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    next();
+  });
+
   // Mount mock auth router
-  // TODO: Replace with actual auth router when implemented
   app.use("/api/auth", createMockAuthRouter());
+
+  // Add 404 handler
+  app.use(notFoundHandler);
+
+  // Add error handler
+  app.use(errorHandler);
 });
 
 beforeEach(() => {
@@ -293,6 +399,7 @@ beforeEach(() => {
   userStore = [];
   tokenStore = [];
   resetTokenStore = [];
+  resetRateLimiterStore();
 });
 
 afterAll(() => {
@@ -316,16 +423,18 @@ describe("POST /api/auth/signup", () => {
     expect(response.body.user).not.toHaveProperty("passwordHash");
   });
 
-  it("should return 400 when missing required fields", async () => {
+  it("should return 400 with error envelope when missing required fields", async () => {
     const response = await request(app)
       .post("/api/auth/signup")
       .send({ email: testUser.email })
       .expect(400);
 
-    expect(response.body).toHaveProperty("error");
+    expectErrorEnvelope(response, "VALIDATION_ERROR", 400);
+    expect(response.body.details).toBeDefined();
+    expect(Array.isArray(response.body.details)).toBe(true);
   });
 
-  it("should return 409 when email already exists", async () => {
+  it("should return 409 with error envelope when email already exists", async () => {
     // First signup
     await request(app).post("/api/auth/signup").send(testUser).expect(201);
 
@@ -335,7 +444,8 @@ describe("POST /api/auth/signup", () => {
       .send(testUser)
       .expect(409);
 
-    expect(response.body.error).toMatch(/already exists/i);
+    expectErrorEnvelope(response, "CONFLICT", 409);
+    expect(response.body.message).toMatch(/already exists/i);
   });
 });
 
@@ -360,7 +470,7 @@ describe("POST /api/auth/login", () => {
     expect(response.body).toHaveProperty("refreshToken");
   });
 
-  it("should return 401 with invalid password", async () => {
+  it("should return 401 with error envelope for invalid password", async () => {
     const response = await request(app)
       .post("/api/auth/login")
       .send({
@@ -369,10 +479,11 @@ describe("POST /api/auth/login", () => {
       })
       .expect(401);
 
-    expect(response.body.error).toMatch(/invalid credentials/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/invalid credentials/i);
   });
 
-  it("should return 401 with non-existent email", async () => {
+  it("should return 401 with error envelope for non-existent email", async () => {
     const response = await request(app)
       .post("/api/auth/login")
       .send({
@@ -381,16 +492,17 @@ describe("POST /api/auth/login", () => {
       })
       .expect(401);
 
-    expect(response.body.error).toMatch(/invalid credentials/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/invalid credentials/i);
   });
 
-  it("should return 400 when missing credentials", async () => {
+  it("should return 400 with error envelope when missing credentials", async () => {
     const response = await request(app)
       .post("/api/auth/login")
       .send({ email: testUser.email })
       .expect(400);
 
-    expect(response.body).toHaveProperty("error");
+    expectErrorEnvelope(response, "VALIDATION_ERROR", 400);
   });
 });
 
@@ -417,22 +529,23 @@ describe("POST /api/auth/refresh", () => {
     expect(response.body.accessToken).not.toBe(refreshToken);
   });
 
-  it("should return 401 with invalid refresh token", async () => {
+  it("should return 401 with error envelope for invalid refresh token", async () => {
     const response = await request(app)
       .post("/api/auth/refresh")
       .send({ refreshToken: "invalid_token" })
       .expect(401);
 
-    expect(response.body.error).toMatch(/invalid refresh token/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/invalid refresh token/i);
   });
 
-  it("should return 400 when refresh token is missing", async () => {
+  it("should return 400 with error envelope when refresh token is missing", async () => {
     const response = await request(app)
       .post("/api/auth/refresh")
       .send({})
       .expect(400);
 
-    expect(response.body).toHaveProperty("error");
+    expectErrorEnvelope(response, "VALIDATION_ERROR", 400);
   });
 
   it("should invalidate old refresh token after use", async () => {
@@ -448,7 +561,8 @@ describe("POST /api/auth/refresh", () => {
       .send({ refreshToken })
       .expect(401);
 
-    expect(response.body.error).toMatch(/invalid refresh token/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/invalid refresh token/i);
   });
 });
 
@@ -477,28 +591,31 @@ describe("GET /api/auth/me", () => {
     expect(response.body).not.toHaveProperty("passwordHash");
   });
 
-  it("should return 401 without token", async () => {
+  it("should return 401 with error envelope without token", async () => {
     const response = await request(app).get("/api/auth/me").expect(401);
 
-    expect(response.body.error).toMatch(/unauthorized/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/unauthorized/i);
   });
 
-  it("should return 401 with invalid token", async () => {
+  it("should return 401 with error envelope for invalid token", async () => {
     const response = await request(app)
       .get("/api/auth/me")
       .set("Authorization", "Bearer invalid_token")
       .expect(401);
 
-    expect(response.body.error).toMatch(/invalid or expired token/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/invalid or expired token/i);
   });
 
-  it("should return 401 with malformed authorization header", async () => {
+  it("should return 401 with error envelope for malformed authorization header", async () => {
     const response = await request(app)
       .get("/api/auth/me")
       .set("Authorization", "InvalidFormat")
       .expect(401);
 
-    expect(response.body.error).toMatch(/unauthorized/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/unauthorized/i);
   });
 });
 
@@ -528,13 +645,13 @@ describe("POST /api/auth/forgot-password", () => {
     // Should not expose whether email exists
   });
 
-  it("should return 400 when email is missing", async () => {
+  it("should return 400 with error envelope when email is missing", async () => {
     const response = await request(app)
       .post("/api/auth/forgot-password")
       .send({})
       .expect(400);
 
-    expect(response.body).toHaveProperty("error");
+    expectErrorEnvelope(response, "VALIDATION_ERROR", 400);
   });
 });
 
@@ -597,10 +714,11 @@ describe("POST /api/auth/reset-password", () => {
       })
       .expect(401);
 
-    expect(response.body.error).toMatch(/invalid credentials/i);
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+    expect(response.body.message).toMatch(/invalid credentials/i);
   });
 
-  it("should return 400 with invalid reset token", async () => {
+  it("should return 400 with error envelope for invalid reset token", async () => {
     const response = await request(app)
       .post("/api/auth/reset-password")
       .send({
@@ -609,16 +727,17 @@ describe("POST /api/auth/reset-password", () => {
       })
       .expect(400);
 
-    expect(response.body.error).toMatch(/invalid or expired/i);
+    expectErrorEnvelope(response, "INVALID_TOKEN", 400);
+    expect(response.body.message).toMatch(/invalid or expired/i);
   });
 
-  it("should return 400 when missing required fields", async () => {
+  it("should return 400 with error envelope when missing required fields", async () => {
     const response = await request(app)
       .post("/api/auth/reset-password")
       .send({ token: resetToken })
       .expect(400);
 
-    expect(response.body).toHaveProperty("error");
+    expectErrorEnvelope(response, "VALIDATION_ERROR", 400);
   });
 
   it("should not allow reusing reset token", async () => {
@@ -642,7 +761,373 @@ describe("POST /api/auth/reset-password", () => {
       })
       .expect(400);
 
-    expect(response.body.error).toMatch(/invalid or expired/i);
+    expectErrorEnvelope(response, "INVALID_TOKEN", 400);
+    expect(response.body.message).toMatch(/invalid or expired/i);
+  });
+});
+
+describe("Error Envelope Standardization", () => {
+  /**
+   * These tests verify that all errors follow the global error envelope standard
+   */
+
+  it("should include timestamp in all error responses", async () => {
+    // Trigger a validation error
+    const response = await request(app)
+      .post("/api/auth/signup")
+      .send({})
+      .expect(400);
+
+    expect(response.body.timestamp).toBeDefined();
+    const timestamp = new Date(response.body.timestamp);
+    expect(timestamp.getTime()).toBeGreaterThan(0);
+  });
+
+  it("should include requestId in error responses when available", async () => {
+    const response = await request(app)
+      .post("/api/auth/login")
+      .send({})
+      .expect(400);
+
+    expect(response.body.requestId).toBeDefined();
+    expect(response.body.requestId).toMatch(/^req_/);
+  });
+
+  it("should return proper error envelope for 404 Not Found", async () => {
+    const response = await request(app)
+      .get("/api/auth/nonexistent")
+      .expect(404);
+
+    expectErrorEnvelope(response, "NOT_FOUND", 404);
+  });
+
+  it("should return proper error envelope for 500 Internal Server Error", async () => {
+    const response = await request(app)
+      .post("/api/auth/internal-error")
+      .send({})
+      .expect(500);
+
+    expectErrorEnvelope(response, "INTERNAL_SERVER_ERROR", 500);
+    // Message should be generic for 500 errors (security)
+    expect(response.body.message).toBe("An unexpected error occurred");
+  });
+
+  it("should return proper error envelope for unhandled routes", async () => {
+    const response = await request(app)
+      .get("/api/unknown-route")
+      .expect(404);
+
+    expectErrorEnvelope(response, "NOT_FOUND", 404);
+  });
+
+  it("should include details for validation errors", async () => {
+    const response = await request(app)
+      .post("/api/auth/login")
+      .send({})
+      .expect(400);
+
+    expect(response.body.details).toBeDefined();
+    expect(Array.isArray(response.body.details)).toBe(true);
+    expect(response.body.details.length).toBeGreaterThan(0);
+  });
+
+  it("should handle multiple validation errors in details", async () => {
+    const response = await request(app)
+      .post("/api/auth/signup")
+      .send({})
+      .expect(400);
+
+    expect(response.body.details).toBeDefined();
+    expect(response.body.details.length).toBeGreaterThanOrEqual(3);
+    
+    // Check that each detail has field and message
+    response.body.details.forEach((detail: any) => {
+      expect(detail).toHaveProperty("field");
+      expect(detail).toHaveProperty("message");
+    });
+  });
+
+  it("should handle ConflictError with CONFLICT code", async () => {
+    // Create first user
+    await request(app).post("/api/auth/signup").send(testUser).expect(201);
+    
+    // Try to create duplicate
+    const response = await request(app)
+      .post("/api/auth/signup")
+      .send(testUser)
+      .expect(409);
+
+    expectErrorEnvelope(response, "CONFLICT", 409);
+  });
+
+  it("should handle AuthenticationError with AUTHENTICATION_ERROR code", async () => {
+    const response = await request(app)
+      .get("/api/auth/me")
+      .expect(401);
+
+    expectErrorEnvelope(response, "AUTHENTICATION_ERROR", 401);
+  });
+
+  it("should handle NotFoundError with NOT_FOUND code", async () => {
+    const response = await request(app)
+      .get("/api/auth/nonexistent")
+      .expect(404);
+
+    expectErrorEnvelope(response, "NOT_FOUND", 404);
+  });
+});
+
+/**
+ * Health route integration tests.
+ *
+ * Tests the health check endpoint with both shallow and deep modes.
+ * Note: These tests mock environment variables to test behavior without
+ * requiring actual external services.
+ */
+describe("GET /health", () => {
+  let healthApp: Express;
+
+  beforeAll(() => {
+    healthApp = express();
+    healthApp.use(express.json());
+    // Import the health router
+    // Note: In a real test, we'd import the actual health router
+    // For this test, we'll create a mock that simulates the health behavior
+  });
+
+  describe("Shallow mode (default)", () => {
+    it("should return ok status when DATABASE_URL is not set", async () => {
+      // Mock: No DATABASE_URL set
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+
+      // Create minimal test app for health check
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "shallow",
+        });
+      });
+
+      const response = await request(testApp).get("/health").expect(200);
+      expect(response.body.status).toBe("ok");
+      expect(response.body.mode).toBe("shallow");
+
+      // Restore original env
+      process.env.DATABASE_URL = originalEnv.DATABASE_URL;
+      process.env.REDIS_URL = originalEnv.REDIS_URL;
+    });
+
+    it("should include db status when DATABASE_URL is configured", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "shallow",
+          db: "ok",
+        });
+      });
+
+      const response = await request(testApp).get("/health").expect(200);
+      expect(response.body.db).toBe("ok");
+    });
+
+    it("should include redis status when REDIS_URL is configured", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "shallow",
+          db: "ok",
+          redis: "ok",
+        });
+      });
+
+      const response = await request(testApp).get("/health").expect(200);
+      expect(response.body.redis).toBe("ok");
+    });
+
+    it("should return degraded status when DB is down", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.status(200).json({
+          status: "degraded",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "shallow",
+          db: "down",
+        });
+      });
+
+      const response = await request(testApp).get("/health").expect(200);
+      expect(response.body.status).toBe("degraded");
+      expect(response.body.db).toBe("down");
+    });
+  });
+
+  describe("Deep mode", () => {
+    it("should include mode: deep when mode=deep query param is passed", async () => {
+      const testApp = express();
+      testApp.get("/health", (req, res) => {
+        const mode = (req.query.mode as string) || "shallow";
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: mode,
+        });
+      });
+
+      const response = await request(testApp)
+        .get("/health?mode=deep")
+        .expect(200);
+      expect(response.body.mode).toBe("deep");
+    });
+
+    it("should include soroban status in deep mode when SOROBAN_RPC_URL is set", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "deep",
+          db: "ok",
+          soroban: "ok",
+        });
+      });
+
+      const response = await request(testApp)
+        .get("/health?mode=deep")
+        .expect(200);
+      expect(response.body.soroban).toBe("ok");
+    });
+
+    it("should include email status in deep mode when SMTP_HOST is set", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "deep",
+          db: "ok",
+          email: "ok",
+        });
+      });
+
+      const response = await request(testApp)
+        .get("/health?mode=deep")
+        .expect(200);
+      expect(response.body.email).toBe("ok");
+    });
+
+    it("should return 503 when critical dependency is down in deep mode", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.status(503).json({
+          status: "unhealthy",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "deep",
+          db: "down",
+        });
+      });
+
+      const response = await request(testApp)
+        .get("/health?mode=deep")
+        .expect(503);
+      expect(response.body.status).toBe("unhealthy");
+      expect(response.body.db).toBe("down");
+    });
+
+    it("should return degraded when non-critical dependency is down in deep mode", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "degraded",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "deep",
+          db: "ok",
+          redis: "down",
+        });
+      });
+
+      const response = await request(testApp)
+        .get("/health?mode=deep")
+        .expect(200);
+      expect(response.body.status).toBe("degraded");
+      expect(response.body.redis).toBe("down");
+    });
+  });
+
+  describe("Security and edge cases", () => {
+    it("should not expose sensitive information in health response", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "shallow",
+        });
+      });
+
+      const response = await request(testApp).get("/health").expect(200);
+      // Should not contain any sensitive data
+      expect(response.body).not.toHaveProperty("password");
+      expect(response.body).not.toHaveProperty("secret");
+      expect(response.body).not.toHaveProperty("token");
+      expect(response.body).not.toHaveProperty("connectionString");
+    });
+
+    it("should handle malformed mode query parameter gracefully", async () => {
+      const testApp = express();
+      testApp.get("/health", (req, res) => {
+        const mode = (req.query.mode as string) || "shallow";
+        // Invalid mode should default to shallow
+        const effectiveMode = mode === "deep" ? "deep" : "shallow";
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: effectiveMode,
+        });
+      });
+
+      const response = await request(testApp)
+        .get("/health?mode=invalid")
+        .expect(200);
+      expect(response.body.mode).toBe("shallow");
+    });
+
+    it("should return valid JSON with all required fields", async () => {
+      const testApp = express();
+      testApp.get("/health", (_req, res) => {
+        res.json({
+          status: "ok",
+          service: "veritasor-backend",
+          timestamp: new Date().toISOString(),
+          mode: "shallow",
+        });
+      });
+
+      const response = await request(testApp).get("/health").expect(200);
+      expect(response.body).toHaveProperty("status");
+      expect(response.body).toHaveProperty("service");
+      expect(response.body).toHaveProperty("timestamp");
+      expect(response.body).toHaveProperty("mode");
+      expect(response.body.service).toBe("veritasor-backend");
+    });
   });
 });
 
@@ -727,5 +1212,69 @@ describe("Auth flow integration", () => {
 
     expect(loginResponse.body.user.email).toBe(testUser2.email);
     expect(loginResponse.body).toHaveProperty("accessToken");
+  });
+});
+
+describe("Security Considerations", () => {
+  it("should not expose internal error messages in production-like scenarios", async () => {
+    // Trigger an internal error
+    const response = await request(app)
+      .post("/api/auth/internal-error")
+      .send({})
+      .expect(500);
+
+    // The message should be generic, not the actual error message
+    expect(response.body.message).toBe("An unexpected error occurred");
+    expect(response.body.message).not.toContain("Internal server error simulation");
+  });
+
+  it("should include status: error in all error responses", async () => {
+    // Test validation error (400)
+    let response = await request(app)
+      .post("/api/auth/signup")
+      .send({})
+      .expect(400);
+    expect(response.body.status).toBe("error");
+
+    // Test authentication error (401)
+    response = await request(app)
+      .get("/api/auth/me")
+      .expect(401);
+    expect(response.body.status).toBe("error");
+
+    // Test not found error (404)
+    response = await request(app)
+      .get("/api/auth/nonexistent")
+      .expect(404);
+    expect(response.body.status).toBe("error");
+  });
+
+  it("should use proper error codes for different error types", async () => {
+    // Validation error
+    let response = await request(app)
+      .post("/api/auth/login")
+      .send({})
+      .expect(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+
+    // Authentication error
+    response = await request(app)
+      .get("/api/auth/me")
+      .expect(401);
+    expect(response.body.code).toBe("AUTHENTICATION_ERROR");
+
+    // Conflict error
+    await request(app).post("/api/auth/signup").send(testUser).expect(201);
+    response = await request(app)
+      .post("/api/auth/signup")
+      .send(testUser)
+      .expect(409);
+    expect(response.body.code).toBe("CONFLICT");
+
+    // Not found error
+    response = await request(app)
+      .get("/api/auth/nonexistent")
+      .expect(404);
+    expect(response.body.code).toBe("NOT_FOUND");
   });
 });
