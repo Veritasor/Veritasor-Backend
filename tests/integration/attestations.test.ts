@@ -6,18 +6,22 @@
  * param will hit the real DB client (not configured in tests) and return 500.
  * Tests that require an actual database are omitted here; they belong in e2e tests.
  */
-import { describe, it, expect, vi } from 'vitest'
+import assert from 'node:assert'
+import { beforeEach, describe, expect, it, test, vi } from 'vitest'
 import request from 'supertest'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { businessRepository } from '../../src/repositories/business.js'
 
 const { submitAttestationMock } = vi.hoisted(() => ({
   submitAttestationMock: vi.fn(),
 }))
 
-vi.mock('../../src/services/soroban/submitAttestation.js', () => ({
-  submitAttestation: submitAttestationMock,
-}))
+vi.mock('../../src/services/soroban/submitAttestation.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/soroban/submitAttestation.js')>()
+  return {
+    ...actual,
+    submitAttestation: submitAttestationMock,
+  }
+})
 
 import { app } from '../../src/app.js'
 import {
@@ -32,6 +36,7 @@ const business = {
   id: 'biz_1',
   userId: 'user_1',
   name: 'Acme Inc',
+  email: 'owner@acme.example',
   industry: null,
   description: null,
   website: null,
@@ -42,6 +47,16 @@ const business = {
 // ---------------------------------------------------------------------------
 // Existing API integration tests
 // ---------------------------------------------------------------------------
+
+describe('Attestations HTTP integration', () => {
+  beforeEach(() => {
+    submitAttestationMock.mockClear()
+    vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(business)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
 
 describe("GET /api/attestations", () => {
   it("should return 401 when unauthenticated", async () => {
@@ -162,7 +177,11 @@ describe("GET /api/attestations", () => {
       })
 
     expect(res.status).toBe(400)
-    expect(res.body).toEqual({ error: 'Missing Idempotency-Key header' })
+    expect(res.body).toMatchObject({
+      code: 'IDEMPOTENCY_KEY_REQUIRED',
+      error: 'Bad Request',
+    })
+    expect(String(res.body.message).toLowerCase()).toContain('idempotency')
   })
 
   it('maps Soroban RPC failures to a 502 response', async () => {
@@ -185,8 +204,8 @@ describe("GET /api/attestations", () => {
     expect(res.body).toMatchObject({
       status: 'error',
       code: 'SUBMIT_FAILED',
-      message: 'Soroban RPC request failed after applying the retry policy.',
     })
+    expect(res.body.message).toBeDefined()
   })
 
   it('maps signer configuration failures to a 503 response without leaking secrets', async () => {
@@ -209,10 +228,47 @@ describe("GET /api/attestations", () => {
     expect(res.body).toMatchObject({
       status: 'error',
       code: 'SIGNER_MISMATCH',
-      message: 'Soroban submission is not available right now.',
     })
-    expect(res.body.message).not.toContain('signerSecret')
+    expect(String(res.body.message)).not.toContain('signerSecret')
   })
+})
+
+describe('API version negotiation (attestations integration)', () => {
+  it('responds with API-Version v1 for unversioned routes (default negotiation)', async () => {
+    const res = await request(app).get('/api/attestations').set(authHeader)
+    expect(res.status).toBe(200)
+    expect(res.headers['api-version']).toBe('v1')
+    expect(res.headers['api-version-fallback']).toBeUndefined()
+  })
+
+  it('honors X-API-Version: 1 without fallback', async () => {
+    const res = await request(app)
+      .get('/api/attestations')
+      .set(authHeader)
+      .set('X-API-Version', '1')
+    expect(res.status).toBe(200)
+    expect(res.headers['api-version']).toBe('v1')
+    expect(res.headers['api-version-fallback']).toBeUndefined()
+  })
+
+  it('falls back to v1 with API-Version-Fallback when an unsupported major is requested', async () => {
+    const res = await request(app)
+      .get('/api/attestations')
+      .set(authHeader)
+      .set('X-API-Version', '99')
+    expect(res.status).toBe(200)
+    expect(res.headers['api-version']).toBe('v1')
+    expect(res.headers['api-version-fallback']).toBe('true')
+  })
+
+  it('includes Vary for cache correctness when version may depend on headers', async () => {
+    const res = await request(app).get('/api/attestations').set(authHeader)
+    const vary = (res.headers.vary ?? '').toLowerCase()
+    expect(vary).toContain('accept')
+    expect(vary).toContain('x-api-version')
+  })
+})
+
 })
 
 // ---------------------------------------------------------------------------

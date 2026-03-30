@@ -41,12 +41,12 @@ The shared rate limiter in [src/middleware/rateLimiter.ts](src/middleware/rateLi
 
 ## API Versioning
 
-All API routes are versioned and mounted under `/api/v1`. This enables future compatibility with `/api/v2`, `/api/v3`, etc.
+Routes may be mounted with an `/api/v{n}` prefix and/or legacy unversioned paths (e.g. `/api/attestations`). The server still resolves a major version for each request.
 
-- **Versioning approach:** Middleware-based with request-level `apiVersion` tracking
-- **Response headers:** Include `API-Version` for client awareness
-- **Current version:** v1
-- **Future extensions:** Add routers to `/api/v2`, `/api/v3` as needed
+- **Negotiation:** Path segment wins when present; otherwise `X-API-Version`, `Accept-Version`, query `apiVersion` / `api_version`, then `Accept` parameters (`version=`, `api-version=`, `v=`). Default is **v1**. Unsupported majors fall back to v1 with `API-Version-Fallback: true`.
+- **Response headers:** `API-Version` (always a supported label), optional `API-Version-Fallback`, and merged `Vary` for caches.
+- **Spec:** [docs/specs/api-version-negotiation.md](docs/specs/api-version-negotiation.md)
+- **Future extensions:** Add entries to `SUPPORTED_API_VERSIONS` and mount `/api/v2` routers when ready.
 
 ## API (current)
 
