@@ -546,3 +546,134 @@ describe("JWT constant defaults", () => {
 		expect(JWT_AUDIENCE).not.toBe(JWT_REFRESH_AUDIENCE);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Expiry Skew Handling Tests
+// Tests for clock skew tolerance, custom clock timestamps, and maxAge options
+// ---------------------------------------------------------------------------
+
+describe("verify expiry skew handling", () => {
+	it("throws TokenExpiredError for token expired beyond clockTolerance", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const token = sign(payload, { expiresIn: -5 }); // expired 5 seconds ago
+		expect(() => verify(token, { clockTolerance: 3 })).toThrow();
+	});
+
+	it("accepts token within clockTolerance window", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		// Token expired 2 seconds ago, tolerance is 5 seconds
+		const token = sign(payload, { expiresIn: -2 });
+		const result = verify(token, { clockTolerance: 5 });
+		expect(result).toMatchObject(payload);
+	});
+
+	it("throws when maxAge is exceeded (token age > maxAge)", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token issued 10 seconds ago, so its age is 10 seconds
+		const token = sign({ ...payload, iat: now - 10 });
+		// maxAge of 5 seconds means token is too old (10 > 5)
+		expect(() => verify(token, { maxAge: 5 })).toThrow();
+	});
+
+	it("accepts token when maxAge is not exceeded", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const token = sign(payload, { expiresIn: "1h" });
+		const result = verify(token, { maxAge: 3600 }); // 1 hour in seconds
+		expect(result).toMatchObject(payload);
+	});
+
+	it("rejects future token when verified before nbf with clockTolerance", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token not valid before 10 seconds from now
+		const token = sign({ ...payload, nbf: now + 10 });
+		// Even with 5 second tolerance, token is still 5 seconds in the future
+		expect(() => verify(token, { clockTolerance: 5 })).toThrow();
+	});
+
+	it("accepts future token when nbf is within clockTolerance", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token not valid before 3 seconds from now
+		const token = sign({ ...payload, nbf: now + 3 });
+		// With 5 second tolerance, token is within acceptable window
+		const result = verify(token, { clockTolerance: 5 });
+		expect(result).toMatchObject(payload);
+	});
+
+	it("verifies with custom clockTimestamp in the past (token appears not yet expired)", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token expires in 10 seconds from actual current time
+		const token = sign(payload, { expiresIn: 10 });
+		// Verify with timestamp from 5 seconds ago - token still valid
+		const result = verify(token, { clockTimestamp: now - 5 });
+		expect(result).toMatchObject(payload);
+	});
+
+	it("rejects token with custom clockTimestamp in the future (token appears expired)", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token expires in 5 seconds from actual current time
+		const token = sign(payload, { expiresIn: 5 });
+		// Verify with timestamp 10 seconds in the future - token appears expired
+		expect(() => verify(token, { clockTimestamp: now + 10 })).toThrow();
+	});
+
+	it("combines clockTimestamp and clockTolerance for skew handling", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token expires in 5 seconds from actual current time
+		const token = sign(payload, { expiresIn: 5 });
+		// Verify with timestamp 7 seconds in the future (token appears 2s expired)
+		// With 3 second tolerance, this should pass
+		const result = verify(token, { 
+			clockTimestamp: now + 7, 
+			clockTolerance: 3 
+		});
+		expect(result).toMatchObject(payload);
+	});
+
+	it("rejects when combined clockTimestamp and clockTolerance still exceed expiry", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token expires in 5 seconds from actual current time
+		const token = sign(payload, { expiresIn: 5 });
+		// Verify with timestamp 15 seconds in the future (token appears 10s expired)
+		// With 3 second tolerance, token is still 7s expired - should fail
+		expect(() => verify(token, { 
+			clockTimestamp: now + 15, 
+			clockTolerance: 3 
+		})).toThrow();
+	});
+
+	it("handles zero clockTolerance strictly", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		const token = sign(payload, { expiresIn: "1h" });
+		// Zero tolerance means strict verification
+		const result = verify(token, { clockTolerance: 0 });
+		expect(result).toMatchObject(payload);
+	});
+
+	it("validates iat (issued at) with clock skew tolerance", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token issued 5 seconds in the future (clock skew scenario)
+		const token = sign({ ...payload, iat: now + 5 });
+		// With 10 second tolerance, should accept
+		const result = verify(token, { clockTolerance: 10 });
+		expect(result).toMatchObject(payload);
+	});
+
+	it("uses iat claim with maxAge for age validation", async () => {
+		const { sign, verify } = await import("../../../src/utils/jwt");
+		const now = Math.floor(Date.now() / 1000);
+		// Token issued 20 seconds ago with exp far in future
+		const token = sign({ ...payload, iat: now - 20, exp: now + 3600 });
+		// maxAge of 10 seconds should reject (token is 20s old)
+		expect(() => verify(token, { maxAge: 10 })).toThrow();
+	});
+});
+
