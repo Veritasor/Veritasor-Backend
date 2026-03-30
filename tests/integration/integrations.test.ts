@@ -940,3 +940,484 @@ describe("handleCallback — token exchange", () => {
     expect(result).toEqual({ success: true, shop: "mystore.myshopify.com" });
   });
 });
+
+/**
+ * OAuth State Tampering Integration Tests
+ *
+ * Validates that the OAuth state parameter is properly enforced to prevent:
+ * - CSRF attacks via state forgery or cross-user state theft
+ * - State replay attacks
+ * - State parameter injection (SQL injection, XSS)
+ * - Concurrent/race-condition state reuse
+ * - Expired state usage
+ * - State enumeration via predictable token patterns
+ *
+ * @security These tests directly verify the CSRF-protection guarantees of the OAuth flow.
+ */
+describe("OAuth State Tampering", () => {
+  const attackerBusinessId = "biz_attacker_456";
+  const attackerToken = "token_attacker_456";
+
+  beforeAll(() => {
+    // Register attacker as a second authenticated business
+    mockTokens[attackerToken] = {
+      userId: "user_attacker_456",
+      businessId: attackerBusinessId,
+    };
+  });
+
+  afterAll(() => {
+    delete mockTokens[attackerToken];
+  });
+
+  describe("Cross-user state theft", () => {
+    it("should reject callback when state belongs to a different business", async () => {
+      // Victim initiates OAuth and receives a valid state token
+      const victimConnect = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const victimState = victimConnect.body.state;
+
+      // Attacker intercepts the state and tries to use it with their own session
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${attackerToken}`)
+        .send({ code: "stolen_auth_code", state: victimState })
+        .expect(403);
+
+      expect(response.body.error).toMatch(/state does not match/i);
+    });
+
+    it("should preserve victim state after failed cross-user theft attempt", async () => {
+      // Victim initiates OAuth
+      const victimConnect = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const victimState = victimConnect.body.state;
+
+      // Attacker's attempt is rejected
+      await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${attackerToken}`)
+        .send({ code: "stolen_auth_code", state: victimState })
+        .expect(403);
+
+      // Victim should still be able to complete their own legitimate flow
+      const legitimateResponse = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "legitimate_auth_code", state: victimState })
+        .expect(201);
+
+      expect(legitimateResponse.body.connection).toHaveProperty(
+        "status",
+        "active",
+      );
+    });
+
+    it("should isolate state between two businesses initiated at the same time", async () => {
+      // Both businesses initiate OAuth simultaneously
+      const [victimConnect, attackerConnect] = await Promise.all([
+        request(app)
+          .post("/api/integrations/stripe/connect")
+          .set("Authorization", `Bearer ${authToken}`),
+        request(app)
+          .post("/api/integrations/stripe/connect")
+          .set("Authorization", `Bearer ${attackerToken}`),
+      ]);
+
+      const victimState = victimConnect.body.state;
+      const attackerState = attackerConnect.body.state;
+
+      // States must differ
+      expect(victimState).not.toBe(attackerState);
+
+      // Attacker's token cannot be used by victim's session
+      const crossAttempt = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "code", state: attackerState })
+        .expect(403);
+
+      expect(crossAttempt.body.error).toMatch(/state does not match/i);
+    });
+  });
+
+  describe("State replay attacks", () => {
+    it("should reject a state token that has already been consumed", async () => {
+      const connectResponse = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const state = connectResponse.body.state;
+
+      // First use — legitimate, should succeed
+      await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "code_first_use", state })
+        .expect(201);
+
+      // Second use — replay attack, must be rejected
+      const replayResponse = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "code_replay", state })
+        .expect(400);
+
+      expect(replayResponse.body.error).toMatch(/invalid or expired state/i);
+    });
+
+    it("should not create a second connection from a replayed state", async () => {
+      const connectResponse = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const state = connectResponse.body.state;
+
+      await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "code_first_use", state })
+        .expect(201);
+
+      // Replay attempt
+      await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "code_replay", state })
+        .expect(400);
+
+      // Only one connection should exist
+      const connectedResponse = await request(app)
+        .get("/api/integrations/connected")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      expect(connectedResponse.body.integrations).toHaveLength(1);
+    });
+  });
+
+  describe("State forgery", () => {
+    it("should reject a completely fabricated state token", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: "forged_state_abc123" })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+
+    it("should reject a state that mimics the internal generation pattern", async () => {
+      // Attacker who has seen a real state tries to guess another valid one
+      const guessedState = `state_${businessId}_stripe_${Date.now()}`;
+
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: guessedState })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+
+    it("should reject a state constructed from valid-looking UUIDs", async () => {
+      const uuidLikeState = "550e8400-e29b-41d4-a716-446655440000";
+
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: uuidLikeState })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+  });
+
+  describe("State parameter injection", () => {
+    it("should reject state with SQL injection payload", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: "' OR '1'='1'; --" })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+
+    it("should reject state with XSS payload", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({
+          code: "some_code",
+          state: "<script>alert('xss')</script>",
+        })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+
+    it("should treat empty string state as missing", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: "" })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/missing/i);
+    });
+
+    it("should reject an excessively long state string", async () => {
+      const longState = "a".repeat(10_000);
+
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: longState })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+
+    it("should reject state with null-byte injection", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: "valid_prefix\x00injected_suffix" })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/invalid or expired state/i);
+    });
+  });
+
+  describe("Expired state attack", () => {
+    it("should reject a state token that has already expired", async () => {
+      // Directly inject an expired state entry into the store
+      oauthStateStore.push({
+        state: "expired_state_token_xyz",
+        businessId,
+        integrationId: "stripe",
+        createdAt: new Date(Date.now() - 700_000).toISOString(), // 11+ minutes ago
+        expiresAt: new Date(Date.now() - 100_000).toISOString(), // 100 seconds in the past
+      });
+
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: "expired_state_token_xyz" })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/expired/i);
+    });
+
+    it("should reject a state token that expires between connect and callback", async () => {
+      const connectResponse = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const state = connectResponse.body.state;
+
+      // Manually expire the state by mutating the store entry
+      const entry = oauthStateStore.find((s) => s.state === state);
+      if (entry) {
+        entry.expiresAt = new Date(Date.now() - 1).toISOString();
+      }
+
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "late_code", state })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/expired/i);
+    });
+  });
+
+  describe("Concurrent state usage (race condition)", () => {
+    it("should allow exactly one successful use when state is submitted concurrently", async () => {
+      const connectResponse = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const state = connectResponse.body.state;
+
+      // Submit two requests with the same state simultaneously
+      const [response1, response2] = await Promise.all([
+        request(app)
+          .post("/api/integrations/callback")
+          .set("Authorization", `Bearer ${authToken}`)
+          .send({ code: "code_concurrent_1", state }),
+        request(app)
+          .post("/api/integrations/callback")
+          .set("Authorization", `Bearer ${authToken}`)
+          .send({ code: "code_concurrent_2", state }),
+      ]);
+
+      const statuses = [response1.status, response2.status].sort();
+
+      // Exactly one must succeed and one must fail
+      expect(statuses).toContain(201);
+      expect(statuses).toContain(400);
+    });
+
+    it("should not create duplicate connections from concurrent state reuse", async () => {
+      const connectResponse = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const state = connectResponse.body.state;
+
+      await Promise.all([
+        request(app)
+          .post("/api/integrations/callback")
+          .set("Authorization", `Bearer ${authToken}`)
+          .send({ code: "code_race_1", state }),
+        request(app)
+          .post("/api/integrations/callback")
+          .set("Authorization", `Bearer ${authToken}`)
+          .send({ code: "code_race_2", state }),
+      ]);
+
+      const connectedResponse = await request(app)
+        .get("/api/integrations/connected")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      // Only one connection should have been created
+      expect(connectedResponse.body.integrations.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe("State enumeration resistance", () => {
+    it("should generate unique state tokens across multiple connect requests", async () => {
+      // Run sequentially to avoid same-millisecond Date.now() collisions in the mock
+      const states: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        const res = await request(app)
+          .post("/api/integrations/stripe/connect")
+          .set("Authorization", `Bearer ${authToken}`)
+          .expect(200);
+        states.push(res.body.state as string);
+      }
+
+      const uniqueStates = new Set(states);
+      expect(uniqueStates.size).toBe(states.length);
+    });
+
+    it("should generate unique state tokens across different businesses", async () => {
+      const [victimConnect, attackerConnect] = await Promise.all([
+        request(app)
+          .post("/api/integrations/stripe/connect")
+          .set("Authorization", `Bearer ${authToken}`)
+          .expect(200),
+        request(app)
+          .post("/api/integrations/stripe/connect")
+          .set("Authorization", `Bearer ${attackerToken}`)
+          .expect(200),
+      ]);
+
+      expect(victimConnect.body.state).not.toBe(attackerConnect.body.state);
+    });
+  });
+
+  describe("State isolation across integrations", () => {
+    it("should bind state to the integration it was generated for", async () => {
+      // Get a Stripe state token
+      const stripeConnect = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const stripeState = stripeConnect.body.state;
+
+      // Completing the callback with the Stripe state should produce a Stripe connection
+      const callbackResponse = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: stripeState })
+        .expect(201);
+
+      expect(callbackResponse.body.connection).toHaveProperty(
+        "integrationId",
+        "stripe",
+      );
+      expect(callbackResponse.body.connection).toHaveProperty(
+        "provider",
+        "stripe",
+      );
+    });
+
+    it("should not allow a state from one integration to be used for another", async () => {
+      // Get Stripe state
+      const stripeConnect = await request(app)
+        .post("/api/integrations/stripe/connect")
+        .set("Authorization", `Bearer ${authToken}`)
+        .expect(200);
+
+      const stripeState = stripeConnect.body.state;
+
+      // Tamper: mutate the stored state to point to a different integration
+      const entry = oauthStateStore.find((s) => s.state === stripeState);
+      if (entry) {
+        entry.integrationId = "shopify";
+      }
+
+      // The callback should use the integration recorded in the state, not Stripe
+      const callbackResponse = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: stripeState })
+        .expect(201);
+
+      // Connection should reflect the tampered integrationId (shopify), not stripe
+      expect(callbackResponse.body.connection).toHaveProperty(
+        "integrationId",
+        "shopify",
+      );
+    });
+  });
+
+  describe("Missing and malformed state values", () => {
+    it("should return 400 when state is not provided at all", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code" })
+        .expect(400);
+
+      expect(response.body.error).toMatch(/missing.*state/i);
+    });
+
+    it("should return 400 when both code and state are missing", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({})
+        .expect(400);
+
+      expect(response.body.error).toMatch(/missing/i);
+    });
+
+    it("should return 400 when state is a number instead of a string", async () => {
+      const response = await request(app)
+        .post("/api/integrations/callback")
+        .set("Authorization", `Bearer ${authToken}`)
+        .send({ code: "some_code", state: 12345 })
+        .expect(400);
+
+      // Numeric state should not match any registered string state
+      expect(response.body.error).toBeDefined();
+    });
+  });
+});

@@ -1,6 +1,10 @@
 /**
  * Integration tests for attestations API.
- * Uses requireAuth; expects 401 when unauthenticated.
+ * Uses requireAuth (checks x-user-id header); expects 401 when unauthenticated.
+ *
+ * Note: Routes that call resolveBusinessIdForUser() without a businessId query
+ * param will hit the real DB client (not configured in tests) and return 500.
+ * Tests that require an actual database are omitted here; they belong in e2e tests.
  */
 import { describe, it, expect, vi } from 'vitest'
 import request from 'supertest'
@@ -39,11 +43,12 @@ const business = {
 // Existing API integration tests
 // ---------------------------------------------------------------------------
 
-test('GET /api/attestations returns 401 when unauthenticated', async () => {
-  const res = await request(app).get('/api/attestations')
-  assert.strictEqual(res.status, 401)
-  assert.ok(res.body?.error === 'Unauthorized' || res.body?.message)
-})
+describe("GET /api/attestations", () => {
+  it("should return 401 when unauthenticated", async () => {
+    const res = await request(app).get("/api/attestations");
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/unauthorized/i);
+  });
 
   it('returns 401 when listing attestations without authentication', async () => {
     const res = await request(app).get('/api/attestations')

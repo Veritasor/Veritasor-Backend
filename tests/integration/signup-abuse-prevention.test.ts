@@ -23,6 +23,7 @@ import {
   resetSignupRateLimitStore,
   getSignupRateLimitStore,
   createSignupRateLimitStore,
+  getSignupRateLimitStore,
 } from "../../src/utils/signupRateLimiter.js";
 import {
   deleteUser,
@@ -233,6 +234,7 @@ describe("Signup Service - Abuse Prevention", () => {
     });
 
     it("should reject common weak passwords", async () => {
+      // SignupError message is generic; the "too common" reason is in .details
       await expect(
         signup({
           email: "user@example.com",

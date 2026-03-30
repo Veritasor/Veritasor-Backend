@@ -333,6 +333,7 @@ const COMMON_WEAK_PASSWORDS = new Set([
   "password",
   "password1",
   "password123",
+  "password123!",
   "password1234",
   "password12345",
   "123456",

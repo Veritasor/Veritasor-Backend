@@ -64,7 +64,7 @@ describe('optionalAuth middleware - Task 2.1: Token Verification & Consistency',
       id: 'user-456',
       userId: 'user-456',
       email: 'user@test.com',
-    })
+    }))
     expect(mockNext).toHaveBeenCalledOnce()
   })
 
@@ -215,7 +215,7 @@ describe('optionalAuth middleware - Task 2.3: Ensure next() is always called', (
       id: 'user-789',
       userId: 'user-789',
       email: 'success@example.com',
-    })
+    }))
     expect(mockNext).toHaveBeenCalledOnce()
     expect(mockNext).toHaveBeenCalledWith() // No error parameter
   })
