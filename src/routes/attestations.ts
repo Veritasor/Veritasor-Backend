@@ -6,6 +6,7 @@ import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
+import { AppError } from '../types/errors.js';
 
 type RouteAttestation = {
   id: string;
@@ -30,11 +31,6 @@ type SubmitAttestationParams = {
 
 type SubmitAttestationResult = {
   txHash: string;
-};
-
-type HttpError = Error & {
-  status: number;
-  code: string;
 };
 
 type SorobanServiceError = Error & {
@@ -64,11 +60,8 @@ const revokeBodySchema = z.object({
   reason: z.string().trim().min(1).optional(),
 });
 
-function createHttpError(status: number, code: string, message: string): HttpError {
-  const error = new Error(message) as HttpError;
-  error.status = status;
-  error.code = code;
-  return error;
+function createHttpError(status: number, code: string, message: string): AppError {
+  return new AppError(message, status, code);
 }
 
 function asyncHandler(handler: (req: Request, res: Response, next: NextFunction) => Promise<void>) {

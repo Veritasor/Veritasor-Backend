@@ -1,0 +1,6 @@
+
+> veritasor-backend@0.1.0 test
+> vitest run tests/unit/middleware/optionalAuth.test.ts
+
+'vitest' is not recognized as an internal or external command,
+operable program or batch file.
