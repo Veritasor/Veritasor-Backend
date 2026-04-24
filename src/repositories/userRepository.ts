@@ -76,6 +76,10 @@ export async function createUser(
 
 /**
  * Find user by email
+ * 
+ * @expectedIndex `email` (Unique)
+ * @migrationNote Ensure a unique B-tree index exists on the `email` column
+ * to prevent duplicate signups and allow fast exact-match lookups during login.
  */
 export async function findUserByEmail(email: string): Promise<User | null> {
   const userId = emailIndex.get(email)
@@ -87,6 +91,10 @@ export async function findUserByEmail(email: string): Promise<User | null> {
 
 /**
  * Find user by ID
+ * 
+ * @expectedIndex `id` (Primary Key)
+ * @migrationNote The `id` column should be the primary key of the users table
+ * with an implicit unique index for O(1) or O(log N) lookups.
  */
 export async function findUserById(id: string): Promise<User | null> {
   const user = users.get(id)
@@ -161,6 +169,12 @@ export async function setResetToken(
 
 /**
  * Find user by reset token
+ * 
+ * @expectedIndex `resetToken` (or composite `(resetToken, resetTokenExpiry)`)
+ * @migrationNote A standard index on `resetToken` is required. For high-volume 
+ * systems, a composite index on `(resetToken, resetTokenExpiry)` can optimize 
+ * queries that filter out expired tokens. Also, consider partial indexes if 
+ * the database supports them (e.g. `WHERE resetToken IS NOT NULL`).
  */
 export async function findUserByResetToken(
   token: string
