@@ -184,3 +184,50 @@ The following security assumptions are baked into the system and must be validat
 4. **Idempotency Integrity**:
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
+
+## Threat Model Notes
+
+### Auth
+- **Session Hijacking**: Token rotation and short-lived access tokens mitigate session theft. Refresh tokens must be stored securely and invalidated on logout or password reset.
+- **Brute Force**: Login endpoints should be rate-limited to prevent credential stuffing.
+- **Enumeration**: Password reset and signup endpoints should return consistent timings and messages to prevent email enumeration.
+
+### Webhooks
+- **Replay Attacks**: Webhooks must include a timestamp and be signed. The backend must reject webhooks older than a specified tolerance (e.g., 5 minutes) and verify the signature using the shared secret.
+- **Spoofing**: Only accept webhooks that pass signature verification. Do not trust the payload without verification.
+- **Resource Exhaustion**: Process webhooks asynchronously if possible, or ensure fast processing to avoid timeouts and dropped webhooks.
+
+### Integrations
+- **OAuth Token Leakage**: OAuth access and refresh tokens for connected integrations must be encrypted at rest. They should never be exposed in API responses to the frontend.
+- **CSRF during OAuth**: The OAuth state parameter must be securely generated and validated to prevent Cross-Site Request Forgery during the connect flow.
+- **Scope Escalation**: Always request the minimum necessary permissions (principle of least privilege) from third-party integrations.
+
+## Operator Guide
+
+### Database Expected Indexes
+For the application to perform efficiently under load, ensure the following indexes are created in the database during migration:
+- **`users` table**:
+  - `id`: Primary Key (Implicit unique index).
+  - `email`: Unique B-Tree index (Prevents duplicate accounts, fast exact-match lookups).
+  - `resetToken`: B-Tree index or Composite Index `(resetToken, resetTokenExpiry)` (Used to quickly resolve tokens during password resets).
+- **`integrations` table**:
+  - `id`: Primary Key.
+  - `userId`: Index (For listing integrations per user).
+  - `(provider, externalId)`: Unique Composite Index (Prevents duplicate connections for the same external account).
+
+### Environment Variables
+Key environment variables required for operations:
+- `DATABASE_URL`: Connection string to the PostgreSQL/MySQL database. Must include SSL params in production.
+- `JWT_SECRET`: Secret key for signing JSON Web Tokens. Must be randomly generated and securely stored.
+- `WEBHOOK_SECRET`: Shared secret used to verify incoming webhook signatures from providers.
+- `NODE_ENV`: Should be set to `production` in live environments to enforce security defaults and reduce log verbosity.
+
+### Failure Modes & Recovery
+- **Database Connection Loss**: The application will fail health checks. It should be configured to automatically reconnect. Operators should check the DB metrics for lock contentions or resource exhaustion.
+- **Third-Party API Outages**: Interactions with Stripe/Shopify may fail or timeout. The system should implement retries with exponential backoff for transient errors. If an API is down, background jobs (like syncing) will be marked as failed and should be retried automatically once the service is restored.
+- **Full Table Scans / N+1 Queries**: Monitored via APM or slow query logs. If these occur, operators should verify that the expected indexes are present and not corrupted. Missing indexes on `email` or `resetToken` can cause severe lock contention and performance degradation.
+
+### Idempotency
+- **API Requests**: Critical mutation endpoints (e.g., attestation submission, webhooks) must support idempotency keys (e.g., via the `Idempotency-Key` header).
+- **Webhooks**: Webhook processors must check for duplicate events using the provider's event ID before processing to prevent double-counting or unintended state changes.
+- **Database Operations**: `CREATE` and `UPDATE` operations should leverage `ON CONFLICT DO NOTHING` or `ON CONFLICT DO UPDATE` (upsert) strategies where applicable to safely handle concurrent requests or retries without producing duplicate records.
