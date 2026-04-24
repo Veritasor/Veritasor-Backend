@@ -12,3 +12,6 @@ coverage
 # Test artifacts
 .jest-cache
 node_modules
+
+# Local-only files
+PULL_REQUEST.md
