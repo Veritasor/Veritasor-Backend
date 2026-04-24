@@ -30,9 +30,8 @@ describe('Stripe OAuth State Store - Property-Based Tests', () => {
       fc.assert(
         fc.property(
           fc.oneof(
-            fc.hexaString({ minLength: 16, maxLength: 64 }),
-            fc.uuid(),
-            fc.stringOf(fc.char(), { minLength: 16, maxLength: 64 }),
+            fc.string({ minLength: 16, maxLength: 64 }),
+            fc.uuid()
           ),
           fc.integer({ min: 1, max: 60 }),
           (state, minutesInFuture) => {
