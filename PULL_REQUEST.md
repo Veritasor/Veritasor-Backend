@@ -9,11 +9,16 @@ This pull request documents the expected database indexes for the hot queries in
 * **Operator Guide**: Updated `tests/README.md` with detailed sections on Database Expected Indexes, Environment Variables, Failure Modes (e.g., N+1 Queries, API Outages), and Idempotency patterns to aid operators.
 
 ## Representative Test Output
-```bash
+
+Running only the touched test file:
+
+```
 > vitest run tests/unit/repositories/integration.test.ts
 
- ✓ tests/unit/repositories/integration.test.ts (11)
-   ✓ Integration Repository - update function (6)
+ RUN  v4.1.2  C:/Users/Kroman/Veritasor-Backend-1
+
+ ✓ tests/unit/repositories/integration.test.ts (21 tests) 139ms
+   ✓ Integration Repository - update function (7)
    ✓ Integration Repository - deleteById function (5)
    ✓ User Repository - partial update safety (4)
    ✓ User Repository - queries and indexes (5)
@@ -24,7 +29,10 @@ This pull request documents the expected database indexes for the hot queries in
      ✓ returns null for non-existent reset token
 
  Test Files  1 passed (1)
-      Tests  20 passed (20)
+      Tests  21 passed (21)
+   Duration  1.02s
 ```
+
+> **Note:** 9 test files / 23 tests fail in `tests/integration/` and unrelated unit middleware/config suites. These failures are pre-existing on `main` (confirmed by `git stash` baseline: `9 failed | 21 passed (30)` — identical count before and after this change). No regressions were introduced.
 
 Resolves #241
