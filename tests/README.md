@@ -130,6 +130,38 @@ afterAll(async () => {
 - Test OAuth state validation and expiration
 - Ensure tokens and credentials are not leaked in responses
 
+## Error Envelope Snapshot Coverage
+
+`integration/auth.test.ts` includes snapshot tests for the global error handler
+client shape. These tests pin the stable envelope fields:
+
+- `status: "error"`
+- `code` from `src/types/errors.ts`
+- client-safe `message`
+- optional `details` for validation failures, plus legacy `errors` alias for
+  existing validation clients
+- `timestamp` and `requestId`
+
+The snapshots cover direct Zod errors, PostgreSQL constraint and operational
+errors, and non-`Error` throwables. Timestamps and request IDs are normalized in
+the snapshot helper so the tests assert contract shape rather than runtime
+entropy.
+
+## Threat Model Notes
+
+- **Auth**: login, refresh, password reset, and current-user failures must keep
+  credential, token, and user-enumeration details out of responses. Server-side
+  logs should include request method, path, request ID, status code, and typed
+  error metadata for triage without recording request bodies or secrets.
+- **Webhooks**: malformed payloads, signature failures, replay attempts, and
+  provider downtime should return typed, generic envelopes. Logs may include
+  provider name, request ID, and verification outcome, but never webhook secrets,
+  raw signatures, payment tokens, or full provider payloads.
+- **Integrations**: OAuth state mismatches, token exchange failures, and provider
+  API errors should preserve stable client codes while redacting access tokens,
+  refresh tokens, API keys, merchant credentials, and database connection
+  details from both API responses and routine structured logs.
+
 ## End-to-End (E2E) Testing Plan
 
 The E2E tests verify the complete system flow, including the API, backend services, database, and Soroban contract interactions.
