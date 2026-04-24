@@ -5,6 +5,7 @@ import {
   createUser,
   findUserByEmail,
   findUserById,
+  findUserByResetToken,
   setResetToken,
   updateUser,
   updateUserPassword,
