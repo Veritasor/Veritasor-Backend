@@ -119,6 +119,74 @@ afterAll(async () => {
 })
 ```
 
+## Property-Based Tests
+
+Property-based tests use [fast-check](https://github.com/dubzzz/fast-check) to verify invariants across arbitrary inputs rather than fixed examples. They live alongside unit tests under `tests/unit/`.
+
+### Stripe Store — ID Mapping (`store.property.test.ts`)
+
+File: `tests/unit/services/integrations/stripe/store.property.test.ts`
+
+Covers two groups of properties:
+
+**OAuth state store** (`setOAuthState` / `consumeOAuthState`):
+| # | Property |
+|---|---|
+| 1 | Arbitrary valid state strings round-trip correctly |
+| 2 | Tokens stored with a future expiry are consumable |
+| 3 | Boundary expiry values (1 ms, 24 h, past) behave correctly |
+| 4 | Tokens are one-time use — second consume returns `false` |
+| 5 | Re-storing the same token overwrites with the new expiry |
+| 6 | Consuming one token does not affect other tokens |
+
+**Integration ID mapping** (`upsertStripeIntegration` / `getStripeIntegration`):
+| # | Property |
+|---|---|
+| 7 | Round-trip identity — `stripeUserId`, `accessToken`, `businessId` are returned unchanged |
+| 8 | `createdAt` and `updatedAt` are set to the current time on first insert and are equal |
+| 9 | Re-upserting preserves `createdAt`; `updatedAt` is ≥ the original value |
+| 10 | Distinct `stripeUserId` keys are stored and retrieved independently |
+| 11 | An unknown `stripeUserId` returns `undefined` |
+| 12 | Large/boundary field values (long tokens, long business IDs) are not truncated |
+
+**Arbitraries used:**
+- `stripeUserIdArb` — `acct_` + 16 alphanumeric chars (mirrors Stripe's OAuth `stripe_user_id`)
+- `accessTokenArb` — `sk_test_` or `sk_live_` prefix + random hex suffix
+- `businessIdArb` — `biz_` + random hex suffix
+
+**Edge cases exercised:** missing optional fields, type mismatches via `fc.pre` guards, large metadata blobs (Properties 11–12).
+
+## Threat Model
+
+### Authentication
+
+| Threat | Mitigation |
+|---|---|
+| JWT forgery | Tokens are signed with `HS256`; `verifyToken` rejects any token with an invalid signature or missing `sub`/`iat` claims |
+| Token replay after logout | Refresh tokens are single-use; the store deletes them on consumption |
+| Brute-force login | Per-IP rate limiting with progressive backoff (`signupRateLimiter`, shared `rateLimiter`) |
+| Expired access token reuse | `verifyToken` checks `exp`; middleware returns `401 INVALID_TOKEN` on expiry |
+| Password enumeration | `forgotPassword` returns the same response regardless of whether the email exists |
+
+### Webhooks
+
+| Threat | Mitigation |
+|---|---|
+| Forged Razorpay webhook | `verifyRazorpaySignature` computes `HMAC-SHA256(body, RAZORPAY_WEBHOOK_SECRET)` and compares with `X-Razorpay-Signature` using a timing-safe comparison |
+| Replay attack | Razorpay includes an `event.id`; handlers should deduplicate on this ID before processing (not yet enforced — track as open item) |
+| Oversized payload | Express `json()` middleware limits body size; webhook routes should apply a stricter limit (e.g. `express.json({ limit: '64kb' })`) |
+
+### Integrations (Stripe / Shopify / Razorpay)
+
+| Threat | Mitigation |
+|---|---|
+| OAuth CSRF | A 64-char hex `state` token is generated, stored with a TTL, and validated on callback via `consumeOAuthState` (one-time use) |
+| State token enumeration | `isValidStripeOAuthState` rejects any token that is not exactly 64 lowercase hex chars before touching the store |
+| Leaked access tokens in logs | `store.ts` never logs token values; structured logger omits fields matching sensitive key patterns |
+| Stale OAuth state reuse | State tokens expire (configurable TTL); `consumeOAuthState` deletes the token before checking expiry, preventing TOCTOU |
+| Cross-user token access | Integration records are keyed by `stripeUserId` and scoped to `userId` in the repository layer; the callback handler verifies ownership before upsert |
+| Empty / malformed IDs stored | `upsertStripeIntegration` and `setOAuthState` throw `StripeStoreValidationError` on empty or non-string inputs — no silent failures |
+
 ## Best Practices
 
 - Test complete user flows, not just individual endpoints
