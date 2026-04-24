@@ -184,3 +184,20 @@ The following security assumptions are baked into the system and must be validat
 4. **Idempotency Integrity**:
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
+
+## Threat Model Notes
+
+### Auth
+- **Session Hijacking**: Token rotation and short-lived access tokens mitigate session theft. Refresh tokens must be stored securely and invalidated on logout or password reset.
+- **Brute Force**: Login endpoints should be rate-limited to prevent credential stuffing.
+- **Enumeration**: Password reset and signup endpoints should return consistent timings and messages to prevent email enumeration.
+
+### Webhooks
+- **Replay Attacks**: Webhooks must include a timestamp and be signed. The backend must reject webhooks older than a specified tolerance (e.g., 5 minutes) and verify the signature using the shared secret.
+- **Spoofing**: Only accept webhooks that pass signature verification. Do not trust the payload without verification.
+- **Resource Exhaustion**: Process webhooks asynchronously if possible, or ensure fast processing to avoid timeouts and dropped webhooks.
+
+### Integrations
+- **OAuth Token Leakage**: OAuth access and refresh tokens for connected integrations must be encrypted at rest. They should never be exposed in API responses to the frontend.
+- **CSRF during OAuth**: The OAuth state parameter must be securely generated and validated to prevent Cross-Site Request Forgery during the connect flow.
+- **Scope Escalation**: Always request the minimum necessary permissions (principle of least privilege) from third-party integrations.
