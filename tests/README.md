@@ -184,3 +184,46 @@ The following security assumptions are baked into the system and must be validat
 4. **Idempotency Integrity**:
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
+
+## Merkle Service — Complexity Notes & Threat Model
+
+### Algorithmic complexity
+
+| Operation | Time | Space | Notes |
+|-----------|------|-------|-------|
+| `MerkleTree` constructor | O(n) | O(n) | n = leaf count; all levels stored in memory |
+| `MerkleTree.getProof` | O(log n) | O(log n) | Traverses stored levels |
+| `MerkleTree.verifyProof` | O(log n) | O(1) | Re-hashes along the proof path |
+| `generateProof` (standalone) | O(n log n) | O(n) | Rebuilds each level on the fly |
+| `verifyProof` (standalone) | O(log n) | O(1) | |
+
+### Hard limits
+
+| Constant | Value | Rationale |
+|----------|-------|-----------|
+| `MERKLE_MAX_LEAVES` | 2²⁰ (1 048 576) | ~1 M SHA-256 calls to build; linear memory; safe within a single request |
+| `MERKLE_PROOF_MAX_STEPS` | 256 | Caps verification CPU; supports trees up to 2²⁵⁶ leaves |
+
+Both constants are exported from `src/services/merkle/generateProof.ts` and enforced at the top of every entry point before any allocation occurs.
+
+### Threat model
+
+**Deep-tree / large-leaf DoS**
+- *Risk*: A caller supplies millions of leaves, causing OOM or request timeout.
+- *Mitigation*: `MERKLE_MAX_LEAVES` guard throws before any hashing. Callers should also enforce this limit at the HTTP layer (Zod schema on the request body).
+
+**Proof-length amplification**
+- *Risk*: A crafted proof with thousands of steps forces the verifier into a long loop.
+- *Mitigation*: `MERKLE_PROOF_MAX_STEPS = 256` guard in `isProof()` rejects oversized proofs before the loop runs.
+
+**Hash-collision / second-preimage**
+- *Risk*: An attacker forges a leaf that hashes to the same value as a legitimate leaf.
+- *Mitigation*: SHA-256 is used throughout; no known practical collision attacks. Leaf values are hashed before tree construction, so raw input is never compared directly.
+
+**Log injection**
+- *Risk*: Leaf content containing newlines or JSON control characters pollutes structured logs.
+- *Mitigation*: Only metadata (counts, indices, timing) is logged — never raw leaf values. `JSON.stringify` escapes all control characters.
+
+**Timing side-channels**
+- *Risk*: Proof generation time leaks information about tree depth or leaf position.
+- *Mitigation*: Proof depth is `ceil(log₂(n))` regardless of leaf index; timing is logged for observability, not returned to callers.
