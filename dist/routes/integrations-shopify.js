@@ -1,0 +1,48 @@
+import { Router } from 'express';
+import { startConnect } from '../services/integrations/shopify/connect.js';
+import { handleCallback } from '../services/integrations/shopify/callback.js';
+import { requireAuth } from '../middleware/auth.js';
+import disconnectShopify from '../services/integrations/shopify/disconnect.js';
+export const integrationsShopifyRouter = Router();
+/**
+ * POST /api/integrations/shopify/connect
+ * Body: { shop: string } (e.g. "mystore" or "mystore.myshopify.com")
+ * Redirects to Shopify OAuth authorization screen.
+ */
+integrationsShopifyRouter.post('/connect', requireAuth, (req, res) => {
+    const shop = req.body?.shop;
+    if (!shop || typeof shop !== 'string') {
+        res.status(400).json({ error: 'Missing or invalid shop' });
+        return;
+    }
+    try {
+        const { redirectUrl } = startConnect(shop, req.user.userId);
+        res.redirect(302, redirectUrl);
+    }
+    catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : 'Connect failed' });
+    }
+});
+/**
+ * GET /api/integrations/shopify/callback
+ * Query: code, shop, state (from Shopify redirect)
+ * Exchanges code for an access token, persists the installation, and redirects
+ * to the configured success URL or returns JSON.
+ */
+integrationsShopifyRouter.get('/callback', async (req, res) => {
+    const code = req.query.code;
+    const shop = req.query.shop;
+    const state = req.query.state;
+    const result = await handleCallback({ code: code ?? '', shop: shop ?? '', state: state ?? '' });
+    const successRedirect = process.env.SHOPIFY_SUCCESS_REDIRECT;
+    if (result.success && successRedirect) {
+        res.redirect(302, successRedirect);
+        return;
+    }
+    if (result.success) {
+        res.status(200).json({ success: true, shop: result.shop });
+        return;
+    }
+    res.status(400).json({ success: false, error: result.error });
+});
+integrationsShopifyRouter.delete('/', requireAuth, disconnectShopify);

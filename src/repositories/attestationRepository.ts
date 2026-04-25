@@ -17,7 +17,11 @@ import {
   ConflictError,
   ConflictErrorType,
   createConflictError,
+  ReadConsistency,
+  ConsistencyOptions,
 } from '../types/attestation.js';
+import { getAttestation } from '../services/soroban/getAttestation.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Database row type with snake_case column names
@@ -50,6 +54,68 @@ function mapRowToAttestation(row: AttestationRow): Attestation {
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
+}
+
+/**
+ * Verifies a local attestation record against the Soroban chain state.
+ * Handles indexing lag by auto-updating the database status.
+ * Logs critical errors on data integrity violations (Merkle root mismatch).
+ * 
+ * @param client - Database client for potential updates
+ * @param local - The attestation record from the database
+ * @returns The (potentially updated) attestation record
+ */
+async function verifyConsistency(
+  client: DbClient,
+  local: Attestation
+): Promise<Attestation> {
+  try {
+    const chainData = await getAttestation(local.businessId, local.period);
+
+    if (!chainData) {
+      // Chain has no record. If local is 'confirmed', this is a discrepancy.
+      if (local.status === 'confirmed') {
+        logger.warn(
+          { id: local.id, businessId: local.businessId, period: local.period },
+          'Consistency check: Attestation marked as confirmed in DB but not found on-chain'
+        );
+      }
+      return local;
+    }
+
+    // Check for Merkle root mismatch (Integrity violation)
+    if (chainData.merkle_root !== local.merkleRoot) {
+      logger.error(
+        {
+          id: local.id,
+          businessId: local.businessId,
+          period: local.period,
+          localRoot: local.merkleRoot,
+          chainRoot: chainData.merkle_root,
+        },
+        'CRITICAL CONSISTENCY ERROR: Merkle root mismatch between DB and Chain'
+      );
+    }
+
+    // Handle Indexing Lag: If chain says it's there but DB says pending/submitted, update DB.
+    if (local.status === 'pending' || local.status === 'submitted') {
+      logger.info(
+        { id: local.id, businessId: local.businessId, period: local.period },
+        'Consistency check: Auto-correcting indexing lag. Updating status to confirmed'
+      );
+      const updated = await updateStatus(client, local.id, 'confirmed');
+      return updated || local;
+    }
+
+    return local;
+  } catch (error) {
+    logger.error(
+      { err: error, id: local.id, businessId: local.businessId, period: local.period },
+      'Consistency check: Failed to verify with Soroban'
+    );
+    // On network failure or other errors, fall back to local data but log it
+    return local;
+  }
 }
 
 /**
@@ -116,7 +182,8 @@ export async function create(
  */
 export async function getById(
   client: DbClient,
-  id: string
+  id: string,
+  options: ConsistencyOptions = {}
 ): Promise<Attestation | null> {
   const sql = `SELECT * FROM attestations WHERE id = $1`;
   
@@ -126,7 +193,13 @@ export async function getById(
     return null;
   }
   
-  return mapRowToAttestation(result.rows[0]);
+  const attestation = mapRowToAttestation(result.rows[0]);
+
+  if (options.consistency === ReadConsistency.STRONG) {
+    return verifyConsistency(client, attestation);
+  }
+
+  return attestation;
 }
 
 /**
@@ -141,7 +214,8 @@ export async function getById(
 export async function getByBusinessAndPeriod(
   client: DbClient,
   businessId: string,
-  period: string
+  period: string,
+  options: ConsistencyOptions = {}
 ): Promise<Attestation | null> {
   const sql = `SELECT * FROM attestations WHERE business_id = $1 AND period = $2`;
   
@@ -151,7 +225,13 @@ export async function getByBusinessAndPeriod(
     return null;
   }
   
-  return mapRowToAttestation(result.rows[0]);
+  const attestation = mapRowToAttestation(result.rows[0]);
+
+  if (options.consistency === ReadConsistency.STRONG) {
+    return verifyConsistency(client, attestation);
+  }
+
+  return attestation;
 }
 
 /**

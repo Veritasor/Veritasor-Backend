@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
+import { z } from "zod";
 import { errorHandler, notFoundHandler } from "../../src/middleware/errorHandler.js";
 import {
   ValidationError,
@@ -102,6 +103,14 @@ function expectErrorEnvelope(
   expect(response.body).toHaveProperty("message");
   expect(response.body).toHaveProperty("timestamp");
   expect(new Date(response.body.timestamp).getTime()).toBeGreaterThan(0);
+}
+
+function normalizeErrorSnapshot(body: any): any {
+  return {
+    ...body,
+    timestamp: "ISO_TIMESTAMP",
+    requestId: body.requestId ? "REQUEST_ID" : undefined,
+  };
 }
 
 /**
@@ -388,6 +397,45 @@ function createMockAuthRouter() {
     } catch (error) {
       next(error);
     }
+  });
+
+  router.post("/zod-error", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      z.object({
+        email: z.string().email(),
+        password: z.string().min(12),
+      }).parse(req.body);
+
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/postgres-conflict", (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    const error = new Error("duplicate key value violates unique constraint \"users_email_key\"") as Error & {
+      code?: string;
+      detail?: string;
+    };
+    error.name = "DatabaseError";
+    error.code = "23505";
+    error.detail = "Key (email)=(private@example.com) already exists.";
+    next(error);
+  });
+
+  router.post("/postgres-error", (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    const error = new Error("connection terminated unexpectedly") as Error & {
+      code?: string;
+      detail?: string;
+    };
+    error.name = "DatabaseError";
+    error.code = "57P01";
+    error.detail = "connection string contained password=super-secret";
+    next(error);
+  });
+
+  router.post("/unknown-throwable", (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    next({ secret: "do-not-leak" });
   });
 
   return router;
@@ -922,6 +970,111 @@ describe("Error Envelope Standardization", () => {
       .expect(404);
 
     expectErrorEnvelope(response, "NOT_FOUND", 404);
+  });
+
+  describe("snapshot coverage for client error shape", () => {
+    it("should render direct Zod errors as validation envelopes", async () => {
+      const response = await request(app)
+        .post("/api/auth/zod-error")
+        .send({ email: "not-an-email", password: "short" })
+        .expect(400);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "VALIDATION_ERROR",
+          "details": [
+            {
+              "code": "invalid_string",
+              "message": "Invalid email",
+              "path": [
+                "email",
+              ],
+            },
+            {
+              "code": "too_small",
+              "message": "String must contain at least 12 character(s)",
+              "path": [
+                "password",
+              ],
+            },
+          ],
+          "errors": [
+            {
+              "code": "invalid_string",
+              "message": "Invalid email",
+              "path": [
+                "email",
+              ],
+            },
+            {
+              "code": "too_small",
+              "message": "String must contain at least 12 character(s)",
+              "path": [
+                "password",
+              ],
+            },
+          ],
+          "message": "Validation Error",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+    });
+
+    it("should render PostgreSQL constraint errors without leaking row details", async () => {
+      const response = await request(app)
+        .post("/api/auth/postgres-conflict")
+        .send({})
+        .expect(409);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "CONFLICT",
+          "message": "Resource conflict",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+      expect(JSON.stringify(response.body)).not.toMatch(/private@example\\.com|users_email_key/i);
+    });
+
+    it("should render PostgreSQL operational errors as generic database errors", async () => {
+      const response = await request(app)
+        .post("/api/auth/postgres-error")
+        .send({})
+        .expect(500);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "DATABASE_ERROR",
+          "message": "An unexpected error occurred",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+      expect(JSON.stringify(response.body)).not.toMatch(/password=super-secret|connection terminated/i);
+    });
+
+    it("should render unknown throwables as generic internal server errors", async () => {
+      const response = await request(app)
+        .post("/api/auth/unknown-throwable")
+        .send({})
+        .expect(500);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "INTERNAL_SERVER_ERROR",
+          "message": "An unexpected error occurred",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+      expect(JSON.stringify(response.body)).not.toMatch(/do-not-leak/i);
+    });
   });
 });
 
