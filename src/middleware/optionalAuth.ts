@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../utils/jwt.js";
 import { findUserById } from "../repositories/userRepository.js";
+import { logger } from "../utils/logger.js";
 
 // Extend Express Request to include user consistently across auth middlewares
 declare global {
@@ -117,6 +118,10 @@ export async function optionalAuth(
 
     // If no valid token, proceed without auth
     if (!token) {
+      if (authHeader) {
+        // Header was present but token could not be extracted (malformed)
+        logger.warn(JSON.stringify({ event: "optionalAuth.tokenMalformed", reason: "bearer_extraction_failed" }));
+      }
       next();
       return;
     }
@@ -138,6 +143,9 @@ export async function optionalAuth(
         // Token was valid but user was not found (e.g., deleted)
         req.user = undefined;
       }
+    } else {
+      // Token was present but failed verification (expired, wrong issuer/audience, malformed JWT)
+      logger.warn(JSON.stringify({ event: "optionalAuth.tokenInvalid", reason: "jwt_verification_failed" }));
     }
 
     // Always proceed to next handler

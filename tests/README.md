@@ -185,6 +185,68 @@ The following security assumptions are baked into the system and must be validat
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
 
+## Razorpay Connect Initiation — Threat Model
+
+`POST /api/integrations/connect` initiates the OAuth/API-key connect flow for all providers including Razorpay.
+
+### Callback URL (open-redirect prevention)
+
+The `redirectUri` field is validated against `ALLOWED_REDIRECT_ORIGINS` (env-configurable, comma-separated, defaults to `http://localhost:3000`). Only the **origin** is checked — path and query are not wildcarded.
+
+| Scenario | Result |
+|---|---|
+| `redirectUri` omitted | Default `http://localhost:3000/integrations/callback` used |
+| Origin in allowlist | Accepted |
+| Origin not in allowlist | `400` + `integrations.connect.blockedRedirect` warn log |
+| Non-URL string | `400` Zod validation error (before allowlist check) |
+
+Set `ALLOWED_REDIRECT_ORIGINS=https://app.example.com,https://staging.example.com` in production.
+
+### CSRF state token
+
+| Property | Detail |
+|---|---|
+| Generation | `randomBytes(32).toString('hex')` — 256 bits of entropy |
+| Binding | Stored with `userId` — cannot be used by a different user |
+| Lifetime | 10 minutes (`STATE_TTL_MS`) |
+| Single-use | `consumeState()` deletes the entry on first call; replay returns `null` |
+| Storage | In-memory `Map` — replace with Redis/DB for multi-instance deployments |
+
+### Threat model
+
+- **Open redirect**: attacker supplies `redirectUri=https://evil.example.com` to steal the OAuth code. Mitigated by origin allowlist.
+- **CSRF / state fixation**: attacker pre-generates a state and tricks the user into authorizing it. Mitigated by `randomBytes(32)` — state is unguessable.
+- **State replay**: attacker intercepts a valid state and reuses it. Mitigated by single-use deletion in `consumeState()`.
+- **State expiry bypass**: attacker holds a state past its TTL. Mitigated by `expiresAt` check in `consumeState()`.
+- **Cross-user state substitution**: attacker uses their own state for another user's session. Mitigated by `userId` binding stored with each state entry.
+
+## Optional Auth — Threat Model & Observability
+
+`optionalAuth` never returns 401. It silently downgrades to unauthenticated on any token problem. The two distinct failure modes are logged at `WARN` level with structured JSON so they can be distinguished in log aggregators:
+
+| Scenario | `event` field | `verifyToken` called? |
+|---|---|---|
+| No `Authorization` header | *(no log)* | No |
+| Header present, Bearer extraction fails (typo, wrong scheme, missing token) | `optionalAuth.tokenMalformed` | No |
+| Bearer token extracted, JWT verification fails (any reason) | `optionalAuth.tokenInvalid` | Yes → returns `null` |
+
+### JWT failure reasons collapsed into `tokenInvalid`
+
+`verifyToken` catches all `jsonwebtoken` errors and returns `null`. The following all produce the same `tokenInvalid` log — callers cannot distinguish them, which is intentional (no information leakage):
+
+- **Expired** (`TokenExpiredError`) — `exp` claim in the past
+- **Wrong issuer** (`JsonWebTokenError`) — `iss` ≠ `JWT_ISSUER`
+- **Wrong audience** (`JsonWebTokenError`) — `aud` ≠ `JWT_AUDIENCE`
+- **Structurally malformed** (`JsonWebTokenError`) — not a valid JWT string
+- **Wrong secret / tampered signature** (`JsonWebTokenError`)
+
+### Security assumptions
+
+- `optionalAuth` MUST NOT be used on routes that require authentication — use `requireAuth` instead.
+- A `tokenMalformed` log spike may indicate a misconfigured client or a probing attack.
+- A `tokenInvalid` log spike may indicate token replay after expiry or a key-rotation issue.
+- Raw token values are never logged; only metadata (`event`, `reason`).
+
 ## Merkle Service — Complexity Notes & Threat Model
 
 ### Algorithmic complexity
