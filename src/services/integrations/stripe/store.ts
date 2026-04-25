@@ -8,7 +8,20 @@ interface StateRecord {
   expiresAt: number
 }
 
+interface StripeIntegration {
+  stripeUserId: string
+  accessToken: string
+  businessId: string
+  createdAt: number
+  updatedAt: number
+}
+
 const stateStore = new Map<string, StateRecord>()
+/**
+ * In-memory store for Stripe integrations.
+ * Keyed by stripeUserId for idempotent upserts.
+ */
+const integrationStore = new Map<string, StripeIntegration>()
 
 /**
  * Store an OAuth state token with expiration timestamp
@@ -38,6 +51,35 @@ export function consumeOAuthState(state: string): boolean {
   }
   
   return true
+}
+
+/**
+ * Performs an idempotent upsert of a Stripe integration.
+ * If the stripeUserId already exists, it updates the record.
+ * Otherwise, it creates a new one.
+ * * @param integration - The Stripe integration data to store
+ */
+export function upsertStripeIntegration(
+  integration: Omit<StripeIntegration, 'createdAt' | 'updatedAt'>
+): StripeIntegration {
+  const existing = integrationStore.get(integration.stripeUserId)
+  const now = Date.now()
+
+  const record: StripeIntegration = {
+    ...integration,
+    createdAt: existing ? existing.createdAt : now,
+    updatedAt: now,
+  }
+
+  integrationStore.set(integration.stripeUserId, record)
+  return record
+}
+
+/**
+ * Retrieves a Stripe integration by user ID.
+ */
+export function getStripeIntegration(stripeUserId: string): StripeIntegration | undefined {
+  return integrationStore.get(stripeUserId)
 }
 
 /**

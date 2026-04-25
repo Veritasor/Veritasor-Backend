@@ -5,10 +5,6 @@
 import { randomBytes } from 'node:crypto'
 import * as store from './store.js'
 
-const clientId = process.env.SHOPIFY_CLIENT_ID ?? ''
-const scopes = process.env.SHOPIFY_SCOPES ?? 'read_orders'
-const redirectUri = process.env.SHOPIFY_REDIRECT_URI ?? ''
-
 export interface ConnectResult {
   redirectUrl: string
   state: string
@@ -18,16 +14,18 @@ export interface ConnectResult {
  * Start Shopify OAuth: generate state, store it, return redirect URL.
  * Caller should redirect the user to redirectUrl.
  */
-export function startConnect(shop: string): ConnectResult {
+export function startConnect(shop: string, userId: string): ConnectResult {
+  const clientId = process.env.SHOPIFY_CLIENT_ID ?? ''
+  const scopes = process.env.SHOPIFY_SCOPES ?? 'read_orders'
+  const redirectUri = process.env.SHOPIFY_REDIRECT_URI ?? ''
   const state = randomBytes(16).toString('hex')
-  const normalizedShop = shop.trim().toLowerCase().replace(/\.myshopify\.com$/i, '')
-  const shopHost = normalizedShop ? `${normalizedShop}.myshopify.com` : ''
+  const shopHost = store.normalizeShop(shop)
 
-  if (!clientId || !redirectUri || !shopHost) {
+  if (!clientId || !redirectUri || !store.isValidShopHost(shopHost)) {
     throw new Error('Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop')
   }
 
-  store.setOAuthState(state, shopHost)
+  store.setOAuthState(state, shopHost, userId)
 
   const params = new URLSearchParams({
     client_id: clientId,

@@ -94,6 +94,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GenericSuccess'
+        '503':
+          description: Reset email delivery temporarily unavailable; caller may retry later
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /auth/reset-password:
     post:

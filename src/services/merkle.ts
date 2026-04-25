@@ -9,8 +9,11 @@ export class MerkleTree {
 
   constructor(leaves: (string | Buffer)[]) {
     if (!leaves || leaves.length === 0) {
-      this.levels = [];
-      return;
+      throw new Error('MerkleTree requires at least one leaf');
+    }
+
+    if (leaves.some((l) => (typeof l === 'string' && l.length === 0))) {
+      throw new Error('MerkleTree leaf values must be non-empty strings');
     }
 
     // level 0 = hashed leaves

@@ -1,5 +1,11 @@
-import { findUserByEmail, setResetToken } from '../../repositories/userRepository.js'
+import {
+  findUserByEmail,
+  setResetToken,
+  updateUser,
+} from '../../repositories/userRepository.js'
 import { randomBytes } from 'crypto'
+import { sendPasswordResetEmail } from '../email/sendReset.js'
+import { AppError } from '../../types/errors.js'
 
 export interface ForgotPasswordRequest {
   email: string
@@ -11,8 +17,8 @@ export interface ForgotPasswordResponse {
 }
 
 /**
- * Generate a password reset token and send it via email stub
- * In production, this would send an actual email
+ * Generate a password reset token and send it via the email service.
+ * Retryable delivery failures are surfaced so callers can ask the client to retry.
  */
 export async function forgotPassword(
   request: ForgotPasswordRequest
@@ -35,9 +41,29 @@ export async function forgotPassword(
   const resetToken = randomBytes(32).toString('hex')
   await setResetToken(user.id, resetToken, 30) // 30 minute expiry
 
-  // Email service stub - just log the reset link
   const resetLink = `${process.env.RESET_PASSWORD_URL ?? 'http://localhost:3000/reset-password'}?token=${resetToken}`
-  console.log(`[EMAIL STUB] Password reset link for ${email}: ${resetLink}`)
+  const emailResult = await sendPasswordResetEmail(user.email, resetLink)
+
+  if (emailResult.error) {
+    await updateUser(user.id, {
+      resetToken: null,
+      resetTokenExpiry: null,
+    })
+
+    if (emailResult.retryable) {
+      throw new AppError(
+        'Unable to send reset email right now. Please try again shortly.',
+        503,
+        'RESET_EMAIL_RETRYABLE_FAILURE'
+      )
+    }
+
+    throw new AppError(
+      'Password reset email is currently unavailable.',
+      500,
+      'RESET_EMAIL_UNAVAILABLE'
+    )
+  }
 
   // Return reset link only in development
   const isDev = process.env.NODE_ENV !== 'production'

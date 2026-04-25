@@ -84,6 +84,12 @@ paths:
     post:
       summary: Submit attestation
       operationId: submitAttestation
+      description: >
+        Submits an attestation and broadcasts it through the Soroban RPC client.
+        The backend applies a bounded retry policy with per-attempt timeouts for
+        transient Soroban transport failures. Persistent Soroban RPC failures are
+        surfaced as structured 502 responses, while signer misconfiguration is
+        surfaced as 503.
       tags: [attestations]
       security:
         - bearerAuth: []
@@ -131,6 +137,18 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Duplicate attestation for the same business and period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Soroban RPC request failed after the retry policy was exhausted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Soroban signer configuration is unavailable or inconsistent.
           content:
             application/json:
               schema:

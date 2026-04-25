@@ -30,8 +30,8 @@ Key design principles:
 │  │  Public Interface:                                    │  │
 │  │  - listByUserId(userId): Promise<Integration[]>      │  │
 │  │  - create(data): Promise<Integration>                │  │
-│  │  - update(id, data): Promise<Integration | null>     │  │
-│  │  - deleteById(id): Promise<boolean>                  │  │
+│  │  - update(userId, id, data): Promise<Integration | null> │  │
+│  │  - deleteById(userId, id): Promise<boolean>          │  │
 │  └───────────────────────────────────────────────────────┘  │
 │                           │                                  │
 │                           │ SQL Queries                      │
@@ -70,9 +70,11 @@ Key design principles:
 
 3. **Opaque Token and Metadata Storage**: The repository stores `token` and `metadata` fields as opaque objects (`Record<string, any>`) without validation. This design allows different providers to store different credential structures without requiring repository changes. Validation of provider-specific data is the responsibility of the service layer.
 
-4. **Null vs Exception for Not Found**: The `update` method returns `null` when the integration ID doesn't exist, following the pattern established in `integrations.ts`. The `deleteById` method returns a boolean indicating success. This provides callers with clear, type-safe indicators of operation outcomes without requiring try-catch blocks for expected scenarios.
+4. **Null vs Exception for Not Found**: The `update` method returns `null` when the integration ID doesn't exist or is outside the caller's tenant scope, following the pattern established in `integrations.ts`. The `deleteById` method returns a boolean indicating success within the same caller scope. This provides callers with clear, type-safe indicators of operation outcomes without requiring try-catch blocks for expected scenarios.
 
-5. **No Soft Deletes**: The repository performs hard deletes, permanently removing integration records. If soft delete functionality is needed in the future, it can be added by introducing a `deleted_at` timestamp field and modifying the query logic.
+5. **Tenant-Scoped Mutations**: Write operations require the owning `userId` in addition to the integration ID. This prevents cross-tenant updates or deletes when an integration ID is disclosed or guessed and keeps authorization checks enforceable at the repository boundary.
+
+6. **No Soft Deletes**: The repository performs hard deletes, permanently removing integration records. If soft delete functionality is needed in the future, it can be added by introducing a `deleted_at` timestamp field and modifying the query logic.
 
 ## Components and Interfaces
 
@@ -107,8 +109,8 @@ export interface Integration {
 export interface IntegrationRepository {
   listByUserId(userId: string): Promise<Integration[]>
   create(data: CreateIntegrationData): Promise<Integration>
-  update(id: string, data: UpdateIntegrationData): Promise<Integration | null>
-  deleteById(id: string): Promise<boolean>
+  update(userId: string, id: string, data: UpdateIntegrationData): Promise<Integration | null>
+  deleteById(userId: string, id: string): Promise<boolean>
 }
 ```
 
@@ -177,6 +179,7 @@ async function create(data: CreateIntegrationData): Promise<Integration>
 
 ```typescript
 async function update(
+  userId: string,
   id: string,
   data: UpdateIntegrationData
 ): Promise<Integration | null>
@@ -185,12 +188,13 @@ async function update(
 **Purpose**: Update token and/or metadata for an existing integration.
 
 **Parameters:**
+- `userId`: The unique identifier of the owning user/tenant
 - `id`: The unique identifier of the integration to update
 - `data`: Object containing fields to update (token and/or metadata)
 
 **Returns**: 
-- The updated Integration object if the record exists
-- `null` if no record with the given ID exists
+- The updated Integration object if the record exists inside the provided tenant scope
+- `null` if no record with the given ID exists or the record belongs to a different tenant
 
 **Behavior:**
 - Updates only the fields provided in `data`
@@ -204,20 +208,21 @@ async function update(
 #### deleteById
 
 ```typescript
-async function deleteById(id: string): Promise<boolean>
+async function deleteById(userId: string, id: string): Promise<boolean>
 ```
 
 **Purpose**: Permanently remove an integration record.
 
 **Parameters:**
+- `userId`: The unique identifier of the owning user/tenant
 - `id`: The unique identifier of the integration to delete
 
 **Returns**: 
-- `true` if a record was deleted
-- `false` if no record with the given ID exists
+- `true` if a record was deleted inside the provided tenant scope
+- `false` if no record with the given ID exists or the record belongs to a different tenant
 
 **Behavior:**
-- Removes the record from the database
+- Removes the record from the database only when the tenant scope matches
 - Returns success indicator
 
 **Error Conditions:**

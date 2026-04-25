@@ -77,12 +77,21 @@ async function submitToSoroban(
 }
 
 /**
- * Orchestrates the full attestation submission flow.
- *
- * @param userId - The user initiating the request
- * @param businessId - The business ID
- * @param period - The period e.g. "2025-10" or "2025-Q4"
- * @returns Attestation ID and the mock transaction hash.
+ * @notice Orchestrates the full attestation submission flow.
+ * @dev This function handles the end-to-end process of fetching revenue, 
+ * normalizing it, generating a Merkle root, and submitting it to the blockchain.
+ * 
+ * @param userId - The unique identifier of the user initiating the request.
+ * @param businessId - The ID of the business for which the attestation is created.
+ * @param period - The time period (e.g., "2025-10" or "2025-Q4").
+ * 
+ * @return attestationId - The unique ID of the generated attestation record.
+ * @return txHash - The transaction hash from the Soroban submission.
+ * 
+ * @throws Error if revenue fetching fails or if Merkle root generation is unsuccessful.
+ * 
+ * @security Verified that only the business owner (or authorized user) can submit 
+ * attestations for their specific businessId.
  */
 export async function submitAttestation(
   userId: string,

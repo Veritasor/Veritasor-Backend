@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { hash, verify } from "../../../src/utils/password.js";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { hash, verify, hashPassword } from "../../../src/utils/password.js";
+import { resetPassword } from "../../../src/services/auth/resetPassword.js";
+import * as userRepository from "../../../src/repositories/userRepository.js";
+import * as passwordUtils from "../../../src/utils/password.js";
 
 describe("password utility", () => {
   it("should produce different hashes for the same plain text (salt randomness)", async () => {
@@ -7,7 +10,6 @@ describe("password utility", () => {
     const hash1 = await hash(plain);
     const hash2 = await hash(plain);
 
-    // Both should be valid bcrypt hashes but different due to random salt
     expect(hash1).toBeDefined();
     expect(hash2).toBeDefined();
     expect(hash1).not.toBe(hash2);
@@ -33,5 +35,100 @@ describe("password utility", () => {
     const hashed = await hash("test");
     expect(typeof hashed).toBe("string");
     expect(hashed.length).toBeGreaterThan(0);
+  });
+
+  describe("Unicode edge cases", () => {
+    it("should hash and verify passwords with emojis", async () => {
+      const plain = "p@ssw🔒rd😊";
+      const hashed = await hash(plain);
+      expect(await verify(plain, hashed)).toBe(true);
+      expect(await verify("p@ssw🔒rd😢", hashed)).toBe(false);
+    });
+
+    it("should hash and verify passwords with combining characters", async () => {
+      const plain = "cafe9"; // 'café' with single code point
+      const plain2 = "cafe9".normalize("NFC"); // forcibly normalized
+      const hashed = await hash(plain);
+      expect(await verify(plain, hashed)).toBe(true);
+      expect(await verify(plain2, hashed)).toBe(false); // different normalization
+    });
+
+    it("should hash and verify passwords with non-Latin scripts", async () => {
+      const plain = "пароль"; // Russian for 'password'
+      const hashed = await hash(plain);
+      expect(await verify(plain, hashed)).toBe(true);
+      expect(await verify("パスワード", hashed)).toBe(false); // Japanese for 'password'
+    });
+  });
+});
+
+describe("resetPassword service", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("should throw if token or new password is missing", async () => {
+    await expect(
+      resetPassword({ token: "", newPassword: "newpassword123" })
+    ).rejects.toThrow("Token and new password are required");
+
+    await expect(
+      resetPassword({ token: "valid-token", newPassword: "" })
+    ).rejects.toThrow("Token and new password are required");
+  });
+
+  it("should throw if password is shorter than 6 characters", async () => {
+    await expect(
+      resetPassword({ token: "valid-token", newPassword: "123" })
+    ).rejects.toThrow("Password must be at least 6 characters");
+  });
+
+  it("should throw if reset token is invalid or expired", async () => {
+    vi.spyOn(userRepository, "findUserByResetToken").mockResolvedValue(null);
+
+    await expect(
+      resetPassword({ token: "invalid-token", newPassword: "newpassword123" })
+    ).rejects.toThrow("Invalid or expired reset token");
+  });
+
+  it("should reset password successfully for a valid token", async () => {
+    vi.spyOn(userRepository, "findUserByResetToken").mockResolvedValue({
+      id: "user-123",
+    } as any);
+
+    vi.spyOn(passwordUtils, "hashPassword").mockResolvedValue("hashed-password");
+    const updateSpy = vi
+      .spyOn(userRepository, "updateUserPassword")
+      .mockResolvedValue(undefined);
+
+    const result = await resetPassword({
+      token: "valid-token",
+      newPassword: "newpassword123",
+    });
+
+    expect(passwordUtils.hashPassword).toHaveBeenCalledWith("newpassword123");
+    expect(updateSpy).toHaveBeenCalledWith("user-123", "hashed-password");
+    expect(result).toEqual({
+      message: "Password has been reset successfully",
+    });
+  });
+
+  it("should allow a reset token to succeed once and fail when reused", async () => {
+    vi.spyOn(userRepository, "findUserByResetToken")
+      .mockResolvedValueOnce({ id: "user-123" } as any)
+      .mockResolvedValueOnce(null);
+
+    vi.spyOn(passwordUtils, "hashPassword").mockResolvedValue("hashed-password");
+    vi.spyOn(userRepository, "updateUserPassword").mockResolvedValue(undefined);
+
+    await expect(
+      resetPassword({ token: "single-use-token", newPassword: "newpassword123" })
+    ).resolves.toEqual({
+      message: "Password has been reset successfully",
+    });
+
+    await expect(
+      resetPassword({ token: "single-use-token", newPassword: "anotherpassword123" })
+    ).rejects.toThrow("Invalid or expired reset token");
   });
 });

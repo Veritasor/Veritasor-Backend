@@ -21,7 +21,9 @@ import {
 } from "../../src/services/auth/signup.js";
 import {
   resetSignupRateLimitStore,
+  getSignupRateLimitStore,
   createSignupRateLimitStore,
+  getSignupRateLimitStore,
 } from "../../src/utils/signupRateLimiter.js";
 import {
   deleteUser,
@@ -232,13 +234,14 @@ describe("Signup Service - Abuse Prevention", () => {
     });
 
     it("should reject common weak passwords", async () => {
+      // SignupError message is generic; the "too common" reason is in .details
       await expect(
         signup({
           email: "user@example.com",
           password: "Password123!",
           ipAddress: "192.168.1.1",
         }),
-      ).rejects.toThrow("too common");
+      ).rejects.toThrow("Password does not meet security requirements");
     });
   });
 
@@ -584,7 +587,7 @@ describe("Auth Router - Signup Endpoint", () => {
     it("should show limited availability after max attempts", async () => {
       const ip = "192.168.1.51";
 
-      const rateLimiter = createSignupRateLimitStore({ maxAttemptsPerIp: 2 });
+      const rateLimiter = getSignupRateLimitStore({ maxAttemptsPerIp: 2 });
 
       rateLimiter.recordAttempt(ip, "user1@example.com");
       rateLimiter.recordAttempt(ip, "user2@example.com");

@@ -33,6 +33,18 @@ export interface UpdateIntegrationData {
 // In-memory storage using Map data structure
 const integrations: Map<string, Integration> = new Map()
 
+function cloneObject<T extends Record<string, any>>(value: T): T {
+  return structuredClone(value)
+}
+
+function cloneIntegration(integration: Integration): Integration {
+  return {
+    ...integration,
+    token: cloneObject(integration.token),
+    metadata: cloneObject(integration.metadata),
+  }
+}
+
 /**
  * Retrieve all integration records for a specific user
  * 
@@ -44,8 +56,7 @@ export async function listByUserId(userId: string): Promise<Integration[]> {
   
   for (const integration of integrations.values()) {
     if (integration.userId === userId) {
-      // Return copies to prevent external mutations
-      userIntegrations.push({ ...integration })
+      userIntegrations.push(cloneIntegration(integration))
     }
   }
   
@@ -66,58 +77,65 @@ export async function create(data: CreateIntegrationData): Promise<Integration> 
     userId: data.userId,
     provider: data.provider,
     externalId: data.externalId,
-    token: data.token,
-    metadata: data.metadata,
+    token: cloneObject(data.token),
+    metadata: cloneObject(data.metadata),
     createdAt: now,
     updatedAt: now,
   }
   
   integrations.set(integration.id, integration)
   
-  // Return a copy to prevent external mutations
-  return { ...integration }
+  return cloneIntegration(integration)
 }
 
 /**
- * Update token and/or metadata for an existing integration
+ * Update token and/or metadata for an existing integration.
+ * The caller must provide the owning user ID so writes cannot cross tenant boundaries.
  * 
+ * @param userId - The unique identifier of the owning user/tenant
  * @param id - The unique identifier of the integration to update
  * @param data - Object containing fields to update (token and/or metadata)
- * @returns The updated Integration object if the record exists, null otherwise
+ * @returns The updated Integration object if the record exists within the caller scope, null otherwise
  */
 export async function update(
+  userId: string,
   id: string,
   data: UpdateIntegrationData
 ): Promise<Integration | null> {
   const integration = integrations.get(id)
   
-  if (!integration) {
+  if (!integration || integration.userId !== userId) {
     return null
   }
   
   // Update only the fields provided in data
   if (data.token !== undefined) {
-    integration.token = data.token
+    integration.token = cloneObject(data.token)
   }
   
   if (data.metadata !== undefined) {
-    integration.metadata = data.metadata
+    integration.metadata = cloneObject(data.metadata)
   }
   
   // Update the updatedAt timestamp
   integration.updatedAt = new Date().toISOString()
   
-  // Return a copy to prevent external mutations
-  return { ...integration }
+  return cloneIntegration(integration)
 }
 
 /**
- * Permanently remove an integration record
+ * Permanently remove an integration record inside the caller's tenant scope.
  * 
+ * @param userId - The unique identifier of the owning user/tenant
  * @param id - The unique identifier of the integration to delete
- * @returns true if a record was deleted, false if no record with the given ID exists
+ * @returns true if a record was deleted from the caller scope, false otherwise
  */
-export async function deleteById(id: string): Promise<boolean> {
+export async function deleteById(userId: string, id: string): Promise<boolean> {
+  const integration = integrations.get(id)
+  if (!integration || integration.userId !== userId) {
+    return false
+  }
+
   return integrations.delete(id)
 }
 

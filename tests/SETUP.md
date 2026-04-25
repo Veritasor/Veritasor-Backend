@@ -119,3 +119,57 @@ describe('Feature Name', () => {
   })
 })
 ```
+
+## E2E Environment Setup
+
+End-to-End (E2E) tests require a full system environment. Follow these steps to set up the necessary components:
+
+### Prerequisites
+- **Docker**: Used for running PostgreSQL and Stellar Quickstart.
+- **Stellar Quickstart**: Provides a local Soroban RPC node.
+
+### Local Infrastructure Setup
+
+1. **Start PostgreSQL**:
+   ```bash
+   docker run --name veritasor-db -e POSTGRES_PASSWORD=password -p 5432:5432 -d postgres
+   ```
+
+2. **Start Stellar Quickstart (Soroban)**:
+   ```bash
+   docker run --rm -it \
+     -p 8000:8000 \
+     --name stellar \
+     stellar/quickstart:latest \
+     --testnet \
+     --rpc
+   ```
+
+### Configuration
+
+Create a `.env.test.e2e` file with the following:
+
+```env
+DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
+SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc
+SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+SOROBAN_CONTRACT_ID=C... (your test contract)
+```
+
+### Running E2E Tests
+
+Run the E2E-specific suite:
+
+```bash
+# Set env and run vitest
+DOTENV_CONFIG_PATH=.env.test.e2e npm run test:e2e
+```
+
+## Continuous Integration (CI)
+
+Our CI pipeline enforces a **95% test coverage** threshold for all new contributions. Ensure that your PR includes both integration and E2E tests to meet this requirement.
+
+Run coverage locally before pushing:
+```bash
+npm run test:coverage
+```

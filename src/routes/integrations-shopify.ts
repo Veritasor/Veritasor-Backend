@@ -11,14 +11,14 @@ export const integrationsShopifyRouter = Router()
  * Body: { shop: string } (e.g. "mystore" or "mystore.myshopify.com")
  * Redirects to Shopify OAuth authorization screen.
  */
-integrationsShopifyRouter.post('/connect', (req: Request, res: Response) => {
+integrationsShopifyRouter.post('/connect', requireAuth, (req: Request, res: Response) => {
   const shop = req.body?.shop
   if (!shop || typeof shop !== 'string') {
     res.status(400).json({ error: 'Missing or invalid shop' })
     return
   }
   try {
-    const { redirectUrl } = startConnect(shop)
+    const { redirectUrl } = startConnect(shop, req.user!.userId)
     res.redirect(302, redirectUrl)
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Connect failed' })
@@ -28,7 +28,8 @@ integrationsShopifyRouter.post('/connect', (req: Request, res: Response) => {
 /**
  * GET /api/integrations/shopify/callback
  * Query: code, shop, state (from Shopify redirect)
- * Exchanges code for access token and stores it; redirects to success URL or returns JSON error.
+ * Exchanges code for an access token, persists the installation, and redirects
+ * to the configured success URL or returns JSON.
  */
 integrationsShopifyRouter.get('/callback', async (req: Request, res: Response) => {
   const code = req.query.code as string | undefined
