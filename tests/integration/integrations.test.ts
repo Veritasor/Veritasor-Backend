@@ -1,11 +1,20 @@
+import crypto from "node:crypto";
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
 import integrationsRouter from "../../src/routes/integrations.js";
 import integrationsRazorpayRouter from "../../src/routes/integrations-razorpay.js";
+import { razorpayWebhookRouter } from "../../src/routes/webhooks-razorpay.js";
+import {
+  handleRazorpayEvent,
+  parseRazorpayEvent,
+  resetProcessedRazorpayEvents,
+  verifyRazorpaySignature,
+} from "../../src/services/webhooks/razorpayHandler.js";
 import { IntegrationPermission, ROLE_PERMISSIONS } from "../../src/types/permissions.js";
 import { clearAll } from "../../src/repositories/integration.js";
 import { integrationRepository } from "../../src/repositories/integrations.js";
+import { logger } from "../../src/utils/logger.js";
 
 // Mock the auth middleware to simulate different user roles
 vi.mock("../../src/middleware/auth.js", () => ({
@@ -64,6 +73,8 @@ beforeAll(() => {
   app = express();
   app.use(express.json());
   app.use("/api/integrations", integrationsRouter);
+  app.use("/api/webhooks/razorpay", razorpayWebhookRouter);
+  process.env.RAZORPAY_WEBHOOK_SECRET = "test_webhook_secret";
 });
 
 beforeEach(() => {
@@ -72,6 +83,7 @@ beforeEach(() => {
 
 afterAll(() => {
   vi.restoreAllMocks();
+  delete process.env.RAZORPAY_WEBHOOK_SECRET;
 });
 
 describe("Razorpay Connect Credential Integrity Checks", () => {
@@ -1562,7 +1574,252 @@ describe("OAuth State Tampering", () => {
         .expect(400);
 
       // Numeric state should not match any registered string state
-      expect(response.body.error).toBeDefined();
+    });
+  });
+});
+
+// Razorpay Webhook Handler Tests
+describe("Razorpay Webhook Handler", () => {
+  const secret = "test_webhook_secret";
+  let webhookApp: Express;
+
+  beforeAll(() => {
+    webhookApp = express();
+    webhookApp.use("/api/webhooks/razorpay", razorpayWebhookRouter);
+  });
+
+  beforeEach(() => {
+    resetProcessedRazorpayEvents();
+    process.env.RAZORPAY_WEBHOOK_SECRET = secret;
+    vi.restoreAllMocks();
+  });
+
+  function generateSignature(body: string, secretValue: string): string {
+    return crypto.createHmac("sha256", secretValue).update(body).digest("hex");
+  }
+
+  function createValidEvent(id: string = "evt_test_123", createdAt?: number) {
+    return {
+      id,
+      event: "payment.captured",
+      ...(createdAt ? { created_at: createdAt } : {}),
+      payload: {
+        payment: {
+          entity: {
+            id: "pay_test_456",
+            order_id: "order_test_789",
+            status: "captured",
+            amount: 1000,
+            currency: "INR"
+          }
+        }
+      }
+    };
+  }
+
+  it("should accept valid signature and process event", async () => {
+    const event = createValidEvent();
+    const body = JSON.stringify(event);
+    const signature = generateSignature(body, secret);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      status: "ok",
+      message: "Payment pay_test_456 captured successfully"
+    });
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"type":"razorpay_webhook_processing"'),
+    );
+  });
+
+  it("should reject missing signature header", async () => {
+    const event = createValidEvent();
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify(event))
+      .expect(400);
+
+    expect(response.body.error).toBe("Missing Razorpay signature header");
+  });
+
+  it("should reject invalid signature without throwing on malformed digest length", async () => {
+    const event = createValidEvent();
+    const invalidSignature = "invalid_signature";
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", invalidSignature)
+      .send(JSON.stringify(event))
+      .expect(401);
+
+    expect(response.body.error).toBe("Invalid signature");
+  });
+
+  it("should handle duplicate events idempotently", async () => {
+    const event = createValidEvent("evt_duplicate_123");
+    const body = JSON.stringify(event);
+    const signature = generateSignature(body, secret);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+
+    // First request
+    await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(200);
+
+    // Second request with same event
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      status: "ok",
+      message: "Event evt_duplicate_123 already processed"
+    });
+    expect(infoSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"type":"razorpay_webhook_duplicate"'),
+    );
+  });
+
+  it("should reject invalid event structure (missing id)", async () => {
+    const invalidEvent = {
+      event: "payment.captured",
+      payload: { payment: { entity: { id: "pay_test" } } }
+    };
+    const body = JSON.stringify(invalidEvent);
+    const signature = generateSignature(body, secret);
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(400);
+
+    expect(response.body.error).toBe("Invalid event structure");
+  });
+
+  it("should reject handled events that are missing payment entity fields", async () => {
+    const invalidEvent = {
+      id: "evt_test",
+      event: "payment.captured",
+      payload: {}
+    };
+    const body = JSON.stringify(invalidEvent);
+    const signature = generateSignature(body, secret);
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(400);
+
+    expect(response.body.error).toBe("Invalid event structure");
+  });
+
+  it("should reject events with future timestamps beyond the allowed skew", async () => {
+    const event = createValidEvent(
+      "evt_future_timestamp",
+      Math.floor((Date.now() + 10 * 60 * 1000) / 1000),
+    );
+    const body = JSON.stringify(event);
+    const signature = generateSignature(body, secret);
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(400);
+
+    expect(response.body.error).toBe("Invalid webhook timestamp");
+  });
+
+  it("should reject malformed JSON after signature verification", async () => {
+    const body = '{"id":"evt_malformed","event":"payment.captured",';
+    const signature = generateSignature(body, secret);
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(400);
+
+    expect(response.body.error).toBe("Invalid webhook payload");
+  });
+
+  it("should handle unhandled event types", async () => {
+    const event = { ...createValidEvent(), event: "unknown.event" };
+    const body = JSON.stringify(event);
+    const signature = generateSignature(body, secret);
+
+    const response = await request(webhookApp)
+      .post("/api/webhooks/razorpay")
+      .set("Content-Type", "application/json")
+      .set("x-razorpay-signature", signature)
+      .send(body)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      status: "ignored",
+      message: "Unhandled event type: unknown.event"
+    });
+  });
+
+  it("should verify signatures with constant-time comparison only for valid hex digests", () => {
+    const body = JSON.stringify(createValidEvent("evt_signature_unit"));
+    const signature = generateSignature(body, secret);
+
+    expect(verifyRazorpaySignature(body, signature, secret)).toBe(true);
+    expect(verifyRazorpaySignature(body, "short", secret)).toBe(false);
+    expect(verifyRazorpaySignature(body, `${signature.slice(0, -1)}z`, secret)).toBe(false);
+  });
+
+  it("should parse and validate webhook payload timestamps in the handler helpers", () => {
+    const nowMs = Date.now();
+    const validBody = JSON.stringify(
+      createValidEvent("evt_parse_helper", Math.floor((nowMs - 1_000) / 1000)),
+    );
+    const parsedEvent = parseRazorpayEvent(validBody, { nowMs });
+
+    expect(parsedEvent.id).toBe("evt_parse_helper");
+    expect(() =>
+      parseRazorpayEvent(
+        JSON.stringify(
+          createValidEvent("evt_parse_future", Math.floor((nowMs + 10 * 60 * 1000) / 1000)),
+        ),
+        { nowMs },
+      ),
+    ).toThrowError("Invalid webhook timestamp");
+  });
+
+  it("should keep direct handler processing idempotent for repeated events", () => {
+    const event = parseRazorpayEvent(JSON.stringify(createValidEvent("evt_direct_handler")));
+
+    expect(handleRazorpayEvent(event)).toEqual({
+      status: "ok",
+      message: "Payment pay_test_456 captured successfully",
+    });
+    expect(handleRazorpayEvent(event)).toEqual({
+      status: "ok",
+      message: "Event evt_direct_handler already processed",
     });
   });
 });

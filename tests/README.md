@@ -24,9 +24,9 @@ npm run test:coverage
 ## Test Setup
 
 Tests use:
-- **Jest** - Test framework
+- **Vitest** - Test framework
 - **Supertest** - HTTP assertion library for testing Express apps
-- **ts-jest** - TypeScript support for Jest
+- **Vite Node runtime** - TypeScript execution for tests
 
 ## Auth Tests
 
@@ -48,7 +48,42 @@ The integrations integration tests cover:
 3. **Stripe OAuth Connect** - Initiate and complete OAuth flow
 4. **Disconnect Integration** - Remove integration connection
 5. **Authentication** - Protected routes return 401 when unauthenticated
-6. **Security** - Sensitive tokens not exposed in responses
+6. **Razorpay Webhook Handler** - Signature validation and idempotent processing for Razorpay webhooks
+
+### Razorpay Webhook Tests
+
+The Razorpay webhook tests ensure secure and reliable webhook processing:
+
+- **Signature Validation**: Verifies HMAC signatures using `RAZORPAY_WEBHOOK_SECRET`
+- **Idempotency**: Prevents duplicate processing of the same event ID and returns a stable `200 OK`
+- **Event Structure Validation**: Ensures required fields (`id`, `event`, and handled payment entity fields) are present
+- **Timestamp Validation**: Rejects malformed or implausibly future-dated webhook payloads
+- **Error Handling**: Proper error responses for missing signatures, malformed JSON, and invalid requests
+- **Logging**: Structured logs for observability
+
+**Environment Variables:**
+- `RAZORPAY_WEBHOOK_SECRET`: Secret key for webhook signature verification (required for webhook processing)
+
+**Failure Modes:**
+- Missing signature header: 400 Bad Request
+- Invalid signature: 401 Unauthorized
+- Invalid JSON payload: 400 Bad Request
+- Invalid event structure: 400 Bad Request
+- Invalid webhook timestamp: 400 Bad Request
+- Duplicate events: 200 OK (idempotent, logged as already processed)
+- Unhandled events: 200 OK (logged as ignored)
+- Missing webhook secret: 500 Internal Server Error
+
+**Operator Notes:**
+- Signature verification must use the exact raw request body. Mount the Razorpay webhook route before any global JSON parser, or use a parser strategy that preserves the original bytes.
+- Idempotency is currently in-memory for test and development flows. Production deployment should back this with a shared store so duplicate deliveries across processes stay deduplicated.
+
+**Threat Model Notes:**
+- **Auth**: Integration endpoints must continue to reject unauthenticated callers and avoid leaking provider secrets or tokens in API responses and logs.
+- **Webhooks**: Treat the webhook as untrusted until signature verification passes. Reject malformed signatures without throwing, reject malformed payloads explicitly, and log rejection reasons with structured fields for incident review.
+- **Replay / Duplicate Delivery**: Duplicate webhook deliveries are expected and must be idempotent. Future-dated payloads are rejected to reduce clock-skew abuse and obvious replay tampering.
+- **Integrations**: Verification failures from upstream providers should not leak provider-side error detail back to clients. Tests should keep asserting sanitized responses and single-write behavior.
+- **Security**: Sensitive tokens must not be exposed in responses.
 
 ### Mock Implementation
 
