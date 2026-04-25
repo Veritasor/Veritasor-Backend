@@ -185,6 +185,33 @@ The following security assumptions are baked into the system and must be validat
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
 
+## Optional Auth — Threat Model & Observability
+
+`optionalAuth` never returns 401. It silently downgrades to unauthenticated on any token problem. The two distinct failure modes are logged at `WARN` level with structured JSON so they can be distinguished in log aggregators:
+
+| Scenario | `event` field | `verifyToken` called? |
+|---|---|---|
+| No `Authorization` header | *(no log)* | No |
+| Header present, Bearer extraction fails (typo, wrong scheme, missing token) | `optionalAuth.tokenMalformed` | No |
+| Bearer token extracted, JWT verification fails (any reason) | `optionalAuth.tokenInvalid` | Yes → returns `null` |
+
+### JWT failure reasons collapsed into `tokenInvalid`
+
+`verifyToken` catches all `jsonwebtoken` errors and returns `null`. The following all produce the same `tokenInvalid` log — callers cannot distinguish them, which is intentional (no information leakage):
+
+- **Expired** (`TokenExpiredError`) — `exp` claim in the past
+- **Wrong issuer** (`JsonWebTokenError`) — `iss` ≠ `JWT_ISSUER`
+- **Wrong audience** (`JsonWebTokenError`) — `aud` ≠ `JWT_AUDIENCE`
+- **Structurally malformed** (`JsonWebTokenError`) — not a valid JWT string
+- **Wrong secret / tampered signature** (`JsonWebTokenError`)
+
+### Security assumptions
+
+- `optionalAuth` MUST NOT be used on routes that require authentication — use `requireAuth` instead.
+- A `tokenMalformed` log spike may indicate a misconfigured client or a probing attack.
+- A `tokenInvalid` log spike may indicate token replay after expiry or a key-rotation issue.
+- Raw token values are never logged; only metadata (`event`, `reason`).
+
 ## Merkle Service — Complexity Notes & Threat Model
 
 ### Algorithmic complexity

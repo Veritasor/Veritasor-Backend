@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express'
 import { optionalAuth, extractBearerToken } from '../../../src/middleware/optionalAuth.js'
 import * as jwt from '../../../src/utils/jwt.js'
 import * as userRepository from '../../../src/repositories/userRepository.js'
+import { logger } from '../../../src/utils/logger.js'
 
 describe('extractBearerToken - Helper Function', () => {
   describe('Valid Bearer tokens', () => {
@@ -697,5 +698,104 @@ describe('optionalAuth middleware - Malformed Bearer Prefix Handling', () => {
         email: 'test@example.com',
       })
     })
+  })
+})
+
+describe('optionalAuth middleware - JWT failure modes (expired / wrong-issuer / wrong-audience / malformed)', () => {
+  let mockRequest: Partial<Request>
+  let mockResponse: Partial<Response>
+  let mockNext: NextFunction
+  let warnSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    mockRequest = { headers: {} }
+    mockResponse = {}
+    mockNext = vi.fn()
+    vi.clearAllMocks()
+    // Spy on logger.warn to assert structured log events
+    warnSpy = vi.spyOn(logger, 'warn')
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(null)
+  })
+
+  it('treats an expired token as unauthenticated and logs tokenInvalid', async () => {
+    // verifyToken returns null for expired tokens (TokenExpiredError caught internally)
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
+    mockRequest.headers = { authorization: 'Bearer expired.jwt.token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockRequest.user).toBeUndefined()
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockNext).toHaveBeenCalledWith()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('optionalAuth.tokenInvalid')
+    )
+  })
+
+  it('treats a wrong-issuer token as unauthenticated and logs tokenInvalid', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
+    mockRequest.headers = { authorization: 'Bearer wrong.issuer.token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockRequest.user).toBeUndefined()
+    expect(mockNext).toHaveBeenCalledWith()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('optionalAuth.tokenInvalid')
+    )
+  })
+
+  it('treats a wrong-audience token as unauthenticated and logs tokenInvalid', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
+    mockRequest.headers = { authorization: 'Bearer wrong.audience.token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockRequest.user).toBeUndefined()
+    expect(mockNext).toHaveBeenCalledWith()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('optionalAuth.tokenInvalid')
+    )
+  })
+
+  it('treats a structurally malformed JWT string as unauthenticated and logs tokenInvalid', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
+    mockRequest.headers = { authorization: 'Bearer not-a-jwt-at-all' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockRequest.user).toBeUndefined()
+    expect(mockNext).toHaveBeenCalledWith()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('optionalAuth.tokenInvalid')
+    )
+  })
+
+  it('logs tokenMalformed (not tokenInvalid) when the Authorization header is present but Bearer extraction fails', async () => {
+    const verifySpy = vi.spyOn(jwt, 'verifyToken')
+    mockRequest.headers = { authorization: 'Bearr typo-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockRequest.user).toBeUndefined()
+    expect(mockNext).toHaveBeenCalledWith()
+    // verifyToken must NOT be called — extraction failed before reaching it
+    expect(verifySpy).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('optionalAuth.tokenMalformed')
+    )
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('optionalAuth.tokenInvalid')
+    )
+  })
+
+  it('emits no warn log when no Authorization header is present', async () => {
+    mockRequest.headers = {}
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockRequest.user).toBeUndefined()
+    expect(mockNext).toHaveBeenCalledWith()
+    expect(warnSpy).not.toHaveBeenCalled()
   })
 })
