@@ -4,6 +4,7 @@ import { buildTree, getRoot } from '../../../src/services/merkle/buildTree'
 import {
   generateProof,
   verifyProof,
+  MERKLE_MAX_LEAVES,
   MERKLE_PROOF_MAX_STEPS,
 } from '../../../src/services/merkle/generateProof'
 
@@ -36,6 +37,33 @@ describe('MerkleTree', () => {
     }
     const bad = MerkleTree.verifyProof(leaves[index], badProof, root, index)
     expect(bad).toBe(false)
+  })
+
+  // --- perf / guard cases ---
+
+  it('rejects leaf count above MERKLE_MAX_LEAVES', () => {
+    // Build a stub array that reports a length above the cap without allocating 1M strings.
+    const oversized = { length: MERKLE_MAX_LEAVES + 1, [Symbol.iterator]: [][Symbol.iterator] } as unknown as string[]
+    // MerkleTree checks leaves.length before iterating, so this is safe.
+    expect(() => new MerkleTree(oversized as any)).toThrow(/MERKLE_MAX_LEAVES/)
+  })
+
+  it('completes a 1 000-leaf tree within 500 ms', () => {
+    const big = Array.from({ length: 1_000 }, (_, i) => `leaf-${i}`)
+    const t0 = performance.now()
+    const tree = new MerkleTree(big)
+    const elapsed = performance.now() - t0
+    expect(tree.getRoot()).toHaveLength(64)
+    expect(elapsed).toBeLessThan(500)
+  })
+
+  it('proof depth is O(log n) for a 1 024-leaf tree', () => {
+    const n = 1_024
+    const big = Array.from({ length: n }, (_, i) => `leaf-${i}`)
+    const tree = new MerkleTree(big)
+    const proof = tree.getProof(0)
+    // log2(1024) = 10
+    expect(proof.length).toBe(Math.ceil(Math.log2(n)))
   })
 })
 
@@ -89,5 +117,37 @@ describe('MerkleProofGuards', () => {
 
   it('throws on non-integer leaf index', () => {
     expect(() => generateProof(leaves, 1.5)).toThrow(/integer/i)
+  })
+
+  // --- perf / guard cases ---
+
+  it('rejects leaf count above MERKLE_MAX_LEAVES', () => {
+    const oversized = new Array(MERKLE_MAX_LEAVES + 1).fill('x')
+    expect(() => generateProof(oversized, 0)).toThrow(/MERKLE_MAX_LEAVES/)
+  })
+
+  it('generateProof completes a 1 000-leaf proof within 500 ms', () => {
+    const big = Array.from({ length: 1_000 }, (_, i) => `leaf-${i}`)
+    const t0 = performance.now()
+    const proof = generateProof(big, 0)
+    const elapsed = performance.now() - t0
+    expect(proof.length).toBeGreaterThan(0)
+    expect(elapsed).toBeLessThan(500)
+  })
+
+  it('proof depth is O(log n) for 1 024 leaves', () => {
+    const n = 1_024
+    const big = Array.from({ length: n }, (_, i) => `leaf-${i}`)
+    const proof = generateProof(big, 0)
+    expect(proof.length).toBe(Math.ceil(Math.log2(n)))
+  })
+
+  it('verifyProof round-trips a large proof correctly', () => {
+    const big = Array.from({ length: 256 }, (_, i) => `leaf-${i}`)
+    const bigTree = buildTree(big)
+    const bigRoot = getRoot(bigTree, big.length)
+    const index = 127
+    const proof = generateProof(big, index)
+    expect(verifyProof(big[index], proof, bigRoot)).toBe(true)
   })
 })
