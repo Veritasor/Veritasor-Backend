@@ -129,3 +129,22 @@ afterAll(async () => {
 - Verify security requirements (401, 403, etc.)
 - Test OAuth state validation and expiration
 - Ensure tokens and credentials are not leaked in responses
+
+## JWT Rotation Notes
+
+- Refresh tokens are treated as single-use in rotation flows.
+- Reuse of a consumed refresh token must be handled as a theft signal and rejected.
+- Clock skew is tolerated by verifier configuration; tests should use expirations beyond skew tolerance.
+
+Environment variables used by JWT tests and auth flows:
+- `JWT_SECRET` (access token secret)
+- `JWT_REFRESH_SECRET` (refresh token secret)
+- `JWT_CLOCK_SKEW_SECONDS` (default `10`)
+- `JWT_ACCESS_TOKEN_TTL` (default `3600`)
+- `JWT_REFRESH_TOKEN_TTL` (default `604800`)
+
+## Threat Model Notes
+
+- Auth: stale or replayed refresh tokens are denied; rotation requires explicit reuse handling and logging.
+- Webhooks: verify provider signatures and reject replays using idempotency keys or event IDs.
+- Integrations: protect OAuth state, never log raw provider tokens, and enforce least-privilege scopes.
