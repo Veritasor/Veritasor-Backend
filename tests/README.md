@@ -188,116 +188,99 @@ The following security assumptions are baked into the system and must be validat
 
 ---
 
-## Startup Dependency Readiness Checks
+## Stripe Webhook Replay Resistance
 
 ### Overview
 
-`src/startup/readiness.ts` validates all critical dependencies **before the HTTP listener opens**. If any required check fails, `startServer()` throws and the process exits with code 1  the app never accepts traffic in a broken state.
+The Stripe webhook endpoint (`POST /api/integrations/stripe/webhook`) is hardened against replay attacks and duplicate event delivery. The implementation lives in `src/services/integrations/stripe/callback.ts` and is exercised by two test suites.
 
-### Checks performed (in order)
+### Security Properties
 
-| # | Dependency | Condition | Environments |
-|---|---|---|---|
-| 1 | `config/jwt` | `JWT_SECRET` present and  32 chars | production |
-| 1 | `config/jwt` | `JWT_SECRET` present and  8 chars | non-production |
-| 2 | `config/soroban` | `SOROBAN_CONTRACT_ID` present | production only |
-| 3 | `config/stripe` | `STRIPE_WEBHOOK_SECRET` present | production only |
-| 4 | `database` | `SELECT 1` probe succeeds within 2.5 s | when `DATABASE_URL` is set |
+| Property | Mechanism |
+|---|---|
+| Replay resistance | Timestamp tolerance window (default 300 s). Events older than 5 min or more than 5 min in the future are rejected with **401**. |
+| Signature verification | HMAC-SHA256 over `<timestamp>.<rawBody>` using `STRIPE_WEBHOOK_SECRET`. Constant-time comparison prevents timing attacks. |
+| Duplicate suppression | In-process `SeenEventStore` keyed by Stripe event ID with 2 TTL eviction. Duplicates return **200** (so Stripe stops retrying) with `{ note: "duplicate" }`. |
+| No secret leakage | Rejection responses never echo the signing secret, raw body, or upstream error details. |
+| Clock-skew guard | Future timestamps beyond the tolerance window are also rejected. |
 
 ### Required Environment Variables
 
-| Variable | Required in | Reason |
-|---|---|---|
-| `JWT_SECRET` | All environments ( 8 chars); production ( 32 chars) | Auth token signing |
-| `SOROBAN_CONTRACT_ID` | Production | Attestation contract address  omitting it would silently no-op submissions |
-| `STRIPE_WEBHOOK_SECRET` | Production | Webhook signature verification  omitting it allows unsigned events |
-| `DATABASE_URL` | Optional | When set, a connectivity probe is run at startup |
+| Variable | Description |
+|---|---|
+| `STRIPE_WEBHOOK_SECRET` | Webhook endpoint signing secret from the Stripe dashboard (`whsec_...`). Missing  **500**. |
+| `STRIPE_CLIENT_ID` | OAuth app client ID (for connect/callback flow). |
+| `STRIPE_CLIENT_SECRET` | OAuth app client secret (for token exchange). |
+| `STRIPE_REDIRECT_URI` | OAuth redirect URI registered in Stripe dashboard. |
+| `STRIPE_SUCCESS_REDIRECT` | (Optional) URL to redirect to after successful OAuth connect. |
 
 ### Failure Modes
 
-| Scenario | Failure reason emitted |
-|---|---|
-| `JWT_SECRET` not set | `JWT_SECRET is not set` |
-| `JWT_SECRET` too short (dev) | `JWT_SECRET must be at least 8 characters (got N)` |
-| `JWT_SECRET` too short (prod) | `JWT_SECRET must be at least 32 characters in production (got N)` |
-| `SOROBAN_CONTRACT_ID` missing in prod | `SOROBAN_CONTRACT_ID must be set in production` |
-| `STRIPE_WEBHOOK_SECRET` missing in prod | `STRIPE_WEBHOOK_SECRET must be set in production` |
-| DB connection refused | `database connection failed: connect ECONNREFUSED [redacted]` |
-| DB probe timeout | `database probe timed out after 2500 ms` |
+| Scenario | HTTP Status | Body |
+|---|---|---|
+| Missing `Stripe-Signature` header | 401 | `{ error: "Webhook signature verification failed" }` |
+| Wrong signing secret | 401 | `{ error: "Webhook signature verification failed" }` |
+| Timestamp too old (> 300 s) | 401 | `{ error: "Webhook signature verification failed" }` |
+| Timestamp too far in future | 401 | `{ error: "Webhook signature verification failed" }` |
+| Duplicate event ID | 200 | `{ received: true, note: "duplicate" }` |
+| Invalid JSON payload | 400 | `{ error: "Invalid webhook payload" }` |
+| `STRIPE_WEBHOOK_SECRET` not set | 500 | `{ error: "Webhook endpoint not configured" }` |
+| Valid event | 200 | `{ received: true }` |
 
-### Security Notes
+### Multi-Instance Deployments
 
-- Failure reasons **never** include secret values or raw connection strings.
-- The `sanitiseDbError()` helper strips `postgres://...` and `postgresql://...` substrings from error messages before they are written to logs or the readiness report.
-- The database probe is read-only (`SELECT 1`) with a 2.5-second bounded timeout.
-- All readiness decisions are emitted as a single structured JSON log entry (`event: startup_readiness_report`) for log aggregation.
+The `SeenEventStore` is in-process only. For horizontally-scaled deployments, replace it with a shared Redis SET:
 
-### Observability
-
-Every boot emits a structured log entry:
-
-```json
-{
-  "event": "startup_readiness_report",
-  "ready": false,
-  "env": "production",
-  "checks": [
-    { "dependency": "config/jwt", "ready": true },
-    { "dependency": "config/soroban", "ready": false, "reason": "SOROBAN_CONTRACT_ID must be set in production" },
-    { "dependency": "config/stripe", "ready": true },
-    { "dependency": "database", "ready": true }
-  ]
-}
+```typescript
+// In src/services/integrations/stripe/callback.ts
+// Replace seenEventStore with a Redis-backed implementation:
+export const seenEventStore = new RedisSeenEventStore(redisClient, {
+  ttlSeconds: STRIPE_WEBHOOK_TOLERANCE_SECONDS * 2,
+})
 ```
-
-Passing checks omit the `reason` field to keep happy-path logs terse.
 
 ### Test Coverage
 
-Tests live in `tests/integration/auth.test.ts` under the **"Startup dependency readiness checks"** describe block  22 tests:
+**Unit tests** (`tests/unit/services/integrations/stripe/callback.test.ts`)  70 tests:
+- `SeenEventStore`: TTL eviction, duplicate detection, clear
+- `isValidStripeOAuthState`: format validation (length, charset, case)
+- `parseStripeSignatureHeader`: well-formed, multiple sigs, malformed, edge cases
+- `computeStripeSignature`: determinism, sensitivity to each input
+- `verifyStripeWebhook`: happy path, missing/wrong signature, replay (stale + future timestamps), duplicate event IDs, out-of-order delivery, invalid payload, no secret leakage
+- `handleCallback`: OAuth state validation, CSRF protection, network errors, idempotent upsert, no token leakage
 
-**config/jwt** (6 tests)
-- Passes in development with  8-char secret
-- Fails in development with < 8-char secret (explicit reason with length)
-- Fails in production when `JWT_SECRET` is missing
-- Fails in production when `JWT_SECRET` is < 32 chars (explicit reason with length)
-- Passes in production with exactly 32-char secret
-- Fails when `JWT_SECRET` is whitespace-only
+**Integration tests** (`tests/integration/stripe-webhook.test.ts`)  15 tests:
+- End-to-end HTTP response codes through the Express route layer
+- Replay attack via stale timestamp  401
+- Replay attack via re-signed fresh timestamp with same event ID  200 duplicate
+- Duplicate delivery  200 with `note: "duplicate"`
+- Missing/wrong secret  401
+- Body tampering  401
+- Missing `STRIPE_WEBHOOK_SECRET` env var  500
+- No secret leakage in error responses
 
-**config/soroban** (3 tests)
-- Passes in non-production regardless of `SOROBAN_CONTRACT_ID`
-- Fails in production when `SOROBAN_CONTRACT_ID` is missing
-- Passes in production when `SOROBAN_CONTRACT_ID` is set
+### Running the Tests
 
-**config/stripe** (3 tests)
-- Passes in non-production regardless of `STRIPE_WEBHOOK_SECRET`
-- Fails in production when `STRIPE_WEBHOOK_SECRET` is missing
-- Passes in production when `STRIPE_WEBHOOK_SECRET` is set
+```bash
+# Unit tests only
+node node_modules/vitest/vitest.mjs run tests/unit/services/integrations/stripe/callback.test.ts
 
-**database** (3 tests)
-- Skips check when `DATABASE_URL` is not configured
-- Marks down with explicit reason when connection is refused
-- Marks down with timeout reason when probe times out
+# Integration tests only
+node node_modules/vitest/vitest.mjs run tests/integration/stripe-webhook.test.ts
 
-**report structure** (5 tests)
-- All four dependency names present in checks array
-- `ready: false` when any single check fails
-- `ready: true` when all checks pass in development
-- Passing checks have no `reason` field
-- Failure reasons never contain the raw `DATABASE_URL` value
+# Both together
+node node_modules/vitest/vitest.mjs run tests/unit/services/integrations/stripe/callback.test.ts tests/integration/stripe-webhook.test.ts
 
-**sanitiseDbError** (4 tests)
-- Redacts `postgres://` connection strings
-- Redacts `postgresql://` connection strings
-- Leaves messages without a connection string unchanged
-- Case-insensitive scheme matching
+# Full suite
+node node_modules/vitest/vitest.mjs run
+```
 
 ### Threat Model Notes
 
-**Auth (`config/jwt`):** A short or absent `JWT_SECRET` in production would allow tokens to be forged with a brute-forced or guessed secret. The 32-character minimum provides  128 bits of entropy for HMAC-SHA256.
+**Replay attacks**: Stripe signs each webhook with a timestamp embedded in the `Stripe-Signature` header. The 300-second tolerance window means an attacker who captures a valid webhook has at most 5 minutes to replay it before the timestamp check rejects it. The `SeenEventStore` provides a second layer: even within the window, a replayed event ID is rejected.
 
-**Webhooks (`config/stripe`):** Without `STRIPE_WEBHOOK_SECRET`, the webhook endpoint cannot verify HMAC signatures and would accept any unsigned POST as a legitimate Stripe event. Blocking startup prevents this misconfiguration from reaching production.
+**Timing attacks**: All signature comparisons use `crypto.timingSafeEqual`. The expected signature is always computed before comparison, so the comparison time is constant regardless of how many bytes match.
 
-**Integrations (`config/soroban`):** An empty `SOROBAN_CONTRACT_ID` would cause attestation submissions to target no contract, silently discarding on-chain writes. Blocking startup surfaces this before any merchant data is processed.
+**CSRF on OAuth callback**: The `state` parameter is a 32-byte cryptographically random hex token stored server-side with a 10-minute expiry. It is consumed on first use, preventing replay of the OAuth callback URL.
 
-**Database:** The startup probe uses a read-only `SELECT 1` query with a 2.5-second timeout. It does not expose the connection string in logs or error messages  credentials are redacted by `sanitiseDbError()`.
+**Secret confidentiality**: No signing secret, access token, or refresh token is ever included in log output or API responses. Structured log entries record only machine-readable event names and non-sensitive metadata (event ID, event type, HTTP status codes).
