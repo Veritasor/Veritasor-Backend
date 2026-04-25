@@ -184,3 +184,25 @@ The following security assumptions are baked into the system and must be validat
 4. **Idempotency Integrity**:
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
+    - *Strict Semantics*: If the same `Idempotency-Key` is used with a different request body, the system MUST return `422 Unprocessable Entity` to prevent accidental collisions or replay attacks with modified data.
+
+## Idempotency Middleware
+
+The API implements a robust idempotency layer for POST requests.
+
+### Usage
+Clients should include a unique `Idempotency-Key` header (UUID recommended) in their POST requests.
+
+### Semantics
+1. **First Request**: The backend processes the request and caches the successful response (2xx).
+2. **Identical Duplicate**: If a second request arrives with the same key and **identical body**, the cached response is returned immediately.
+3. **Modified Duplicate**: If a second request arrives with the same key but a **different body**, the API returns `422 Unprocessable Entity` with code `IDEMPOTENCY_KEY_COLLISION`.
+4. **TTL**: Cached responses are stored for 24 hours (default).
+
+### Testing Idempotency
+Unit tests for the idempotency logic are located in `tests/unit/middleware/idempotency.test.ts`. 
+
+To run them:
+```bash
+npx vitest tests/unit/middleware/idempotency.test.ts
+```
