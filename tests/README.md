@@ -2,6 +2,28 @@
 
 This directory contains integration tests for the Veritasor Backend API.
 
+## Validate Middleware Tests
+
+Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and `validateQuery`.
+
+**Error mapping:** `ZodError.issues` are mapped to `{ path: (string|number)[], message: string }` before being stored in `ValidationError.details`. The error envelope exposes both `details` and `errors` (same array) so existing callers using `details` are unaffected.
+
+**Edge cases covered:**
+
+| Case | Description |
+|------|-------------|
+| Extra keys (default) | Stripped silently — Zod strips unknown keys by default |
+| Extra keys (strict) | Rejected with `VALIDATION_ERROR` when schema uses `.strict()` |
+| Coercion | `z.coerce.number()` converts query string `"42"` → `42` |
+| Coercion failure | Non-numeric string produces a `count` path error |
+| Union types | First matching branch accepted; no error |
+| Nested path shape | Each error has `path: string[]` and `message: string` |
+
+**Threat model notes:**
+- Validation errors never expose internal schema structure beyond field paths and human-readable messages.
+- Extra keys are stripped before the request body reaches route handlers, preventing prototype pollution via unexpected fields.
+- Coercion is explicit (`z.coerce.*`) — implicit coercion is not used, avoiding silent type confusion.
+
 ## Redaction Policy
 
 `requestLogger` never writes sensitive values to logs. The policy is enforced via two exported sets in `src/middleware/requestLogger.ts`:
