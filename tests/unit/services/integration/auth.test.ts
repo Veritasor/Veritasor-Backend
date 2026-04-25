@@ -5,7 +5,22 @@
  * and starts successfully when all required vars are present.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { sendPasswordResetEmail } from "../../../src/services/email/sendReset.js";
+import { getMailTransport } from "../../../src/services/email/client.js";
+
+vi.mock("../../../src/services/email/client.js", () => ({
+  getMailTransport: vi.fn(),
+}));
+
+vi.mock("../../../src/utils/logger.js", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
 
 // Store original env so we can restore it after each test
 const ORIGINAL_ENV = { ...process.env };
@@ -123,5 +138,74 @@ describe("Config Validation", () => {
       expect(err.message).toContain("JWT_SECRET");
       expect(err.message).toContain("RAZORPAY_KEY_ID");
     }
+  });
+});
+
+describe("Email Service: sendPasswordResetEmail", () => {
+  const mockSendMail = vi.fn();
+  
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getMailTransport).mockReturnValue({
+      sendMail: mockSendMail,
+    } as any);
+  });
+
+  it("should send email with valid inputs", async () => {
+    mockSendMail.mockResolvedValueOnce({});
+    const result = await sendPasswordResetEmail(
+      "user@example.com",
+      "https://veritasor.com/reset?token=123"
+    );
+    
+    expect(result.error).toBeUndefined();
+    expect(mockSendMail).toHaveBeenCalledWith(expect.objectContaining({
+      to: "user@example.com",
+      subject: "Reset your password",
+    }));
+  });
+
+  it("should reject invalid email format", async () => {
+    const result = await sendPasswordResetEmail(
+      "not-an-email",
+      "https://veritasor.com/reset"
+    );
+    
+    expect(result.error?.message).toBe("Invalid input");
+    expect(mockSendMail).not.toHaveBeenCalled();
+  });
+
+  it("should reject unsafe URL protocols", async () => {
+    const result = await sendPasswordResetEmail(
+      "user@example.com",
+      "javascript:alert(1)"
+    );
+    
+    expect(result.error?.message).toBe("Invalid input");
+    expect(mockSendMail).not.toHaveBeenCalled();
+  });
+
+  it("should escape HTML characters in the reset link", async () => {
+    mockSendMail.mockResolvedValueOnce({});
+    const maliciousLink = "https://example.com/reset?token=123&<b>tag</b>";
+    
+    await sendPasswordResetEmail("user@example.com", maliciousLink);
+    
+    const callArgs = mockSendMail.mock.calls[0][0];
+    expect(callArgs.html).toContain("https://example.com/reset?token=123&amp;&lt;b&gt;tag&lt;/b&gt;");
+    expect(callArgs.html).not.toContain("<b>");
+  });
+
+  it("should return retryable: true on temporary SMTP errors", async () => {
+    const timeoutError: any = new Error("Connection timeout");
+    timeoutError.code = "ETIMEDOUT";
+    mockSendMail.mockRejectedValueOnce(timeoutError);
+    
+    const result = await sendPasswordResetEmail(
+      "user@example.com",
+      "https://example.com/reset"
+    );
+    
+    expect(result.retryable).toBe(true);
   });
 });
