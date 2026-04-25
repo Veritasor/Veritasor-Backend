@@ -481,3 +481,12 @@ export async function remove(
   
   return result.rows.length > 0;
 }
+
+/**
+ * Lists all attestations (admin only)
+ */
+export async function listAll(client: DbClient): Promise<Attestation[]> {
+  const sql = `SELECT * FROM attestations ORDER BY created_at DESC`;
+  const result = await client.query<AttestationRow>(sql);
+  return result.rows.map(mapRowToAttestation);
+}

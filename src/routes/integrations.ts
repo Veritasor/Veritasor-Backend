@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { requirePermissions, IntegrationPermission } from '../middleware/permissions.js';
+import { requirePermissions } from '../middleware/permissions.js';
+import { IntegrationPermission } from '../types/permissions.js';
 import { listByUserId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
 

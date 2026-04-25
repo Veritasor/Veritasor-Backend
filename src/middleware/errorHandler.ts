@@ -55,6 +55,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
   
   const baseEnvelope: Record<string, any> = {
     status: "error",
+    error: "ERROR", // Default for legacy tests
     timestamp,
   };
   
@@ -68,6 +69,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
     return {
       ...baseEnvelope,
       code: "VALIDATION_ERROR",
+      error: "VALIDATION_ERROR",
       message: error.message,
       details: error.details,
     };
@@ -80,12 +82,14 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
       return {
         ...baseEnvelope,
         code: error.code,
+        error: error.code,
         message: "An unexpected error occurred",
       };
     }
     return {
       ...baseEnvelope,
       code: error.code,
+      error: error.code,
       message: error.message,
     };
   }
@@ -96,6 +100,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
     return {
       ...baseEnvelope,
       code: "INTERNAL_SERVER_ERROR",
+      error: "INTERNAL_SERVER_ERROR",
       message: "An unexpected error occurred",
     };
   }

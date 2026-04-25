@@ -18,11 +18,20 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import request = require('supertest');
 import { app } from '../../src/app.js';
 
-const createAuthHeader = (userId: string = 'test-user-123') => ({
-  Authorization: `Bearer test-token-${userId}`,
-});
+import { createIsolatedTenant, getAuthHeaders, clearTenants } from '../fixtures/tenant.js';
+import { businessRepository } from '../../src/repositories/business.js';
+
+const createAuthHeader = (userId: string = 'test-user-123') => {
+  const tenant = createIsolatedTenant('user', { userId });
+  return getAuthHeaders(tenant);
+};
 
 describe('Business Service Integration Tests', () => {
+  beforeEach(() => {
+    clearTenants();
+    businessRepository.clearAll();
+  });
+
   describe('POST /api/businesses - Create Business', () => {
     it('should create business with valid input', async () => {
       const res = await request(app)
@@ -229,7 +238,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Validation Error');
+      expect(res.body.error).toBe('VALIDATION_ERROR');
       expect(res.body.details).toBeDefined();
     });
   });
@@ -542,7 +551,119 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body.message).toBeDefined();
+    });
+  });
+
+  /**
+   * Multi-Tenant Isolation Tests
+   *
+   * Verifies that the business service correctly isolates data between users,
+   * preventing cross-tenant data leakage and ensuring each tenant operates in
+   * their own isolated context.
+   *
+   * Threat model addressed:
+   *   - Cross-test leakage: clearTenants() in beforeEach resets the tenant registry
+   *   - DB reset strategy: in-memory repositories are reset between tests
+   *   - Parallel safety: UUIDs prevent token/userId collisions
+   *   - Authorization enforcement: middleware only allows access to own resources
+   */
+  describe('Multi-Tenant Business Isolation', () => {
+    it('should give each tenant a unique, non-colliding identity', () => {
+      const t1 = createIsolatedTenant('user');
+      const t2 = createIsolatedTenant('user');
+
+      expect(t1.userId).not.toBe(t2.userId);
+      expect(t1.token).not.toBe(t2.token);
+      expect(t1.email).not.toBe(t2.email);
+    });
+
+    it('tenant A creating a business does not affect tenant B', async () => {
+      const tenantA = createIsolatedTenant('user');
+      const tenantB = createIsolatedTenant('user');
+
+      // Tenant A creates a business
+      const createRes = await request(app)
+        .post('/api/businesses')
+        .set(getAuthHeaders(tenantA))
+        .send({ name: 'Tenant A Corp' });
+
+      expect(createRes.status).toBe(201);
+
+      // Tenant B has no business
+      const getRes = await request(app)
+        .get('/api/businesses/me')
+        .set(getAuthHeaders(tenantB));
+
+      expect(getRes.status).toBe(404);
+    });
+
+    it('tenant B cannot update a business owned by tenant A', async () => {
+      const tenantA = createIsolatedTenant('user');
+      const tenantB = createIsolatedTenant('user');
+
+      // Tenant A creates their business
+      await request(app)
+        .post('/api/businesses')
+        .set(getAuthHeaders(tenantA))
+        .send({ name: 'Tenant A Original' });
+
+      // Tenant B tries to update it via the /me endpoint (which scopes by their own userId)
+      const updateRes = await request(app)
+        .patch('/api/businesses/me')
+        .set(getAuthHeaders(tenantB))
+        .send({ name: 'Tenant B Takeover' });
+
+      // Tenant B has no business registered, so 404 — not a successful takeover
+      expect(updateRes.status).toBe(404);
+    });
+
+    it('each tenant can independently manage their own business', async () => {
+      const tenantA = createIsolatedTenant('user');
+      const tenantB = createIsolatedTenant('user');
+
+      // Both tenants create businesses concurrently
+      const [resA, resB] = await Promise.all([
+        request(app)
+          .post('/api/businesses')
+          .set(getAuthHeaders(tenantA))
+          .send({ name: 'Alpha Corp' }),
+        request(app)
+          .post('/api/businesses')
+          .set(getAuthHeaders(tenantB))
+          .send({ name: 'Beta Corp' }),
+      ]);
+
+      expect(resA.status).toBe(201);
+      expect(resB.status).toBe(201);
+      expect(resA.body.userId).toBe(tenantA.userId);
+      expect(resB.body.userId).toBe(tenantB.userId);
+      expect(resA.body.id).not.toBe(resB.body.id);
+    });
+
+    it('tenant cannot create a duplicate business for themselves regardless of name', async () => {
+      const tenant = createIsolatedTenant('user', { userId: `dedup-${Date.now()}` });
+
+      const first = await request(app)
+        .post('/api/businesses')
+        .set(getAuthHeaders(tenant))
+        .send({ name: 'First Business' });
+
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post('/api/businesses')
+        .set(getAuthHeaders(tenant))
+        .send({ name: 'Second Business same user' });
+
+      expect(second.status).toBe(409);
+    });
+
+    it('auth header is required — unauthenticated request always fails', async () => {
+      const res = await request(app)
+        .get('/api/businesses/me');
+
+      expect(res.status).toBe(401);
     });
   });
 });

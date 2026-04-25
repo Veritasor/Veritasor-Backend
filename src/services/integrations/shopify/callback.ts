@@ -6,6 +6,7 @@
 
 import * as integrationRepository from '../../../repositories/integration.js'
 import * as store from './store.js'
+import { computeShopifyHmac, timingSafeEqual } from './utils.js'
 
 export interface CallbackParams {
   code: string
@@ -25,9 +26,12 @@ export interface CallbackResult {
  * Handle OAuth callback: consume state, exchange code for token, persist via integration store.
  */
 export async function handleCallback(params: CallbackParams): Promise<CallbackResult> {
-  const { code, shop, state } = params
-  const clientId = process.env.SHOPIFY_CLIENT_ID ?? ''
-  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? ''
+  const clientId = process.env.SHOPIFY_CLIENT_ID
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET
+
+  if (!clientId || !clientSecret) {
+    return { success: false, error: 'Shopify app not configured' }
+  }
 
   const { code, shop, state, hmac } = params
 
@@ -42,7 +46,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
   }
 
   // HMAC validation using constant-time comparison
-  const computed = computeShopifyHmac(currentClientSecret, params)
+  const computed = computeShopifyHmac(clientSecret, params)
   const computedBuf = Buffer.from(computed)
   const providedBuf = Buffer.from(hmac)
   if (
@@ -52,10 +56,10 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
     return { success: false, error: 'Invalid HMAC signature' }
   }
 
-  const shopHost = store.normalizeShop(shop)
-  if (!store.isValidShopHost(shopHost)) {
+  if (!store.isValidShopHost(shop)) {
     return { success: false, error: 'Invalid shop hostname' }
   }
+  const shopHost = store.normalizeShop(shop)
 
   const stateRecord = store.consumeOAuthState(state)
   if (!stateRecord || stateRecord.shop !== shopHost) {
@@ -64,8 +68,8 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   const tokenUrl = `https://${shopHost}/admin/oauth/access_token`
   const body = new URLSearchParams({
-    client_id: currentClientId,
-    client_secret: currentClientSecret,
+    client_id: clientId,
+    client_secret: clientSecret,
     code,
   })
 

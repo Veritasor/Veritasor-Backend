@@ -8,6 +8,7 @@ export interface User {
   updatedAt: Date
   resetToken?: string
   resetTokenExpiry?: Date
+  role: 'user' | 'admin' | 'business_admin'
 }
 
 /**
@@ -19,6 +20,7 @@ export interface UpdateUserData {
   passwordHash?: string
   resetToken?: string | null
   resetTokenExpiry?: Date | null
+  role?: 'user' | 'admin' | 'business_admin'
 }
 
 // In-memory user storage
@@ -68,6 +70,7 @@ export async function createUser(
     passwordHash,
     createdAt: now,
     updatedAt: now,
+    role: 'user', // Default role
   }
 
   const stored = saveUser(user)
@@ -128,6 +131,7 @@ export async function updateUser(
         : updates.resetTokenExpiry !== undefined
         ? updates.resetTokenExpiry
         : current.resetTokenExpiry,
+    role: updates.role ?? current.role,
     updatedAt: new Date(),
   }
 
@@ -202,6 +206,13 @@ export async function deleteUser(userId: string): Promise<boolean> {
   users.delete(userId)
 
   return true
+}
+
+/**
+ * Get all users (admin only)
+ */
+export async function getAllUsers(): Promise<User[]> {
+  return Array.from(users.values()).map(cloneUser)
 }
 
 /**

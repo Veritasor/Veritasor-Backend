@@ -126,6 +126,7 @@ export async function createBusiness(req: Request, res: Response) {
     // @dev Create business in repository
     const business = await businessRepository.create({
       userId,
+      email: req.user?.email || '',
       name: normalizedData.name!,
       industry: normalizedData.industry,
       description: normalizedData.description,

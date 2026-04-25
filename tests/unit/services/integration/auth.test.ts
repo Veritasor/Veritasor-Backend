@@ -16,7 +16,7 @@ const ORIGINAL_ENV = { ...process.env };
  */
 async function loadConfig() {
   // Clear module cache to force re-execution of validateConfig()
-  const mod = await import("../../src/config/index.js?" + Date.now());
+  const mod = await import("../../../../src/config/index.js?" + Date.now());
   return mod.config;
 }
 
