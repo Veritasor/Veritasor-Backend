@@ -185,6 +185,41 @@ The following security assumptions are baked into the system and must be validat
     - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
     - *Validation*: Check local database for single record entry after multiple POST bursts.
 
+## Razorpay Connect Initiation — Threat Model
+
+`POST /api/integrations/connect` initiates the OAuth/API-key connect flow for all providers including Razorpay.
+
+### Callback URL (open-redirect prevention)
+
+The `redirectUri` field is validated against `ALLOWED_REDIRECT_ORIGINS` (env-configurable, comma-separated, defaults to `http://localhost:3000`). Only the **origin** is checked — path and query are not wildcarded.
+
+| Scenario | Result |
+|---|---|
+| `redirectUri` omitted | Default `http://localhost:3000/integrations/callback` used |
+| Origin in allowlist | Accepted |
+| Origin not in allowlist | `400` + `integrations.connect.blockedRedirect` warn log |
+| Non-URL string | `400` Zod validation error (before allowlist check) |
+
+Set `ALLOWED_REDIRECT_ORIGINS=https://app.example.com,https://staging.example.com` in production.
+
+### CSRF state token
+
+| Property | Detail |
+|---|---|
+| Generation | `randomBytes(32).toString('hex')` — 256 bits of entropy |
+| Binding | Stored with `userId` — cannot be used by a different user |
+| Lifetime | 10 minutes (`STATE_TTL_MS`) |
+| Single-use | `consumeState()` deletes the entry on first call; replay returns `null` |
+| Storage | In-memory `Map` — replace with Redis/DB for multi-instance deployments |
+
+### Threat model
+
+- **Open redirect**: attacker supplies `redirectUri=https://evil.example.com` to steal the OAuth code. Mitigated by origin allowlist.
+- **CSRF / state fixation**: attacker pre-generates a state and tricks the user into authorizing it. Mitigated by `randomBytes(32)` — state is unguessable.
+- **State replay**: attacker intercepts a valid state and reuses it. Mitigated by single-use deletion in `consumeState()`.
+- **State expiry bypass**: attacker holds a state past its TTL. Mitigated by `expiresAt` check in `consumeState()`.
+- **Cross-user state substitution**: attacker uses their own state for another user's session. Mitigated by `userId` binding stored with each state entry.
+
 ## Optional Auth — Threat Model & Observability
 
 `optionalAuth` never returns 401. It silently downgrades to unauthenticated on any token problem. The two distinct failure modes are logged at `WARN` level with structured JSON so they can be distinguished in log aggregators:
