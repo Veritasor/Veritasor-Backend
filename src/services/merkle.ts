@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import { logger } from '../utils/logger.js';
+import { MERKLE_MAX_LEAVES } from './merkle/generateProof.js';
 
 function sha(data: Buffer): Buffer {
   return crypto.createHash('sha256').update(data).digest();
@@ -12,9 +14,17 @@ export class MerkleTree {
       throw new Error('MerkleTree requires at least one leaf');
     }
 
+    if (leaves.length > MERKLE_MAX_LEAVES) {
+      throw new Error(
+        `leaf count ${leaves.length} exceeds MERKLE_MAX_LEAVES (${MERKLE_MAX_LEAVES})`
+      );
+    }
+
     if (leaves.some((l) => (typeof l === 'string' && l.length === 0))) {
       throw new Error('MerkleTree leaf values must be non-empty strings');
     }
+
+    const t0 = performance.now();
 
     // level 0 = hashed leaves
     this.levels[0] = leaves.map((l) =>
@@ -33,6 +43,16 @@ export class MerkleTree {
       this.levels.unshift(next); // put at front so root becomes levels[0]
       level = next;
     }
+
+    const durationMs = performance.now() - t0;
+    logger.info(
+      JSON.stringify({
+        event: 'merkle.buildTree',
+        leafCount: leaves.length,
+        levels: this.levels.length,
+        durationMs: Math.round(durationMs * 100) / 100,
+      })
+    );
   }
 
   getRoot(): string {

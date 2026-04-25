@@ -1,4 +1,5 @@
 import { hash } from "./buildTree.js";
+import { logger } from "../../utils/logger.js";
 
 /**
  * Proof format:
@@ -18,6 +19,16 @@ export type Proof = ProofStep[];
  * @dev 256 steps supports trees up to 2^256 leaves and caps CPU work.
  */
 export const MERKLE_PROOF_MAX_STEPS = 256;
+
+/**
+ * @notice Hard cap on leaf count for proof generation.
+ * @dev A tree of 2^20 (~1 M) leaves requires ~20 hashes per proof and
+ *      ~1 M SHA-256 calls to build — well within a single request budget.
+ *      Beyond this the memory footprint (storing all levels) grows linearly
+ *      and risks OOM / request-timeout under concurrent load.
+ *      Complexity: O(n) time and space to build, O(log n) per proof.
+ */
+export const MERKLE_MAX_LEAVES = 1_048_576; // 2^20
 
 const HASH_HEX_REGEX = /^[0-9a-f]{64}$/i;
 
@@ -66,10 +77,16 @@ export function isProof(value: unknown): value is Proof {
 /**
  * @notice Generate a Merkle proof for a leaf at a specific index.
  * @dev Guards validate inputs to prevent malformed proofs.
+ *      Complexity: O(n log n) time, O(n) space (n = leaves.length).
  */
 export function generateProof(leaves: string[], leafIndex: number): Proof {
   if (!Array.isArray(leaves) || leaves.length === 0) {
     throw new Error("leaves must be a non-empty array of strings");
+  }
+  if (leaves.length > MERKLE_MAX_LEAVES) {
+    throw new Error(
+      `leaf count ${leaves.length} exceeds MERKLE_MAX_LEAVES (${MERKLE_MAX_LEAVES})`
+    );
   }
   for (const leaf of leaves) {
     if (typeof leaf !== "string") {
@@ -82,6 +99,8 @@ export function generateProof(leaves: string[], leafIndex: number): Proof {
   if (leafIndex < 0 || leafIndex >= leaves.length) {
     throw new Error("leafIndex out of range");
   }
+
+  const t0 = performance.now();
 
   let level: string[] = leaves.map((l) => hash(l));
   let index = leafIndex;
@@ -107,6 +126,17 @@ export function generateProof(leaves: string[], leafIndex: number): Proof {
     level = next;
     index = Math.floor(index / 2);
   }
+
+  const durationMs = performance.now() - t0;
+  logger.info(
+    JSON.stringify({
+      event: "merkle.generateProof",
+      leafCount: leaves.length,
+      leafIndex,
+      proofSteps: proof.length,
+      durationMs: Math.round(durationMs * 100) / 100,
+    })
+  );
 
   return proof;
 }
