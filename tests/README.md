@@ -19,6 +19,7 @@ npm run test:coverage
 
 - `integration/` - Integration tests that test complete API flows
   - `auth.test.ts` - Authentication API tests (signup, login, refresh, password reset)
+  - `business.test.ts` - Business CRUD tests + **analytics route auth enforcement**
   - `integrations.test.ts` - Integrations API tests (list, connect, disconnect, OAuth flow)
 
 ## Test Setup
@@ -27,6 +28,68 @@ Tests use:
 - **Jest** - Test framework
 - **Supertest** - HTTP assertion library for testing Express apps
 - **ts-jest** - TypeScript support for Jest
+
+## Analytics Tests
+
+The analytics integration tests (in `business.test.ts`) cover:
+
+### Routes
+
+| Method | Path                        | Auth Required | Rate Limit        |
+|--------|-----------------------------|---------------|-------------------|
+| GET    | `/api/analytics/periods`    | Business Auth | 30 req / 15 min   |
+| GET    | `/api/analytics/revenue`    | Business Auth | 30 req / 15 min   |
+
+### Auth error shapes (stable contract)
+
+| Status | `code`                | Trigger                                      |
+|--------|-----------------------|----------------------------------------------|
+| 401    | `MISSING_AUTH`        | Missing or malformed `Authorization` header  |
+| 401    | `INVALID_TOKEN`       | Expired, invalid, or revoked JWT             |
+| 400    | `MISSING_BUSINESS_ID` | No `x-business-id` header or body field      |
+| 403    | `BUSINESS_NOT_FOUND`  | Business not found or not owned by the user  |
+
+### Test scenarios
+
+1. **401 MISSING_AUTH** – request with no `Authorization` header
+2. **401 INVALID_TOKEN** – request with an expired/invalid token
+3. **403 BUSINESS_NOT_FOUND** – valid token but wrong business (role mismatch)
+4. **400 bad params** – missing `period`/`from`/`to`, invalid YYYY-MM format, only `from` without `to`
+5. **404 no data** – authenticated but no attestations for the requested window
+6. **200 success** – valid auth + valid params returns revenue report
+7. **Rate-limit headers** – `X-RateLimit-Bucket: analytics`, `X-RateLimit-Limit: 30`
+
+### Mock strategy
+
+`requireBusinessAuth` is mocked with `vi.mock` so tests run without a real database.
+The mock simulates the exact response shapes the real middleware produces:
+
+```typescript
+// Successful auth – sets req.business so setBusinessLocals can copy to res.locals
+mockRequireBusinessAuth.mockImplementation((req, res, next) => {
+  req.business = { id: 'biz-1', userId: 'user-1', ... }
+  next()
+})
+
+// Auth failure – returns stable 401/403 shape
+mockRequireBusinessAuth.mockImplementation((_req, res) => {
+  res.status(401).json({ error: '...', message: '...', code: 'MISSING_AUTH' })
+})
+```
+
+Analytics services (`listAttestedPeriodsForBusiness`, `getRevenueReport`) are also mocked
+so tests are deterministic and do not require a running database.
+
+### Threat model notes
+
+- **Token expiry mid-request**: `requireBusinessAuth` re-validates the token on every request
+  (no session cache). An expired token returns `INVALID_TOKEN` regardless of prior success.
+- **Role mismatch**: The middleware checks `business.userId === req.user.id` after fetching
+  the business from the DB. A valid token for user A cannot access user B's business.
+- **Cached sessions**: There is no server-side session cache; each request is independently
+  authenticated. Revoked tokens are rejected as soon as the DB user-existence check fails.
+- **Webhooks / integrations**: Webhook endpoints use separate HMAC signature verification
+  and do not share the analytics rate-limit bucket.
 
 ## Auth Tests
 

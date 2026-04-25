@@ -546,3 +546,336 @@ describe('Business Service Integration Tests', () => {
     });
   });
 });
+
+// =============================================================================
+// Analytics Route Integration Tests
+// =============================================================================
+// These tests verify auth enforcement, rate-limit headers, and response shapes
+// for GET /api/analytics/periods and GET /api/analytics/revenue.
+//
+// requireBusinessAuth is mocked so tests run without a real database.
+// The mock sets req.business and res.locals.businessId exactly as the real
+// middleware would after a successful auth check.
+// =============================================================================
+
+import { vi } from 'vitest'
+
+// ---------------------------------------------------------------------------
+// Mock requireBusinessAuth before importing app
+// ---------------------------------------------------------------------------
+
+const { mockRequireBusinessAuth } = vi.hoisted(() => ({
+  mockRequireBusinessAuth: vi.fn(),
+}))
+
+vi.mock('../../src/middleware/requireBusinessAuth.js', () => ({
+  requireBusinessAuth: mockRequireBusinessAuth,
+}))
+
+// ---------------------------------------------------------------------------
+// Mock analytics services so tests are self-contained
+// ---------------------------------------------------------------------------
+
+vi.mock('../../src/services/analytics/periods.js', () => ({
+  listAttestedPeriodsForBusiness: vi.fn((businessId: string) => {
+    if (businessId === 'biz-with-data') {
+      return ['2025-10', '2025-11', '2025-12']
+    }
+    return []
+  }),
+  parsePeriodToBounds: vi.fn(),
+  dateToPeriod: vi.fn(),
+  currentPeriod: vi.fn(),
+  isTimestampInPeriod: vi.fn(),
+  PeriodParseError: class PeriodParseError extends Error {},
+}))
+
+vi.mock('../../src/services/analytics/revenueReports.js', () => {
+  class TimeWindowError extends Error {
+    code = 'INVALID_TIME_WINDOW'
+    constructor(message: string) {
+      super(message)
+      this.name = 'TimeWindowError'
+    }
+  }
+  return {
+    TimeWindowError,
+    getRevenueReport: vi.fn((businessId: string, period?: string) => {
+      if (businessId === 'biz-with-data' && period === '2025-10') {
+        return {
+          period: '2025-10',
+          total: 100,
+          net: 95,
+          currency: 'USD',
+          breakdown: [{ attestationId: 'att-1', attestedAt: '2025-10-01T00:00:00Z' }],
+        }
+      }
+      if (businessId === 'biz-with-data' && period === '9999-99') {
+        throw new TimeWindowError('Invalid format for "period": "9999-99". Expected YYYY-MM.')
+      }
+      return null
+    }),
+  }
+})
+
+// Import app AFTER mocks are set up (aliased to avoid conflict with the top-level import)
+import { resetRateLimiterStore } from '../../src/middleware/rateLimiter.js'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Simulate a successful business auth for the given businessId. */
+function authAs(businessId: string) {
+  mockRequireBusinessAuth.mockImplementation((req: any, res: any, next: () => void) => {
+    req.business = {
+      id: businessId,
+      userId: 'user-1',
+      name: 'Test Biz',
+      industry: null,
+      description: null,
+      website: null,
+      createdAt: '2025-01-01T00:00:00Z',
+      updatedAt: '2025-01-01T00:00:00Z',
+    }
+    next()
+  })
+}
+
+/** Simulate a 401 MISSING_AUTH response from the middleware. */
+function authMissing() {
+  mockRequireBusinessAuth.mockImplementation((_req: any, res: any) => {
+    res.status(401).json({
+      error: 'Business authentication required',
+      message: "Missing or invalid authorization header. Format: 'Bearer <token>'",
+      code: 'MISSING_AUTH',
+    })
+  })
+}
+
+/** Simulate a 401 INVALID_TOKEN response from the middleware. */
+function authInvalidToken() {
+  mockRequireBusinessAuth.mockImplementation((_req: any, res: any) => {
+    res.status(401).json({
+      error: 'Invalid authentication',
+      message: 'Token is invalid, expired, or user not found',
+      code: 'INVALID_TOKEN',
+    })
+  })
+}
+
+/** Simulate a 403 BUSINESS_NOT_FOUND response from the middleware. */
+function authBusinessNotFound() {
+  mockRequireBusinessAuth.mockImplementation((_req: any, res: any) => {
+    res.status(403).json({
+      error: 'Business access denied',
+      message: 'Business not found or access denied. User must own the business.',
+      code: 'BUSINESS_NOT_FOUND',
+    })
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('Analytics Routes – auth enforcement and response shapes', () => {
+  beforeEach(() => {
+    resetRateLimiterStore()
+    vi.clearAllMocks()
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /api/analytics/periods
+  // -------------------------------------------------------------------------
+
+  describe('GET /api/analytics/periods', () => {
+    it('returns 401 with MISSING_AUTH code when Authorization header is absent', async () => {
+      authMissing()
+      const res = await request(app).get('/api/analytics/periods')
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('MISSING_AUTH')
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 401 with INVALID_TOKEN code for an expired/invalid token', async () => {
+      authInvalidToken()
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer expired.token.here')
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('INVALID_TOKEN')
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 403 with BUSINESS_NOT_FOUND code when business does not belong to user', async () => {
+      authBusinessNotFound()
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'other-biz')
+
+      expect(res.status).toBe(403)
+      expect(res.body.code).toBe('BUSINESS_NOT_FOUND')
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 200 with empty periods array when business has no attestations', async () => {
+      authAs('biz-empty')
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-empty')
+
+      expect(res.status).toBe(200)
+      expect(res.body).toEqual({ periods: [] })
+    })
+
+    it('returns 200 with periods list when business has attestations', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.status).toBe(200)
+      expect(res.body.periods).toEqual(['2025-10', '2025-11', '2025-12'])
+    })
+
+    it('sets X-RateLimit-Bucket header to "analytics"', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.headers['x-ratelimit-bucket']).toBe('analytics')
+    })
+
+    it('sets X-RateLimit-Limit header to "30"', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.headers['x-ratelimit-limit']).toBe('30')
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /api/analytics/revenue
+  // -------------------------------------------------------------------------
+
+  describe('GET /api/analytics/revenue', () => {
+    it('returns 401 with MISSING_AUTH code when Authorization header is absent', async () => {
+      authMissing()
+      const res = await request(app).get('/api/analytics/revenue?period=2025-10')
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('MISSING_AUTH')
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 401 with INVALID_TOKEN code for an expired/invalid token', async () => {
+      authInvalidToken()
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer bad.token')
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('INVALID_TOKEN')
+    })
+
+    it('returns 403 with BUSINESS_NOT_FOUND code on role mismatch', async () => {
+      authBusinessNotFound()
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'other-biz')
+
+      expect(res.status).toBe(403)
+      expect(res.body.code).toBe('BUSINESS_NOT_FOUND')
+    })
+
+    it('returns 400 when neither period nor from/to is provided', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/revenue')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toMatch(/period|from.*to/i)
+    })
+
+    it('returns 400 when period format is invalid (Zod validation)', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=not-a-date')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.status).toBe(400)
+    })
+
+    it('returns 404 when no revenue data exists for the period', async () => {
+      authAs('biz-empty')
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-empty')
+
+      expect(res.status).toBe(404)
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 200 with revenue report for a valid period', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.status).toBe(200)
+      expect(res.body.period).toBe('2025-10')
+      expect(res.body.total).toBe(100)
+      expect(res.body.net).toBe(95)
+      expect(res.body.currency).toBe('USD')
+      expect(Array.isArray(res.body.breakdown)).toBe(true)
+    })
+
+    it('returns 400 for a TimeWindowError (e.g. invalid period value)', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=9999-99')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.status).toBe(400)
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('sets X-RateLimit-Bucket header to "analytics"', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.headers['x-ratelimit-bucket']).toBe('analytics')
+    })
+
+    it('returns 400 when only "from" is provided without "to"', async () => {
+      authAs('biz-with-data')
+      const res = await request(app)
+        .get('/api/analytics/revenue?from=2025-01')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-with-data')
+
+      expect(res.status).toBe(400)
+    })
+  })
+})
