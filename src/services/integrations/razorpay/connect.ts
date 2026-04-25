@@ -63,7 +63,8 @@ function fingerprintCredentials(apiKeyId: string, apiKeySecret: string): string 
  */
 export async function connectRazorpay(req: Request, res: Response) {
   const userId = req.user?.userId
-  if (!userId) return res.status(401).json({ error: 'Unauthorized' })
+  const businessId = req.business?.id
+  if (!userId || !businessId) return res.status(401).json({ error: 'Unauthorized' })
 
   const apiKeyId = parseCredential(req.body?.apiKeyId)
   const apiKeySecret = parseCredential(req.body?.apiKeySecret)
@@ -74,7 +75,7 @@ export async function connectRazorpay(req: Request, res: Response) {
     })
   }
 
-  const existingIntegration = integrationRepository.findByUserAndProvider(userId, 'razorpay')
+  const existingIntegration = integrationRepository.findByBusinessAndProvider(businessId, 'razorpay')
   if (existingIntegration) {
     return res.status(409).json({ error: 'Razorpay integration already connected' })
   }
@@ -108,6 +109,7 @@ export async function connectRazorpay(req: Request, res: Response) {
   const record = integrationRepository.create({
     provider: 'razorpay',
     userId,
+    businessId,
     meta: {
       apiKeyId,
       apiKeySecret,

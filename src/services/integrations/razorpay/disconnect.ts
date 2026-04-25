@@ -7,13 +7,14 @@ import { integrationRepository } from '../../../repositories/integrations.js'
  */
 export async function disconnectRazorpay(req: Request, res: Response) {
   const userId = req.user?.userId
-  if (!userId) return res.status(401).json({ error: 'Unauthorized' })
+  const businessId = req.business?.id
+  if (!userId || !businessId) return res.status(401).json({ error: 'Unauthorized' })
 
   const { id } = req.body ?? {}
   if (!id) return res.status(400).json({ error: 'id is required' })
 
   const rec = integrationRepository.findById(id)
-  if (!rec || rec.provider !== 'razorpay' || rec.userId !== userId) {
+  if (!rec || rec.provider !== 'razorpay' || rec.businessId !== businessId) {
     return res.status(404).json({ error: 'Integration not found' })
   }
 

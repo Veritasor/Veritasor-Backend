@@ -369,6 +369,9 @@ export async function executeSorobanRequest<T>(
       await sleepFn(delayMs);
     }
   }
+
+  // This should never be reached due to the retry logic, but TypeScript requires it
+  throw new Error(`Soroban operation '${options.operationName}' failed after ${policy.maxRetries + 1} attempts`);
 }
 
 function wrapServerMethod<TArgs extends unknown[], TResult>(

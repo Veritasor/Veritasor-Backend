@@ -4,6 +4,8 @@
  * Access tokens are never logged or returned.
  */
 
+import { timingSafeEqual } from 'node:crypto'
+import { createHmac } from 'node:crypto'
 import * as integrationRepository from '../../../repositories/integration.js'
 import * as store from './store.js'
 
@@ -22,14 +24,23 @@ export interface CallbackResult {
 }
 
 /**
+ * Compute Shopify HMAC for request verification.
+ * Sorts parameters alphabetically and excludes the 'hmac' key.
+ */
+export function computeShopifyHmac(secret: string, params: Record<string, string | undefined>): string {
+  const { hmac: _excluded, ...filtered } = params
+  const sorted = Object.keys(filtered).sort()
+  const message = sorted.map(key => `${key}=${filtered[key]}`).join('&')
+  return createHmac('sha256', secret).update(message).digest('hex')
+}
+
+/**
  * Handle OAuth callback: consume state, exchange code for token, persist via integration store.
  */
 export async function handleCallback(params: CallbackParams): Promise<CallbackResult> {
-  const { code, shop, state } = params
+  const { code, shop, state, hmac } = params
   const clientId = process.env.SHOPIFY_CLIENT_ID ?? ''
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? ''
-
-  const { code, shop, state, hmac } = params
 
   // Parameter completeness guard — check code, shop, state first
   if (!code || !shop || !state) {
@@ -42,7 +53,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
   }
 
   // HMAC validation using constant-time comparison
-  const computed = computeShopifyHmac(currentClientSecret, params)
+  const computed = computeShopifyHmac(clientSecret, params)
   const computedBuf = Buffer.from(computed)
   const providedBuf = Buffer.from(hmac)
   if (
@@ -64,8 +75,8 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   const tokenUrl = `https://${shopHost}/admin/oauth/access_token`
   const body = new URLSearchParams({
-    client_id: currentClientId,
-    client_secret: currentClientSecret,
+    client_id: clientId,
+    client_secret: clientSecret,
     code,
   })
 
@@ -92,12 +103,12 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   store.saveToken(shopHost, accessToken)
 
-  const existingShopifyIntegration = (await integrationRepository.listByUserId(stateRecord.userId)).find(
+  const existingShopifyIntegration = (await integrationRepository.listByBusinessId(stateRecord.businessId)).find(
     (integration) => integration.provider === 'shopify',
   )
 
   if (existingShopifyIntegration && existingShopifyIntegration.externalId !== shopHost) {
-    await integrationRepository.deleteById(existingShopifyIntegration.id)
+    await integrationRepository.deleteById(stateRecord.businessId, existingShopifyIntegration.id)
     store.deleteToken(existingShopifyIntegration.externalId)
   }
 
@@ -107,7 +118,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
       : null
 
   if (reusableIntegration) {
-    const updated = await integrationRepository.update(reusableIntegration.id, {
+    const updated = await integrationRepository.update(stateRecord.businessId, reusableIntegration.id, {
       token: { accessToken },
       metadata: { shop: shopHost },
     })
@@ -118,6 +129,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
   } else {
     await integrationRepository.create({
       userId: stateRecord.userId,
+      businessId: stateRecord.businessId,
       provider: 'shopify',
       externalId: shopHost,
       token: { accessToken },
