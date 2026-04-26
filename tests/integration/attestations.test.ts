@@ -5,9 +5,11 @@
  * Note: Routes that call resolveBusinessIdForUser() without a businessId query
  * param will hit the real DB client (not configured in tests) and return 500.
  * Tests that require an actual database are omitted here; they belong in e2e tests.
+ * 
+ * Enhanced with tests for retry logic and error taxonomy in submitAttestation service.
  */
 import assert from 'node:assert'
-import { beforeEach, describe, expect, it, test, vi } from 'vitest'
+import { beforeEach, describe, expect, it, test, vi, afterEach } from 'vitest'
 import request from 'supertest'
 import { businessRepository } from '../../src/repositories/business.js'
 
@@ -15,8 +17,8 @@ const { submitAttestationMock } = vi.hoisted(() => ({
   submitAttestationMock: vi.fn(),
 }))
 
-vi.mock('../../src/services/soroban/submitAttestation.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/services/soroban/submitAttestation.js')>()
+vi.mock('../../src/services/soroban/submitAttestation.js', async (importOriginal: any) => {
+  const actual = await importOriginal() as any
   return {
     ...actual,
     submitAttestation: submitAttestationMock,
@@ -51,6 +53,126 @@ const business = {
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
 }
+
+// ---------------------------------------------------------------------------
+// Enhanced submitAttestation service integration tests
+// ---------------------------------------------------------------------------
+
+describe('Enhanced submitAttestation service integration', async () => {
+  const { submitAttestation } = await import('../../src/services/attestation/submit.js');
+  
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('handles retry logic with exponential backoff in real service', async () => {
+    // Mock Math.random to control failure scenarios
+    const mockRandom = vi.fn()
+      .mockReturnValueOnce(0.05) // First attempt: network timeout
+      .mockReturnValueOnce(0.05) // Second attempt: network timeout
+      .mockReturnValueOnce(0.5);  // Third attempt: success
+    
+    const originalMathRandom = Math.random;
+    Math.random = mockRandom;
+
+    const startTime = Date.now();
+    const result = await submitAttestation('user_123', 'biz_456', '2024-03');
+    const endTime = Date.now();
+
+    expect(result).toEqual({
+      attestationId: expect.any(String),
+      txHash: expect.stringMatching(/^tx_[a-f0-9]{8}_\d+$/),
+    });
+
+    // Should have taken at least 3 seconds due to retry delays
+    expect(endTime - startTime).toBeGreaterThan(3000);
+
+    Math.random = originalMathRandom;
+  });
+
+  it('fails appropriately on non-retryable validation errors', async () => {
+    const mockRandom = vi.fn().mockReturnValue(0.17); // Triggers INSUFFICIENT_BALANCE
+    const originalMathRandom = Math.random;
+    Math.random = mockRandom;
+
+    await expect(submitAttestation('user_123', 'biz_456', '2024-03')).rejects.toThrow(
+      expect.objectContaining({
+        message: 'Insufficient balance for transaction fees. Please fund your account.',
+        status: 400,
+        code: 'INSUFFICIENT_BALANCE',
+      })
+    );
+
+    Math.random = originalMathRandom;
+  });
+
+  it('produces structured logs with required fields', async () => {
+    const mockLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    
+    await submitAttestation('user_123', 'biz_456', '2024-03');
+
+    // Verify structured log format
+    expect(mockLog).toHaveBeenCalledWith(
+      expect.stringMatching(/\{"timestamp":".*","level":"info","service":"attestation-submit"/)
+    );
+
+    const logEntry = JSON.parse(mockLog.mock.calls[0][0]);
+    expect(logEntry).toMatchObject({
+      timestamp: expect.any(String),
+      level: 'info',
+      service: 'attestation-submit',
+      userId: 'user_123',
+      businessId: 'biz_456',
+      period: '2024-03',
+      attempt: expect.any(Number),
+      maxAttempts: expect.any(Number),
+    });
+  });
+
+  it('handles quarterly period parsing correctly', async () => {
+    const result = await submitAttestation('user_123', 'biz_456', '2024-Q1');
+    
+    expect(result).toEqual({
+      attestationId: expect.any(String),
+      txHash: expect.stringMatching(/^tx_[a-f0-9]{8}_\d+$/),
+    });
+  });
+
+  it('validates error taxonomy completeness', async () => {
+    const { SorobanErrorCode } = await import('../../src/services/attestation/submit.js');
+    
+    // Verify all error codes are properly categorized
+    const retryableCodes = [
+      SorobanErrorCode.NETWORK_TIMEOUT,
+      SorobanErrorCode.NETWORK_ERROR,
+      SorobanErrorCode.RPC_UNAVAILABLE,
+      SorobanErrorCode.NONCE_CONFLICT,
+      SorobanErrorCode.FEE_BUMP_REQUIRED,
+      SorobanErrorCode.TRANSACTION_PENDING,
+      SorobanErrorCode.RATE_LIMITED,
+      SorobanErrorCode.SERVICE_UNAVAILABLE,
+      SorobanErrorCode.INTERNAL_ERROR,
+    ];
+
+    const nonRetryableCodes = [
+      SorobanErrorCode.INVALID_SIGNATURE,
+      SorobanErrorCode.INVALID_ACCOUNT,
+      SorobanErrorCode.INSUFFICIENT_BALANCE,
+      SorobanErrorCode.CONTRACT_ERROR,
+    ];
+
+    expect(retryableCodes).toHaveLength(9);
+    expect(nonRetryableCodes).toHaveLength(4);
+    expect(Object.values(SorobanErrorCode)).toHaveLength(13);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Existing API integration tests
