@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   create,
   getById,
@@ -13,8 +13,23 @@ import {
   ConflictError,
   ConflictErrorType,
   createConflictError,
+  ReadConsistency,
 } from '../../../src/types/attestation.js';
 import type { CreateAttestationInput, DbClient } from '../../../src/types/attestation.js';
+import { getAttestation } from '../../../src/services/soroban/getAttestation.js';
+
+vi.mock('../../../src/services/soroban/getAttestation.js', () => ({
+  getAttestation: vi.fn(),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
 
 /**
  * Test Database Setup
@@ -550,6 +565,87 @@ describe('Attestation Repository - Edge Cases', () => {
       expect(updated1!.version).toBe(2);
       const updated2 = await updateStatus(mockClient, created.id, 'confirmed');
       expect(updated2!.version).toBe(3);
+    });
+  });
+
+  describe('Read Consistency', () => {
+    it('should return local data when ReadConsistency is LOCAL (default)', async () => {
+      const input: CreateAttestationInput = {
+        businessId: 'business-123',
+        period: '2025-01',
+        merkleRoot: '0xroot',
+        txHash: '0xhash',
+        status: 'pending',
+      };
+      const created = await create(mockClient, input);
+      
+      const retrieved = await getById(mockClient, created.id);
+      expect(retrieved?.status).toBe('pending');
+      expect(getAttestation).not.toHaveBeenCalled();
+    });
+
+    it('should auto-correct indexing lag when ReadConsistency is STRONG', async () => {
+      const input: CreateAttestationInput = {
+        businessId: 'business-123',
+        period: '2025-01',
+        merkleRoot: '0xroot',
+        txHash: '0xhash',
+        status: 'pending',
+      };
+      const created = await create(mockClient, input);
+      
+      // Mock chain having the data
+      vi.mocked(getAttestation).mockResolvedValueOnce({
+        merkle_root: '0xroot',
+        timestamp: 123456789,
+      });
+
+      const retrieved = await getById(mockClient, created.id, { consistency: ReadConsistency.STRONG });
+      expect(retrieved?.status).toBe('confirmed');
+      expect(getAttestation).toHaveBeenCalledWith(input.businessId, input.period);
+      
+      // Verify DB was updated
+      const local = await getById(mockClient, created.id);
+      expect(local?.status).toBe('confirmed');
+    });
+
+    it('should log error on Merkle root mismatch but return local data', async () => {
+      const input: CreateAttestationInput = {
+        businessId: 'business-123',
+        period: '2025-01',
+        merkleRoot: '0xroot',
+        txHash: '0xhash',
+        status: 'confirmed',
+      };
+      const created = await create(mockClient, input);
+      
+      // Mock chain having DIFFERENT data
+      vi.mocked(getAttestation).mockResolvedValueOnce({
+        merkle_root: '0xTAMPEDED_ROOT',
+        timestamp: 123456789,
+      });
+
+      const retrieved = await getById(mockClient, created.id, { consistency: ReadConsistency.STRONG });
+      expect(retrieved?.merkleRoot).toBe('0xroot'); // Still returns local
+      expect(getAttestation).toHaveBeenCalled();
+    });
+
+    it('should return local data and log warning if not found on-chain but confirmed locally', async () => {
+      const input: CreateAttestationInput = {
+        businessId: 'business-123',
+        period: '2025-01',
+        merkleRoot: '0xroot',
+        txHash: '0xhash',
+        status: 'confirmed',
+      };
+      const created = await create(mockClient, input);
+      
+      // Mock chain having NO data
+      vi.mocked(getAttestation).mockResolvedValueOnce(null);
+
+      const retrieved = await getById(mockClient, created.id, { consistency: ReadConsistency.STRONG });
+      expect(retrieved?.status).toBe('confirmed');
+      expect(getAttestation).toHaveBeenCalled();
     });
   });
 
