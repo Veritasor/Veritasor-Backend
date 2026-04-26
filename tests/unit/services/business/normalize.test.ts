@@ -3,6 +3,7 @@
  *
  * Tests all normalization and validation functions in the business service.
  * Covers edge cases, security considerations, and normal use cases.
+ * Includes property-based tests for robust validation.
  *
  * Test Coverage:
  * - String normalization (trimming, spaces)
@@ -16,6 +17,7 @@
  * @module tests/unit/services/business/normalize
  */
 
+import fc from 'fast-check';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   normalizeName,
@@ -28,6 +30,8 @@ import {
   sanitizeText,
   isEmpty,
   formatForStorage,
+  normalizeCountryCode,
+  isValidCountryCode,
 } from '../../../../src/services/business/normalize';
 
 describe('Business Normalization Utilities', () => {
@@ -324,6 +328,491 @@ describe('Business Normalization Utilities', () => {
       const result2 = formatForStorage(result1 as any);
 
       expect(result1).toEqual(result2);
+    });
+
+    it('should normalize countryCode when provided', () => {
+      const result = formatForStorage({ name: 'Test', countryCode: 'ng' });
+      expect(result.countryCode).toBe('NG');
+    });
+
+    it('should pass through null countryCode', () => {
+      const result = formatForStorage({ name: 'Test', countryCode: null });
+      expect(result.countryCode).toBeNull();
+    });
+
+    it('should leave countryCode undefined when not provided', () => {
+      const result = formatForStorage({ name: 'Test' });
+      expect(result.countryCode).toBeUndefined();
+    });
+  });
+
+  describe('normalizeCountryCode', () => {
+    it('should uppercase a lowercase code', () => {
+      expect(normalizeCountryCode('ng')).toBe('NG');
+      expect(normalizeCountryCode('us')).toBe('US');
+    });
+
+    it('should trim and uppercase', () => {
+      expect(normalizeCountryCode('  gb  ')).toBe('GB');
+    });
+
+    it('should return null for empty string', () => {
+      expect(normalizeCountryCode('')).toBeNull();
+      expect(normalizeCountryCode('   ')).toBeNull();
+    });
+
+    it('should return null for non-string input', () => {
+      expect(normalizeCountryCode(null)).toBeNull();
+      expect(normalizeCountryCode(undefined)).toBeNull();
+      expect(normalizeCountryCode(42)).toBeNull();
+    });
+
+    it('should preserve already-uppercase codes', () => {
+      expect(normalizeCountryCode('DE')).toBe('DE');
+    });
+  });
+
+  describe('isValidCountryCode', () => {
+    it('should accept valid two-letter codes', () => {
+      expect(isValidCountryCode('US')).toBe(true);
+      expect(isValidCountryCode('NG')).toBe(true);
+      expect(isValidCountryCode('GB')).toBe(true);
+    });
+
+    it('should reject codes with fewer than 2 chars', () => {
+      expect(isValidCountryCode('U')).toBe(false);
+      expect(isValidCountryCode('')).toBe(false);
+    });
+
+    it('should reject codes with more than 2 chars', () => {
+      expect(isValidCountryCode('USA')).toBe(false);
+    });
+
+    it('should reject numeric codes', () => {
+      expect(isValidCountryCode('12')).toBe(false);
+    });
+
+    it('should reject lowercase codes (must be pre-uppercased)', () => {
+      expect(isValidCountryCode('us')).toBe(false);
+    });
+
+    it('should reject alphanumeric codes', () => {
+      expect(isValidCountryCode('U1')).toBe(false);
+    });
+  });
+
+  describe('Business Normalization Utilities - Property Tests', () => {
+    describe('normalizeName properties', () => {
+      it('should be idempotent', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const normalizedOnce = normalizeName(s);
+            const normalizedTwice = normalizeName(normalizedOnce);
+            expect(normalizedTwice).toBe(normalizedOnce);
+          }),
+        );
+      });
+
+      it('should trim and collapse internal spaces, preserving case', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const result = normalizeName(s);
+            // Should not start or end with space
+            expect(result.startsWith(' ')).toBe(false);
+            expect(result.endsWith(' ')).toBe(false);
+            // Should not contain consecutive spaces
+            expect(result).not.toContain('  ');
+            // Check if original non-space characters are preserved with their case
+            const originalChars = [...s.replace(/\s/g, '')].sort().join('');
+            const resultChars = [...result.replace(/\s/g, '')].sort().join('');
+            expect(resultChars).toBe(originalChars);
+          }),
+        );
+      });
+
+      it('should return empty string for inputs that are empty or only whitespace', () => {
+        fc.assert(
+          fc.property(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), (s) => {
+            expect(normalizeName(s)).toBe('');
+          }),
+        );
+        expect(normalizeName(null as unknown as string)).toBe('');
+        expect(normalizeName(undefined as unknown as string)).toBe('');
+      });
+    });
+
+    describe('normalizeUrl properties', () => {
+      it('should be idempotent', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const normalizedOnce = normalizeUrl(s);
+            const normalizedTwice = normalizeUrl(normalizedOnce);
+            expect(normalizedTwice).toBe(normalizedOnce);
+          }),
+        );
+      });
+
+      it('should always return a lowercase string or empty', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const result = normalizeUrl(s);
+            expect(result).toBe(result.toLowerCase());
+          }),
+        );
+      });
+
+      it('should add https:// if no protocol is present and not empty', () => {
+        fc.assert(
+          fc.property(
+            fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.match(/^https?:\/\//) && s.trim().length > 0),
+            (s) => {
+              const result = normalizeUrl(s);
+              if (s.trim().length > 0) {
+                expect(result).toMatch(/^https:\/\//);
+              } else {
+                expect(result).toBe('');
+              }
+            },
+          ),
+        );
+      });
+
+      it('should remove trailing slashes unless it is the root protocol', () => {
+        fc.assert(
+          fc.property(fc.webUrl(), (s) => {
+            const result = normalizeUrl(s);
+            if (result.endsWith('://')) {
+              // Should preserve trailing slash for root protocol (e.g., 'https://')
+              expect(result.endsWith('/')).toBe(true);
+            } else {
+              // Should not end with a slash otherwise
+              expect(result.endsWith('/')).toBe(false);
+            }
+          }),
+        );
+      });
+
+      it('should return empty string for empty or whitespace-only input', () => {
+        fc.assert(
+          fc.property(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), (s) => {
+            expect(normalizeUrl(s)).toBe('');
+          }),
+        );
+        expect(normalizeUrl(null as unknown as string)).toBe('');
+        expect(normalizeUrl(undefined as unknown as string)).toBe('');
+      });
+    });
+
+    describe('normalizeOptionalString properties', () => {
+      it('should return null for non-string inputs', () => {
+        fc.assert(
+          fc.property(fc.anything().filter(v => typeof v !== 'string'), (v) => {
+            expect(normalizeOptionalString(v)).toBeNull();
+          }),
+        );
+      });
+
+      it('should return null for empty or whitespace-only strings', () => {
+        fc.assert(
+          fc.property(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), (s) => {
+            expect(normalizeOptionalString(s)).toBeNull();
+          }),
+        );
+      });
+
+      it('should trim and return non-empty strings', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString({ minLength: 1 }).filter(s => s.trim().length > 0), (s) => {
+            const result = normalizeOptionalString(s);
+            expect(result).not.toBeNull();
+            expect(result).toBe(s.trim());
+          }),
+        );
+      });
+    });
+
+    describe('normalizeIndustry properties', () => {
+      it('should be idempotent', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const normalizedOnce = normalizeIndustry(s);
+            const normalizedTwice = normalizeIndustry(normalizedOnce);
+            expect(normalizedTwice).toBe(normalizedOnce);
+          }),
+        );
+      });
+
+      it('should return null for non-string inputs', () => {
+        fc.assert(
+          fc.property(fc.anything().filter(v => typeof v !== 'string'), (v) => {
+            expect(normalizeIndustry(v)).toBeNull();
+          }),
+        );
+      });
+
+      it('should return null for empty or whitespace-only strings', () => {
+        fc.assert(
+          fc.property(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), (s) => {
+            expect(normalizeIndustry(s)).toBeNull();
+          }),
+        );
+      });
+
+      it('should trim and collapse internal spaces for non-empty strings', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString({ minLength: 1 }).filter(s => s.trim().length > 0), (s) => {
+            const result = normalizeIndustry(s);
+            expect(result).not.toBeNull();
+            expect(result).toBe(s.trim().split(/\s+/).filter(part => part.length > 0).join(' '));
+          }),
+        );
+      });
+    });
+
+    describe('normalizeDescription properties', () => {
+      it('should be idempotent', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const normalizedOnce = normalizeDescription(s);
+            const normalizedTwice = normalizeDescription(normalizedOnce);
+            expect(normalizedTwice).toBe(normalizedOnce);
+          }),
+        );
+      });
+
+      it('should return null for non-string inputs', () => {
+        fc.assert(
+          fc.property(fc.anything().filter(v => typeof v !== 'string'), (v) => {
+            expect(normalizeDescription(v)).toBeNull();
+          }),
+        );
+      });
+
+      it('should return null for empty or whitespace-only strings (including newlines)', () => {
+        fc.assert(
+          fc.property(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), (s) => {
+            expect(normalizeDescription(s)).toBeNull();
+          }),
+        );
+      });
+
+      it('should trim and collapse internal spaces per line, preserving newlines', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString({ minLength: 1 }).filter(s => s.trim().length > 0), (s) => {
+            const result = normalizeDescription(s);
+            expect(result).not.toBeNull();
+            const expected = s
+              .split('\n')
+              .map((line) =>
+                line.trim().split(/\s+/).filter((part) => part.length > 0).join(' '),
+              )
+              .join('\n');
+            expect(result).toBe(expected);
+          }),
+        );
+      });
+    });
+
+    describe('isValidBusinessName properties', () => {
+      it('should return true for strings with only valid characters', () => {
+        const validChars = fc.stringOf(fc.constantFrom(
+          ...Array.from('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -\'&.,')
+        ), { minLength: 1, maxLength: 100 });
+        fc.assert(
+          fc.property(validChars, (s) => {
+            expect(isValidBusinessName(s)).toBe(true);
+          }),
+        );
+      });
+
+      it('should return false for strings containing control characters or disallowed symbols', () => {
+        const invalidChars = fc.stringOf(fc.constantFrom('<', '>', '/', '\\', '!', '@', '#', '$', '%', '^', '*', '(', ')', '+', '=', '{', '}', '[', ']', '|', ';', ':', '"', '`', '~', '\n', '\r', '\t', '\v', '\f'), { minLength: 1, maxLength: 100 });
+        fc.assert(
+          fc.property(invalidChars, (s) => {
+            expect(isValidBusinessName(s)).toBe(false);
+          }),
+        );
+      });
+
+      it('should return false for empty string', () => {
+        expect(isValidBusinessName('')).toBe(false);
+      });
+    });
+
+    describe('isValidUrl properties', () => {
+      it('should return true for valid web URLs', () => {
+        fc.assert(
+          fc.property(fc.webUrl(), (s) => {
+            expect(isValidUrl(s)).toBe(true);
+          }),
+        );
+      });
+
+      it('should return false for clearly invalid URL-like strings', () => {
+        fc.assert(
+          fc.property(
+            fc.string({ minLength: 1, maxLength: 50 }).filter(s => !s.includes('.') && !s.includes('://')),
+            (s) => {
+              expect(isValidUrl(s)).toBe(false);
+            },
+          ),
+        );
+        expect(isValidUrl('not a url')).toBe(false);
+        expect(isValidUrl('http://')).toBe(false);
+      });
+    });
+
+    describe('sanitizeText properties', () => {
+      it('should remove all HTML/XML tags', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString(), (s) => {
+            const result = sanitizeText(s);
+            expect(result).not.toMatch(/<[^>]*>/);
+          }),
+        );
+      });
+
+      it('should return empty string for non-string input', () => {
+        fc.assert(
+          fc.property(fc.anything().filter(v => typeof v !== 'string'), (v) => {
+            expect(sanitizeText(v as any)).toBe('');
+          }),
+        );
+      });
+
+      it('should preserve text without tags', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString().filter(s => !s.includes('<') && !s.includes('>')), (s) => {
+            expect(sanitizeText(s)).toBe(s);
+          }),
+        );
+      });
+    });
+
+    describe('isEmpty properties', () => {
+      it('should return true for null and undefined', () => {
+        expect(isEmpty(null)).toBe(true);
+        expect(isEmpty(undefined)).toBe(true);
+      });
+
+      it('should return true for empty strings and whitespace-only strings', () => {
+        fc.assert(
+          fc.property(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), (s) => {
+            expect(isEmpty(s)).toBe(true);
+          }),
+        );
+      });
+
+      it('should return false for non-empty strings', () => {
+        fc.assert(
+          fc.property(fc.fullUnicodeString({ minLength: 1 }).filter(s => s.trim().length > 0), (s) => {
+            expect(isEmpty(s)).toBe(false);
+          }),
+        );
+      });
+
+      it('should return false for non-string, non-null, non-undefined values', () => {
+        fc.assert(
+          fc.property(fc.anything().filter(v => typeof v !== 'string' && v !== null && v !== undefined), (v) => {
+            expect(isEmpty(v)).toBe(false);
+          }),
+        );
+      });
+    });
+
+    describe('formatForStorage properties', () => {
+      const businessDataArb = fc.record({
+        name: fc.option(fc.fullUnicodeString(), { nil: undefined }),
+        industry: fc.option(fc.fullUnicodeString(), { nil: null }),
+        description: fc.option(fc.fullUnicodeString(), { nil: null }),
+        website: fc.option(fc.fullUnicodeString(), { nil: null }),
+      }, { requiredKeys: [] });
+
+      it('should be idempotent', () => {
+        fc.assert(
+          fc.property(businessDataArb, (data) => {
+            const formattedOnce = formatForStorage(data);
+            const formattedTwice = formatForStorage(formattedOnce);
+            expect(formattedTwice).toEqual(formattedOnce);
+          }),
+        );
+      });
+
+      it('should apply correct normalization to each field', () => {
+        fc.assert(
+          fc.property(businessDataArb, (data) => {
+            const result = formatForStorage(data);
+
+            if (data.name !== undefined) {
+              expect(result.name).toBe(normalizeName(data.name));
+            } else {
+              expect(result.name).toBeUndefined();
+            }
+
+            if (data.industry !== undefined) {
+              expect(result.industry).toBe(typeof data.industry === 'string' ? normalizeIndustry(data.industry) : data.industry);
+            } else {
+              expect(result.industry).toBeUndefined();
+            }
+
+            if (data.description !== undefined) {
+              expect(result.description).toBe(typeof data.description === 'string' ? normalizeDescription(data.description) : data.description);
+            } else {
+              expect(result.description).toBeUndefined();
+            }
+
+            if (data.website !== undefined) {
+              const normalizedUrlResult = typeof data.website === 'string' ? normalizeUrl(data.website) : data.website;
+              expect(result.website).toBe(typeof normalizedUrlResult === 'string' && normalizedUrlResult.length > 0 ? normalizedUrlResult : null);
+            } else {
+              expect(result.website).toBeUndefined();
+            }
+          }),
+        );
+      });
+
+      it('should preserve null values and convert empty/whitespace strings to null for optional fields', () => {
+        fc.assert(
+          fc.property(
+            fc.record({
+              industry: fc.option(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), { nil: null }),
+              description: fc.option(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), { nil: null }),
+              website: fc.option(fc.stringOf(fc.constantFrom(' ', '\t', '\n', '\r'), { minLength: 0, maxLength: 100 }), { nil: null }),
+            }, { requiredKeys: [] }),
+            (data) => {
+              const result = formatForStorage(data);
+
+              // Industry
+              if (data.industry === null) {
+                expect(result.industry).toBeNull();
+              } else if (data.industry !== undefined) {
+                expect(result.industry).toBe(normalizeIndustry(data.industry));
+              } else {
+                expect(result.industry).toBeUndefined();
+              }
+
+              // Description
+              if (data.description === null) {
+                expect(result.description).toBeNull();
+              } else if (data.description !== undefined) {
+                expect(result.description).toBe(normalizeDescription(data.description));
+              } else {
+                expect(result.description).toBeUndefined();
+              }
+
+              // Website
+              if (data.website === null) {
+                expect(result.website).toBeNull();
+              } else if (data.website !== undefined) {
+                const normalizedUrlResult = normalizeUrl(data.website);
+                expect(result.website).toBe(normalizedUrlResult.length > 0 ? normalizedUrlResult : null);
+              } else {
+                expect(result.website).toBeUndefined();
+              }
+            },
+          ),
+        );
+      });
     });
   });
 });

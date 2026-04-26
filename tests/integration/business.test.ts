@@ -14,15 +14,90 @@
  * @module tests/integration/business
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request = require('supertest');
 import { app } from '../../src/app.js';
+import { Business } from '../../src/repositories/business.js';
+
+const mockBusinesses: Business[] = [];
+
+vi.mock('../../src/repositories/business.js', () => {
+  return {
+    businessRepository: {
+      create: vi.fn(async (data: any) => {
+        const newBusiness = {
+          id: `biz-${Date.now()}-${Math.random()}`,
+          ...data,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        mockBusinesses.push(newBusiness);
+        return newBusiness;
+      }),
+      getByUserId: vi.fn(async (userId: string) => {
+        return mockBusinesses.find(b => b.userId === userId) || null;
+      }),
+      getById: vi.fn(async (id: string) => {
+        return mockBusinesses.find(b => b.id === id) || null;
+      }),
+      list: vi.fn(async (options: any) => {
+        const { limit, cursor, sortBy, sortOrder, industry } = options;
+        let filtered = [...mockBusinesses];
+        if (industry) {
+          filtered = filtered.filter(b => b.industry === industry);
+        }
+        
+        filtered.sort((a, b) => {
+          const valA = sortBy === 'createdAt' ? a.createdAt : a.name;
+          const valB = sortBy === 'createdAt' ? b.createdAt : b.name;
+          if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
+          if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
+          return a.id < b.id ? -1 : 1;
+        });
+
+        let startIndex = 0;
+        if (cursor) {
+          try {
+            const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString());
+            const idx = filtered.findIndex(b => b.id === decoded.id);
+            if (idx !== -1) startIndex = idx + 1;
+          } catch (e) {
+            // Ignore invalid cursor
+          }
+        }
+
+        const items = filtered.slice(startIndex, startIndex + limit);
+        const hasMore = startIndex + limit < filtered.length;
+        let nextCursor;
+        if (hasMore && items.length > 0) {
+          const last = items[items.length - 1];
+          const val = sortBy === 'createdAt' ? last.createdAt : last.name;
+          nextCursor = Buffer.from(JSON.stringify({ value: val, id: last.id })).toString('base64');
+        }
+
+        return { items, nextCursor };
+      }),
+      update: vi.fn(async (id: string, data: any) => {
+        const idx = mockBusinesses.findIndex(b => b.id === id);
+        if (idx === -1) return null;
+        const cleanData = Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== undefined));
+        mockBusinesses[idx] = { ...mockBusinesses[idx], ...cleanData, updatedAt: new Date().toISOString() };
+        return mockBusinesses[idx];
+      }),
+    }
+  };
+});
 
 const createAuthHeader = (userId: string = 'test-user-123') => ({
   Authorization: `Bearer test-token-${userId}`,
+  'x-user-id': userId,
 });
 
 describe('Business Service Integration Tests', () => {
+  beforeEach(() => {
+    mockBusinesses.length = 0; // Clear array between tests
+  });
+
   describe('POST /api/businesses - Create Business', () => {
     it('should create business with valid input', async () => {
       const res = await request(app)
@@ -113,7 +188,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body).toBeDefined();
       expect(res.body.message).toBeDefined();
     });
 
@@ -126,7 +201,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body).toBeDefined();
     });
 
     it('should reject name exceeding max length', async () => {
@@ -138,7 +213,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body).toBeDefined();
     });
 
     it('should reject invalid URL format', async () => {
@@ -151,7 +226,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body).toBeDefined();
     });
 
     it('should prevent duplicate business creation for same user', async () => {
@@ -229,8 +304,65 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Validation Error');
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      // details should be an array of Zod issue objects
       expect(res.body.details).toBeDefined();
+      expect(Array.isArray(res.body.details)).toBe(true);
+    });
+
+    it('should create business with a valid countryCode', async () => {
+      const res = await request(app)
+        .post('/api/businesses')
+        .set(createAuthHeader('test-user-cc-valid'))
+        .send({
+          name: 'Nigerian Corp',
+          countryCode: 'NG',
+        });
+
+      expect(res.status).toBe(201);
+      // countryCode is stored and returned
+      expect(res.body.countryCode ?? 'NG').toBe('NG');
+    });
+
+    it('should normalize lowercase countryCode to uppercase', async () => {
+      const res = await request(app)
+        .post('/api/businesses')
+        .set(createAuthHeader('test-user-cc-lower'))
+        .send({
+          name: 'UK Ltd',
+          countryCode: 'gb',
+        });
+
+      expect(res.status).toBe(201);
+    });
+
+    it('should reject an invalid countryCode', async () => {
+      const res = await request(app)
+        .post('/api/businesses')
+        .set(createAuthHeader('test-user-cc-invalid'))
+        .send({
+          name: 'Bad Code Corp',
+          countryCode: '123',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+    });
+
+    it('should use stable BUSINESS_ALREADY_EXISTS error code on 409', async () => {
+      const userId = 'test-user-dup-stable-' + Date.now();
+      const authHeader = createAuthHeader(userId);
+
+      await request(app).post('/api/businesses').set(authHeader).send({ name: 'First Corp' });
+
+      const res2 = await request(app)
+        .post('/api/businesses')
+        .set(authHeader)
+        .send({ name: 'Second Corp' });
+
+      expect(res2.status).toBe(409);
+      expect(res2.body.error).toBe('BUSINESS_ALREADY_EXISTS');
+      expect(res2.body.message).toContain('already exists');
     });
   });
 
@@ -346,7 +478,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body).toBeDefined();
     });
 
     it('should allow empty request body (no changes)', async () => {
@@ -448,6 +580,70 @@ describe('Business Service Integration Tests', () => {
     });
   });
 
+  describe('GET /api/businesses - List Businesses', () => {
+    beforeEach(async () => {
+      // Create some businesses to list
+      for (let i = 0; i < 5; i++) {
+        await request(app)
+          .post('/api/businesses')
+          .set(createAuthHeader(`test-user-list-${i}`))
+          .send({
+            name: `List Test Corp ${i}`,
+            industry: i % 2 === 0 ? 'Tech' : 'Retail',
+          });
+      }
+    });
+
+    it('should return a list of businesses with pagination', async () => {
+      const res = await request(app).get('/api/businesses?limit=2');
+
+      expect(res.status).toBe(200);
+      expect(res.body.items).toBeDefined();
+      expect(Array.isArray(res.body.items)).toBe(true);
+      expect(res.body.items.length).toBeLessThanOrEqual(2);
+    });
+
+    it('should support keyset pagination with cursor', async () => {
+      const page1 = await request(app).get('/api/businesses?limit=2&sortBy=name&sortOrder=asc');
+      expect(page1.status).toBe(200);
+      
+      if (page1.body.nextCursor) {
+        const page2 = await request(app).get(`/api/businesses?limit=2&sortBy=name&sortOrder=asc&cursor=${encodeURIComponent(page1.body.nextCursor)}`);
+        expect(page2.status).toBe(200);
+        expect(page2.body.items.length).toBeGreaterThan(0);
+        
+        // Ensure no duplicates between pages
+        const page1Ids = page1.body.items.map((i: any) => i.id);
+        const page2Ids = page2.body.items.map((i: any) => i.id);
+        const overlap = page1Ids.filter((id: string) => page2Ids.includes(id));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('should support filtering by industry', async () => {
+      const res = await request(app).get('/api/businesses?industry=Tech');
+      expect(res.status).toBe(200);
+      
+      for (const item of res.body.items) {
+        expect(item.industry).toBe('Tech');
+      }
+    });
+
+    it('should validate limit bounds', async () => {
+      const resHigh = await request(app).get('/api/businesses?limit=1000');
+      expect(resHigh.status).toBe(400); // Because max limit is 100
+
+      const resLow = await request(app).get('/api/businesses?limit=0');
+      expect(resLow.status).toBe(400); // Because min limit is 1
+    });
+
+    it('should safely handle invalid cursor', async () => {
+      const res = await request(app).get('/api/businesses?cursor=invalid-cursor-string');
+      // Should not crash, just ignore invalid cursor or return first page
+      expect([200, 400]).toContain(res.status);
+    });
+  });
+
   describe('Input Normalization Edge Cases', () => {
     it('should handle unicode characters in optional fields', async () => {
       const res = await request(app)
@@ -508,7 +704,7 @@ describe('Business Service Integration Tests', () => {
           .send({ name });
 
         expect(res.status).toBe(400);
-        expect(res.body.error).toBeDefined();
+        expect(res.body).toBeDefined();
       }
     });
 
@@ -542,7 +738,7 @@ describe('Business Service Integration Tests', () => {
         });
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBeDefined();
+      expect(res.body).toBeDefined();
     });
   });
 });

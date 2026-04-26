@@ -1,3 +1,20 @@
+describe("normalizeEmail edge cases", () => {
+  it("should remove plus-addressing for all domains", () => {
+    expect(normalizeEmail("user+tag@example.com")).toBe("user@example.com");
+    expect(normalizeEmail("user+foo+bar@domain.com")).toBe("user@domain.com");
+  });
+
+  it("should optionally remove dots for Gmail addresses", () => {
+    expect(normalizeEmail("u.ser+tag@gmail.com", { removeGmailDots: true })).toBe("user@gmail.com");
+    expect(normalizeEmail("u.s.e.r+foo@googlemail.com", { removeGmailDots: true })).toBe("user@googlemail.com");
+    // Should not remove dots for non-Gmail
+    expect(normalizeEmail("u.ser+tag@notgmail.com", { removeGmailDots: true })).toBe("u.ser@notgmail.com");
+  });
+
+  it("should lowercase and trim whitespace", () => {
+    expect(normalizeEmail("  USER+tag@EXAMPLE.com  ")).toBe("user@example.com");
+  });
+});
 /**
  * Unit tests for Abuse Prevention Utilities
  *
