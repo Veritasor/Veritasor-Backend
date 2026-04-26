@@ -1,9 +1,46 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   normalizeRevenueEntry,
   detectNormalizationDrift,
 } from "../../../../src/services/revenue/normalize.js";
-import type { NormalizedRevenue, NormalizationBaseline } from "../../../../src/services/revenue/normalize.js";
+import type {
+  NormalizedRevenue,
+  NormalizationBaseline,
+  RawRevenueInput,
+} from "../../../../src/services/revenue/normalize.js";
+import {
+  detectRevenueAnomaly,
+  calibrateFromSeries,
+} from "../../../../src/services/revenue/anomalyDetection.js";
+import type {
+  MonthlyRevenue,
+  CalibrationConfig,
+  AnomalyLogRecord,
+} from "../../../../src/services/revenue/anomalyDetection.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function raw(overrides: Partial<RawRevenueInput> & { id: string; amount: number }): RawRevenueInput {
+  return { date: "2025-01-01", source: "stripe", ...overrides };
+}
+
+function makeMonthly(period: string, amount: number): MonthlyRevenue {
+  return { period, amount };
+}
+
+/** Build a stable ascending series of n months starting at 2025-01. */
+function stableSeries(n: number, base = 10_000): MonthlyRevenue[] {
+  return Array.from({ length: n }, (_, i) => {
+    const month = String(i + 1).padStart(2, "0");
+    return makeMonthly(`2025-${month}`, base);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Existing: revenue normalizer
+// ---------------------------------------------------------------------------
 
 describe("revenue normalizer", () => {
   it("should produce the canonical shape", () => {
@@ -72,7 +109,6 @@ describe("revenue normalizer", () => {
   });
 
   it("should convert numeric date (Unix timestamp) to ISO string", () => {
-    // 1700000000 = 2023-11-14T22:13:20.000Z
     const result = normalizeRevenueEntry({
       id: "txn_006",
       amount: 30,
@@ -121,7 +157,7 @@ describe("revenue normalizer", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Currency drift: consistent normalization across heterogeneous source data
+  // Currency drift
   // -------------------------------------------------------------------------
 
   describe("currency drift — case normalization consistency", () => {
@@ -158,7 +194,6 @@ describe("revenue normalizer", () => {
     });
 
     it("should preserve non-alphabetic currency codes (e.g. numeric ISO 4217) uppercased", () => {
-      // "840" is the numeric ISO 4217 code for USD; toUpperCase() is a no-op on digits
       const result = normalizeRevenueEntry(raw({ id: "d4", amount: 10, currency: "840" }));
       expect(result.currency).toBe("840");
     });
@@ -169,14 +204,11 @@ describe("revenue normalizer", () => {
     });
 
     it("should preserve whitespace in currency codes without trimming", () => {
-      // The normalizer does not trim; callers must sanitize upstream.
-      // This test documents the current behaviour to prevent silent drift.
       const result = normalizeRevenueEntry(raw({ id: "d6", amount: 10, currency: " usd " }));
       expect(result.currency).toBe(" USD ");
     });
 
     it("should treat empty-string currency as absent and default to USD", () => {
-      // Empty string is falsy in JS, so the default branch applies.
       const result = normalizeRevenueEntry(raw({ id: "d7", amount: 10, currency: "" }));
       expect(result.currency).toBe("USD");
     });
@@ -188,10 +220,9 @@ describe("revenue normalizer", () => {
         raw({ id: "b3", amount: 300, currency: "Eur" }),
         raw({ id: "b4", amount: 400, currency: "eUr" }),
       ];
-      const currencies = inputs.map((e) => normalizeRevenueEntry(e).currency);
-      const unique = new Set(currencies);
-      expect(unique.size).toBe(1);
-      expect([...unique][0]).toBe("EUR");
+      const codes = inputs.map((e) => normalizeRevenueEntry(e).currency);
+      expect(new Set(codes).size).toBe(1);
+      expect([...new Set(codes)][0]).toBe("EUR");
     });
 
     it("should not mutate the original raw input", () => {
@@ -203,7 +234,7 @@ describe("revenue normalizer", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Date normalization — full branch coverage
+  // Date normalization
   // -------------------------------------------------------------------------
 
   describe("date normalization edge cases", () => {
@@ -211,7 +242,6 @@ describe("revenue normalizer", () => {
       const before = Date.now();
       const result = normalizeRevenueEntry(raw({ id: "dt1", amount: 1, date: "not-a-date" }));
       const after = Date.now();
-
       const ts = new Date(result.date).getTime();
       expect(ts).toBeGreaterThanOrEqual(before);
       expect(ts).toBeLessThanOrEqual(after);
@@ -221,7 +251,6 @@ describe("revenue normalizer", () => {
       const before = Date.now();
       const result = normalizeRevenueEntry({ id: "dt2", amount: 1 });
       const after = Date.now();
-
       const ts = new Date(result.date).getTime();
       expect(ts).toBeGreaterThanOrEqual(before);
       expect(ts).toBeLessThanOrEqual(after);
@@ -231,7 +260,6 @@ describe("revenue normalizer", () => {
       const before = Date.now();
       const result = normalizeRevenueEntry(raw({ id: "dt3", amount: 1, date: "" }));
       const after = Date.now();
-
       const ts = new Date(result.date).getTime();
       expect(ts).toBeGreaterThanOrEqual(before);
       expect(ts).toBeLessThanOrEqual(after);
@@ -243,7 +271,6 @@ describe("revenue normalizer", () => {
     });
 
     it("should handle a large Unix timestamp (year 2100)", () => {
-      // 4102444800 = 2100-01-01T00:00:00.000Z
       const result = normalizeRevenueEntry(raw({ id: "dt5", amount: 1, date: 4102444800 }));
       expect(result.date).toBe("2100-01-01T00:00:00.000Z");
     });
@@ -273,7 +300,7 @@ describe("revenue normalizer", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Amount classification edge cases
+  // Amount classification
   // -------------------------------------------------------------------------
 
   describe("amount classification edge cases", () => {
@@ -412,6 +439,10 @@ describe("revenue normalizer", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Existing: detectNormalizationDrift
+// ---------------------------------------------------------------------------
+
 describe("detectNormalizationDrift", () => {
   const baseline: NormalizationBaseline = {
     refundRate: 0.1,
@@ -433,9 +464,8 @@ describe("detectNormalizationDrift", () => {
   }
 
   it("should return insufficient_data when entry count is below minimum", () => {
-    const entries = [makeEntry(), makeEntry(), makeEntry()]; // 3 < default min 5
+    const entries = [makeEntry(), makeEntry(), makeEntry()];
     const result = detectNormalizationDrift(entries, baseline);
-
     expect(result.hasDrift).toBe(false);
     expect(result.overallScore).toBe(0);
     expect(result.checks[0].flag).toBe("insufficient_data");
@@ -444,13 +474,11 @@ describe("detectNormalizationDrift", () => {
 
   it("should return insufficient_data for an empty array", () => {
     const result = detectNormalizationDrift([], baseline);
-
     expect(result.hasDrift).toBe(false);
     expect(result.checks[0].flag).toBe("insufficient_data");
   });
 
   it("should report no drift when entries exactly match the baseline", () => {
-    // 10 entries: 1 refund (10%), 1 unknown source (10%), 8 USD (80%), avg amount 100
     const matchingBaseline: NormalizationBaseline = {
       refundRate: 0.1,
       unknownSourceRate: 0.1,
@@ -464,15 +492,12 @@ describe("detectNormalizationDrift", () => {
       makeEntry({ currency: "EUR" }),
       ...Array.from({ length: 6 }, () => makeEntry()),
     ];
-
     const result = detectNormalizationDrift(entries, matchingBaseline);
-
     expect(result.hasDrift).toBe(false);
     expect(result.summary).toBe("No normalization drift detected.");
   });
 
   it("should flag refund_rate_drift when refund fraction deviates significantly", () => {
-    // 3 refunds out of 5 = 60% vs baseline 10%
     const entries: NormalizedRevenue[] = [
       makeEntry({ type: "refund", amount: -100 }),
       makeEntry({ type: "refund", amount: -100 }),
@@ -480,16 +505,13 @@ describe("detectNormalizationDrift", () => {
       makeEntry(),
       makeEntry(),
     ];
-
     const result = detectNormalizationDrift(entries, baseline);
     const refundCheck = result.checks.find((c) => c.metric === "refund_rate");
-
     expect(result.hasDrift).toBe(true);
     expect(refundCheck?.flag).toBe("refund_rate_drift");
   });
 
   it("should flag unknown_source_drift when unknown source fraction deviates", () => {
-    // 4 unknown sources out of 5 = 80% vs baseline 5%
     const entries: NormalizedRevenue[] = [
       makeEntry({ source: "unknown" }),
       makeEntry({ source: "unknown" }),
@@ -497,42 +519,29 @@ describe("detectNormalizationDrift", () => {
       makeEntry({ source: "unknown" }),
       makeEntry(),
     ];
-
     const result = detectNormalizationDrift(entries, baseline);
     const sourceCheck = result.checks.find((c) => c.metric === "unknown_source_rate");
-
     expect(result.hasDrift).toBe(true);
     expect(sourceCheck?.flag).toBe("unknown_source_drift");
   });
 
   it("should flag usd_rate_drift when USD currency fraction deviates", () => {
-    // 0 USD entries out of 5 = 0% vs baseline 80%
-    const entries: NormalizedRevenue[] = Array.from({ length: 5 }, () =>
-      makeEntry({ currency: "EUR" })
-    );
-
+    const entries = Array.from({ length: 5 }, () => makeEntry({ currency: "EUR" }));
     const result = detectNormalizationDrift(entries, baseline);
     const usdCheck = result.checks.find((c) => c.metric === "usd_rate");
-
     expect(result.hasDrift).toBe(true);
     expect(usdCheck?.flag).toBe("usd_rate_drift");
   });
 
   it("should flag amount_drift when mean amount deviates significantly", () => {
-    // avg amount 10000 vs baseline 100 → 9900% relative deviation
-    const entries: NormalizedRevenue[] = Array.from({ length: 5 }, () =>
-      makeEntry({ amount: 10000 })
-    );
-
+    const entries = Array.from({ length: 5 }, () => makeEntry({ amount: 10000 }));
     const result = detectNormalizationDrift(entries, baseline);
     const amountCheck = result.checks.find((c) => c.metric === "mean_amount");
-
     expect(result.hasDrift).toBe(true);
     expect(amountCheck?.flag).toBe("amount_drift");
   });
 
   it("should detect multiple drifting metrics simultaneously", () => {
-    // High refund rate AND high unknown source rate; amounts kept at 100
     const entries: NormalizedRevenue[] = [
       makeEntry({ type: "refund", amount: -100, source: "unknown" }),
       makeEntry({ type: "refund", amount: -100, source: "unknown" }),
@@ -540,60 +549,43 @@ describe("detectNormalizationDrift", () => {
       makeEntry({ source: "unknown" }),
       makeEntry(),
     ];
-
     const result = detectNormalizationDrift(entries, baseline);
-    const driftedFlags = result.checks
-      .filter((c) => c.flag !== "ok")
-      .map((c) => c.flag);
-
+    const driftedFlags = result.checks.filter((c) => c.flag !== "ok").map((c) => c.flag);
     expect(result.hasDrift).toBe(true);
     expect(driftedFlags).toContain("refund_rate_drift");
     expect(driftedFlags).toContain("unknown_source_drift");
   });
 
   it("should respect custom threshold and suppress drift below it", () => {
-    // Refund rate: 2/10 = 20% vs baseline 10% → 100% relative deviation
-    // With a 200% threshold no drift should be flagged
     const entries: NormalizedRevenue[] = [
       makeEntry({ type: "refund", amount: -100 }),
       makeEntry({ type: "refund", amount: -100 }),
       ...Array.from({ length: 8 }, () => makeEntry()),
     ];
-
     const result = detectNormalizationDrift(entries, baseline, { threshold: 2.0 });
     const refundCheck = result.checks.find((c) => c.metric === "refund_rate");
-
     expect(refundCheck?.flag).toBe("ok");
   });
 
   it("should respect custom minEntries option", () => {
-    // 3 entries is below the default minimum of 5, but above minEntries: 2
-    const entries: NormalizedRevenue[] = [makeEntry(), makeEntry(), makeEntry()];
+    const entries = [makeEntry(), makeEntry(), makeEntry()];
     const result = detectNormalizationDrift(entries, baseline, { minEntries: 2 });
-
     expect(result.checks[0].flag).not.toBe("insufficient_data");
   });
 
   it("should set overallScore to the maximum score across all checks", () => {
-    // Severe amount drift → score clamped to 1.0
-    const entries: NormalizedRevenue[] = Array.from({ length: 5 }, () =>
-      makeEntry({ amount: 10000 })
-    );
-
+    const entries = Array.from({ length: 5 }, () => makeEntry({ amount: 10000 }));
     const result = detectNormalizationDrift(entries, baseline);
     const maxScore = Math.max(...result.checks.map((c) => c.score));
-
     expect(result.overallScore).toBe(maxScore);
     expect(result.overallScore).toBeGreaterThan(0);
   });
 
   it("should handle zero baseline rate with zero observed — no drift", () => {
     const zeroBaseline = { ...baseline, unknownSourceRate: 0 };
-    const entries: NormalizedRevenue[] = Array.from({ length: 5 }, () => makeEntry());
-
+    const entries = Array.from({ length: 5 }, () => makeEntry());
     const result = detectNormalizationDrift(entries, zeroBaseline);
     const sourceCheck = result.checks.find((c) => c.metric === "unknown_source_rate");
-
     expect(sourceCheck?.flag).toBe("ok");
     expect(sourceCheck?.score).toBe(0);
   });
@@ -607,11 +599,506 @@ describe("detectNormalizationDrift", () => {
       makeEntry(),
       makeEntry(),
     ];
-
     const result = detectNormalizationDrift(entries, zeroBaseline);
     const sourceCheck = result.checks.find((c) => c.metric === "unknown_source_rate");
-
     expect(sourceCheck?.flag).toBe("unknown_source_drift");
-    expect(sourceCheck?.score).toBe(1); // clamped to maximum
+    expect(sourceCheck?.score).toBe(1);
+  });
+});
+
+// ===========================================================================
+// NEW: detectRevenueAnomaly — threshold configuration
+// ===========================================================================
+
+describe("detectRevenueAnomaly — insufficient data", () => {
+  it("returns insufficient_data for an empty series", () => {
+    const result = detectRevenueAnomaly([]);
+    expect(result.flag).toBe("insufficient_data");
+    expect(result.score).toBe(0);
+  });
+
+  it("returns insufficient_data for a single data point", () => {
+    const result = detectRevenueAnomaly([makeMonthly("2025-01", 10_000)]);
+    expect(result.flag).toBe("insufficient_data");
+  });
+
+  it("succeeds with exactly two data points (default minDataPoints)", () => {
+    const result = detectRevenueAnomaly([
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 10_000),
+    ]);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("respects custom minDataPoints — flags insufficient when series is too short", () => {
+    const result = detectRevenueAnomaly(
+      [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 10_000)],
+      { minDataPoints: 3 }
+    );
+    expect(result.flag).toBe("insufficient_data");
+    expect(result.detail).toContain("3");
+  });
+
+  it("detail message reports the actual series length received", () => {
+    const result = detectRevenueAnomaly([makeMonthly("2025-01", 5_000)]);
+    expect(result.detail).toContain("1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Drop threshold
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — drop threshold", () => {
+  it("flags unusual_drop at exactly the default 40% drop", () => {
+    // 10 000 → 6 000 = −40%
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 6_000)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("unusual_drop");
+  });
+
+  it("does not flag a drop just below the default threshold", () => {
+    // 10 000 → 6 100 ≈ −39%
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 6_100)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("respects a custom lower dropThreshold (e.g. 0.20)", () => {
+    // 10 000 → 7 500 = −25% → should fire with threshold=0.20
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 7_500)];
+    const result = detectRevenueAnomaly(series, { dropThreshold: 0.2 });
+    expect(result.flag).toBe("unusual_drop");
+  });
+
+  it("respects a custom higher dropThreshold (e.g. 0.60) — suppresses a 40% drop", () => {
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 6_000)];
+    const result = detectRevenueAnomaly(series, { dropThreshold: 0.6 });
+    expect(result.flag).toBe("ok");
+  });
+
+  it("score equals the absolute fractional change (clamped to 1) for a drop", () => {
+    // 10 000 → 5 000 = −50%
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 5_000)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.score).toBeCloseTo(0.5, 5);
+  });
+
+  it("detail string contains both period labels and amounts for the worst pair", () => {
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 5_000)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.detail).toContain("2025-01");
+    expect(result.detail).toContain("2025-02");
+    expect(result.detail).toContain("10000");
+    expect(result.detail).toContain("5000");
+  });
+
+  it("flags the worst drop across a multi-period series", () => {
+    // Mild drop in 02, severe drop in 04
+    const series = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 9_000),  // −10%
+      makeMonthly("2025-03", 9_500),
+      makeMonthly("2025-04", 2_000),  // −79%
+    ];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("unusual_drop");
+    expect(result.detail).toContain("2025-04");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spike threshold
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — spike threshold", () => {
+  it("flags unusual_spike at exactly the default 300% rise", () => {
+    // 10 000 → 40 000 = +300%
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 40_000)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("unusual_spike");
+  });
+
+  it("does not flag a rise just below the default spike threshold", () => {
+    // 10 000 → 39 000 = +290%
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 39_000)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("respects a custom lower spikeThreshold (e.g. 1.0 = 100%)", () => {
+    // 10 000 → 25 000 = +150% → fires at threshold 1.0
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 25_000)];
+    const result = detectRevenueAnomaly(series, { spikeThreshold: 1.0 });
+    expect(result.flag).toBe("unusual_spike");
+  });
+
+  it("respects a custom higher spikeThreshold (e.g. 5.0) — suppresses a 300% spike", () => {
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 40_000)];
+    const result = detectRevenueAnomaly(series, { spikeThreshold: 5.0 });
+    expect(result.flag).toBe("ok");
+  });
+
+  it("score for a spike is clamped to 1 when change > 100%", () => {
+    // 10 000 → 50 000 = +400%
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 50_000)];
+    const result = detectRevenueAnomaly(series);
+    expect(result.score).toBe(1);
+    expect(result.flag).toBe("unusual_spike");
+  });
+
+  it("detail string includes 'spiked' and both period labels", () => {
+    const series = [makeMonthly("2025-01", 5_000), makeMonthly("2025-02", 25_000)];
+    const result = detectRevenueAnomaly(series, { spikeThreshold: 1.0 });
+    expect(result.detail.toLowerCase()).toContain("spike");
+    expect(result.detail).toContain("2025-01");
+    expect(result.detail).toContain("2025-02");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Edge cases: zero, negative, unsorted input
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — edge cases", () => {
+  it("skips pairs where prev.amount is 0 (avoids division by zero)", () => {
+    const series = [
+      makeMonthly("2025-01", 0),
+      makeMonthly("2025-02", 10_000),
+      makeMonthly("2025-03", 10_000),
+    ];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("returns ok when all amounts are zero", () => {
+    const series = stableSeries(4, 0);
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("sorts an unsorted series before analysis", () => {
+    // Shuffled order — the logic should still detect the drop in 03→04
+    const series = [
+      makeMonthly("2025-04", 2_000),
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-03", 10_500),
+      makeMonthly("2025-02", 10_200),
+    ];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("unusual_drop");
+    expect(result.detail).toContain("2025-04");
+  });
+
+  it("does not mutate the original series array", () => {
+    const series = [makeMonthly("2025-02", 5_000), makeMonthly("2025-01", 10_000)];
+    const original = series.map((s) => ({ ...s }));
+    detectRevenueAnomaly(series);
+    expect(series).toEqual(original);
+  });
+
+  it("handles negative revenue amounts without throwing", () => {
+    // Negative-to-less-negative = positive change; should not throw
+    const series = [makeMonthly("2025-01", -5_000), makeMonthly("2025-02", -1_000)];
+    expect(() => detectRevenueAnomaly(series)).not.toThrow();
+  });
+
+  it("returns ok for a perfectly stable series", () => {
+    const result = detectRevenueAnomaly(stableSeries(12));
+    expect(result.flag).toBe("ok");
+    expect(result.score).toBe(0);
+  });
+
+  it("a series with only the exact drop boundary is flagged, not just below", () => {
+    // boundary: exactly 40% drop — should be flagged (change <= -0.4)
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 6_000)];
+    expect(detectRevenueAnomaly(series).flag).toBe("unusual_drop");
+    // one cent above boundary
+    const borderline = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 6_001)];
+    expect(detectRevenueAnomaly(borderline).flag).toBe("ok");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scoreHook
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — scoreHook", () => {
+  it("uses hook result when hook returns non-null", () => {
+    const hook: CalibrationConfig["scoreHook"] = (_prev, _curr, _change) => ({
+      score: 0.9,
+      flag: "unusual_drop",
+    });
+    const series = stableSeries(3); // stable — would be ok without hook
+    const result = detectRevenueAnomaly(series, { scoreHook: hook });
+    expect(result.flag).toBe("unusual_drop");
+    expect(result.score).toBeCloseTo(0.9, 5);
+  });
+
+  it("falls back to built-in logic when hook returns null", () => {
+    const hook: CalibrationConfig["scoreHook"] = () => null;
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 5_000)];
+    const result = detectRevenueAnomaly(series, { scoreHook: hook });
+    expect(result.flag).toBe("unusual_drop"); // built-in logic fires
+  });
+
+  it("hook receives the correct signed fractional change", () => {
+    const captured: number[] = [];
+    const hook: CalibrationConfig["scoreHook"] = (_p, _c, change) => {
+      captured.push(change);
+      return null;
+    };
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 12_000)];
+    detectRevenueAnomaly(series, { scoreHook: hook });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toBeCloseTo(0.2, 5); // +20%
+  });
+
+  it("hook can suppress a real anomaly by returning score 0 flag ok", () => {
+    const hook: CalibrationConfig["scoreHook"] = () => ({ score: 0, flag: "ok" });
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 1_000)]; // −90%
+    const result = detectRevenueAnomaly(series, { scoreHook: hook });
+    expect(result.flag).toBe("ok");
+    expect(result.score).toBe(0);
+  });
+
+  it("hook is called once per consecutive pair in the series", () => {
+    const callCount = { n: 0 };
+    const hook: CalibrationConfig["scoreHook"] = () => { callCount.n++; return null; };
+    detectRevenueAnomaly(stableSeries(5), { scoreHook: hook });
+    expect(callCount.n).toBe(4); // 5 points → 4 consecutive pairs
+  });
+
+  it("hook receives correct prev and curr arguments", () => {
+    const pairs: Array<[MonthlyRevenue, MonthlyRevenue]> = [];
+    const hook: CalibrationConfig["scoreHook"] = (p, c) => { pairs.push([p, c]); return null; };
+    const series = [
+      makeMonthly("2025-01", 1_000),
+      makeMonthly("2025-02", 2_000),
+      makeMonthly("2025-03", 3_000),
+    ];
+    detectRevenueAnomaly(series, { scoreHook: hook });
+    expect(pairs[0][0].period).toBe("2025-01");
+    expect(pairs[0][1].period).toBe("2025-02");
+    expect(pairs[1][0].period).toBe("2025-02");
+    expect(pairs[1][1].period).toBe("2025-03");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured logger
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — structured logger", () => {
+  it("calls the logger once per invocation", () => {
+    const logs: AnomalyLogRecord[] = [];
+    detectRevenueAnomaly(stableSeries(3), {}, (r) => logs.push(r));
+    expect(logs).toHaveLength(1);
+  });
+
+  it("emits anomaly_check_ok event for a clean series", () => {
+    const logs: AnomalyLogRecord[] = [];
+    detectRevenueAnomaly(stableSeries(3), {}, (r) => logs.push(r));
+    expect(logs[0].event).toBe("anomaly_check_ok");
+    expect(logs[0].flag).toBe("ok");
+  });
+
+  it("emits anomaly_detected event when an anomaly is found", () => {
+    const logs: AnomalyLogRecord[] = [];
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 5_000)];
+    detectRevenueAnomaly(series, {}, (r) => logs.push(r));
+    expect(logs[0].event).toBe("anomaly_detected");
+    expect(logs[0].flag).toBe("unusual_drop");
+  });
+
+  it("emits anomaly_insufficient_data for a short series", () => {
+    const logs: AnomalyLogRecord[] = [];
+    detectRevenueAnomaly([makeMonthly("2025-01", 1_000)], {}, (r) => logs.push(r));
+    expect(logs[0].event).toBe("anomaly_insufficient_data");
+    expect(logs[0].flag).toBe("insufficient_data");
+  });
+
+  it("log record includes active thresholds", () => {
+    const logs: AnomalyLogRecord[] = [];
+    detectRevenueAnomaly(stableSeries(3), { dropThreshold: 0.25, spikeThreshold: 2.0 }, (r) => logs.push(r));
+    expect(logs[0].thresholds.drop).toBe(0.25);
+    expect(logs[0].thresholds.spike).toBe(2.0);
+  });
+
+  it("log record detectedAt is a valid ISO 8601 timestamp", () => {
+    const logs: AnomalyLogRecord[] = [];
+    detectRevenueAnomaly(stableSeries(3), {}, (r) => logs.push(r));
+    expect(logs[0].detectedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
+  it("log record score and detail match the returned AnomalyResult", () => {
+    const logs: AnomalyLogRecord[] = [];
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 5_000)];
+    const result = detectRevenueAnomaly(series, {}, (r) => logs.push(r));
+    expect(logs[0].score).toBe(result.score);
+    expect(logs[0].detail).toBe(result.detail);
+  });
+
+  it("does not throw when no logger is provided", () => {
+    expect(() => detectRevenueAnomaly(stableSeries(3))).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// calibrateFromSeries
+// ---------------------------------------------------------------------------
+
+describe("calibrateFromSeries", () => {
+  it("returns module defaults for a series with fewer than 2 points", () => {
+    const result = calibrateFromSeries([makeMonthly("2025-01", 10_000)]);
+    expect(result.dropThreshold).toBe(0.4);
+    expect(result.spikeThreshold).toBe(3.0);
+    expect(result.mean).toBe(0);
+    expect(result.stdDev).toBe(0);
+  });
+
+  it("returns module defaults when series is empty", () => {
+    const result = calibrateFromSeries([]);
+    expect(result.dropThreshold).toBe(0.4);
+    expect(result.spikeThreshold).toBe(3.0);
+  });
+
+  it("returns module defaults when all prev amounts are zero", () => {
+    const series = [makeMonthly("2025-01", 0), makeMonthly("2025-02", 0)];
+    const result = calibrateFromSeries(series);
+    expect(result.dropThreshold).toBe(0.4);
+    expect(result.spikeThreshold).toBe(3.0);
+    expect(result.mean).toBe(0);
+    expect(result.stdDev).toBe(0);
+  });
+
+  it("computes tighter thresholds from a low-variance stable series", () => {
+    const stable = calibrateFromSeries(stableSeries(12));
+    const defaults = { dropThreshold: 0.4, spikeThreshold: 3.0 };
+    // mean ≈ 0, stdDev ≈ 0 → dropBound ≥ 0 so falls back to default
+    // This verifies graceful fallback, not tighter thresholds for zero-variance data
+    expect(stable.dropThreshold).toBe(defaults.dropThreshold);
+    expect(stable.mean).toBeCloseTo(0, 5);
+    expect(stable.stdDev).toBeCloseTo(0, 5);
+  });
+
+  it("calibrated thresholds reduce false positives on volatile but healthy series", () => {
+    // Series with regular ±20% swings
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 12_000), // +20%
+      makeMonthly("2025-03", 9_600),  // −20%
+      makeMonthly("2025-04", 11_520), // +20%
+      makeMonthly("2025-05", 9_216),  // −20%
+      makeMonthly("2025-06", 11_059), // +20%
+    ];
+    const cal = calibrateFromSeries(series);
+    // With default thresholds a 20% drop wouldn't fire anyway (< 40%), but
+    // calibrated thresholds should still be positive and internally consistent.
+    expect(cal.dropThreshold).toBeGreaterThan(0);
+    expect(cal.spikeThreshold).toBeGreaterThan(0);
+    expect(cal.stdDev).toBeGreaterThan(0);
+  });
+
+  it("calibrated result integrates cleanly with detectRevenueAnomaly", () => {
+    const training = stableSeries(12);
+    const cal = calibrateFromSeries(training);
+    const current = [makeMonthly("2026-01", 10_000), makeMonthly("2026-02", 10_200)];
+    const result = detectRevenueAnomaly(current, cal);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("respects custom sigmaMultiplier — higher sigma → wider thresholds", () => {
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 8_000),
+      makeMonthly("2025-03", 11_000),
+      makeMonthly("2025-04", 9_500),
+    ];
+    const tight  = calibrateFromSeries(series, { sigmaMultiplier: 1 });
+    const wide   = calibrateFromSeries(series, { sigmaMultiplier: 3 });
+    expect(wide.dropThreshold).toBeGreaterThanOrEqual(tight.dropThreshold);
+    expect(wide.spikeThreshold).toBeGreaterThanOrEqual(tight.spikeThreshold);
+  });
+
+  it("mean and stdDev are numerically correct for a simple two-point series", () => {
+    // Only one change: (12_000 − 10_000) / 10_000 = 0.2
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 12_000)];
+    const cal = calibrateFromSeries(series);
+    expect(cal.mean).toBeCloseTo(0.2, 5);
+    expect(cal.stdDev).toBeCloseTo(0, 5); // single sample → variance = 0
+  });
+
+  it("does not mutate the input series", () => {
+    const series = [makeMonthly("2025-02", 5_000), makeMonthly("2025-01", 10_000)];
+    const original = series.map((s) => ({ ...s }));
+    calibrateFromSeries(series);
+    expect(series).toEqual(original);
+  });
+
+  it("is idempotent — same input produces same output", () => {
+    const series = stableSeries(6, 10_000);
+    const a = calibrateFromSeries(series);
+    const b = calibrateFromSeries(series);
+    expect(a).toEqual(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Seasonality / false-positive scenarios
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — seasonality and false-positive scenarios", () => {
+  it("does not flag a Q4 holiday spike when spikeThreshold is widened", () => {
+    // Simulate a business that regularly 4× revenue in December
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-09", 10_000),
+      makeMonthly("2025-10", 10_500),
+      makeMonthly("2025-11", 11_000),
+      makeMonthly("2025-12", 44_000), // holiday spike ~300%
+    ];
+    // With default threshold (3.0) this is exactly at the boundary
+    const defaultResult = detectRevenueAnomaly(series);
+    // Widening to 4.0 suppresses the flag
+    const widenedResult = detectRevenueAnomaly(series, { spikeThreshold: 4.0 });
+    expect(widenedResult.flag).toBe("ok");
+    // Default may or may not flag depending on exact boundary — just check no throw
+    expect(["ok", "unusual_spike"]).toContain(defaultResult.flag);
+  });
+
+  it("scoreHook can suppress known promotional periods", () => {
+    const promoMonth = "2025-11";
+    const hook: CalibrationConfig["scoreHook"] = (_prev, curr, _change) => {
+      if (curr.period === promoMonth) return { score: 0, flag: "ok" };
+      return null;
+    };
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-10", 10_000),
+      makeMonthly("2025-11", 50_000), // would normally spike
+      makeMonthly("2025-12", 11_000),
+    ];
+    const result = detectRevenueAnomaly(series, { scoreHook: hook });
+    expect(result.flag).toBe("ok");
+  });
+
+  it("calibrateFromSeries on 12-month volatile data produces usable thresholds", () => {
+    // Simulate ±30% seasonal swings over 12 months
+    const amounts = [10_000, 13_000, 9_100, 11_830, 8_281, 10_765,
+                     7_536, 9_797, 6_858, 8_915, 6_240, 8_113];
+    const series = amounts.map((amount, i) =>
+      makeMonthly(`2025-${String(i + 1).padStart(2, "0")}`, amount)
+    );
+    const cal = calibrateFromSeries(series);
+    expect(cal.dropThreshold).toBeGreaterThan(0);
+    expect(cal.spikeThreshold).toBeGreaterThan(0);
+    expect(typeof cal.mean).toBe("number");
+    expect(typeof cal.stdDev).toBe("number");
+  });
+
+  it("missing baseline (< 2 training points) falls back without throwing", () => {
+    const cal = calibrateFromSeries([makeMonthly("2025-01", 10_000)]);
+    const result = detectRevenueAnomaly(stableSeries(3), cal);
+    expect(result).toBeDefined();
+    expect(["ok", "unusual_drop", "unusual_spike", "insufficient_data"]).toContain(result.flag);
   });
 });

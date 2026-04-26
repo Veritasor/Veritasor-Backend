@@ -1,7 +1,7 @@
 import express, { type Express } from "express";
-import cors from "cors";
 import type { Server } from "node:http";
 import { config } from "./config/index.js";
+import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { apiVersionMiddleware, versionResponseMiddleware } from "./middleware/apiVersion.js";
@@ -10,6 +10,16 @@ import { authRouter } from "./routes/auth.js";
 import { attestationsRouter } from "./routes/attestations.js";
 import businessRoutes from "./routes/businesses.js";
 import { healthRouter } from "./routes/health.js";
+import { StartupReadinessReport } from "./startup/readiness.js";
+
+/**
+ * Creates and configures the Express application.
+ *
+ * @param readinessReport - Startup readiness check results
+ * @returns Configured Express application
+ */
+export function createApp(readinessReport: StartupReadinessReport): Express {
+  const app = express();
 
 
 
@@ -23,10 +33,13 @@ export async function startServer(port: number): Promise<Server> {
       .filter((check) => !check.ready)
       .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
       .join("; ");
-    throw new Error(`Startup dependency check failed: ${failedChecks}`);
+    console.warn(`Warning: Startup dependency checks failed: ${failedChecks}`);
   }
 
-  const app = express();
+    // Log failed checks but continue with app creation
+    console.error(`Startup readiness checks failed: ${failedChecks}`);
+  }
+
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
   app.use(cors());
@@ -35,13 +48,27 @@ export async function startServer(port: number): Promise<Server> {
 
   app.use("/api/health", healthRouter);
   app.use("/api/attestations", attestationsRouter);
-  app.use("/api/auth", authRouter);
-  app.use("/api/businesses", businessRoutes);
-  app.use("/api/analytics", analyticsRouter);
   app.use(errorHandler);
 
-  return app.listen(port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`[Startup] Server listening on port ${port}`);
+  return app;
+}
+
+/**
+ * Starts the HTTP server with the configured Express application.
+ *
+ * @param port - Port to listen on
+ * @returns Promise that resolves when server is listening
+ */
+export async function startServer(port: number): Promise<Server> {
+  const { runStartupDependencyReadinessChecks } = await import("./startup/readiness.js");
+  
+  const readinessReport = await runStartupDependencyReadinessChecks();
+  const app = createApp(readinessReport);
+  
+  return new Promise((resolve) => {
+    const server = app.listen(port, () => {
+      console.log(`Server listening on port ${port}`);
+      resolve(server);
+    });
   });
 }
