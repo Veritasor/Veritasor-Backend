@@ -21,6 +21,7 @@
  *  401  { code: 'MISSING_AUTH' | 'INVALID_TOKEN',  error: string }
  *  400  { code: 'MISSING_BUSINESS_ID',             error: string }
  *  403  { code: 'BUSINESS_NOT_FOUND',              error: string }
+ *  403  { code: 'BUSINESS_SUSPENDED',              error: string }
  *  429  { error: string }
  *  400  { error: string }   – bad query params / time-window errors
  *  404  { error: string }   – no data for the given window

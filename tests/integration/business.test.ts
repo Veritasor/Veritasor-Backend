@@ -871,6 +871,17 @@ function authBusinessNotFound() {
   })
 }
 
+/** Simulate a 403 BUSINESS_SUSPENDED response from the middleware. */
+function authBusinessSuspended() {
+  mockRequireBusinessAuth.mockImplementation((_req: any, res: any) => {
+    res.status(403).json({
+      error: 'Business suspended',
+      message: 'This business account has been suspended.',
+      code: 'BUSINESS_SUSPENDED',
+    })
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -916,6 +927,29 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
       expect(res.status).toBe(403)
       expect(res.body.code).toBe('BUSINESS_NOT_FOUND')
       expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 403 with BUSINESS_SUSPENDED code when business is suspended', async () => {
+      authBusinessSuspended()
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-suspended')
+
+      expect(res.status).toBe(403)
+      expect(res.body.code).toBe('BUSINESS_SUSPENDED')
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 401 INVALID_TOKEN when token expires mid-request (user deleted)', async () => {
+      // Simulates a token that was valid when issued but the user was deleted before this request
+      authInvalidToken()
+      const res = await request(app)
+        .get('/api/analytics/periods')
+        .set('Authorization', 'Bearer stale.token.after.user.deletion')
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('INVALID_TOKEN')
     })
 
     it('returns 200 with empty periods array when business has no attestations', async () => {
@@ -994,6 +1028,28 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
 
       expect(res.status).toBe(403)
       expect(res.body.code).toBe('BUSINESS_NOT_FOUND')
+    })
+
+    it('returns 403 with BUSINESS_SUSPENDED code when business is suspended', async () => {
+      authBusinessSuspended()
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer valid.token')
+        .set('x-business-id', 'biz-suspended')
+
+      expect(res.status).toBe(403)
+      expect(res.body.code).toBe('BUSINESS_SUSPENDED')
+      expect(res.body.error).toBeDefined()
+    })
+
+    it('returns 401 INVALID_TOKEN when token expires mid-request', async () => {
+      authInvalidToken()
+      const res = await request(app)
+        .get('/api/analytics/revenue?period=2025-10')
+        .set('Authorization', 'Bearer expired.token')
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('INVALID_TOKEN')
     })
 
     it('returns 400 when neither period nor from/to is provided', async () => {
