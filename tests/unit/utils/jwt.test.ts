@@ -6,6 +6,21 @@ import {
 	type TokenPayload,
 	verifyRefreshToken,
 	verifyToken,
+	generateAccessToken,
+	generateRefreshTokenWithFamily,
+	generateTokenPair,
+	verifyAccessToken,
+	verifyRefreshTokenRotationAware,
+	refreshTokenPair,
+	blacklistToken,
+	isTokenBlacklisted,
+	getTokenFamily,
+	revokeTokenFamily,
+	clearExpiredFamilies,
+	TokenExpiredError,
+	TokenInvalidError,
+	TokenReusedError,
+	JWTError,
 	sign,
 	verify,
 	JWT_ISSUER,
@@ -14,7 +29,7 @@ import {
 } from "../../../src/utils/jwt";
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Fixtures & Helpers
 // ---------------------------------------------------------------------------
 
 const payload: TokenPayload = {
@@ -22,7 +37,6 @@ const payload: TokenPayload = {
 	email: "test@example.com",
 };
 
-// Secrets mirror the defaults in src/utils/jwt.ts (env vars not set in tests).
 const ACCESS_SECRET = "dev-secret-key";
 const REFRESH_SECRET = "dev-refresh-secret-key";
 
@@ -52,10 +66,10 @@ function makeExpiredRefreshToken(): string {
 }
 
 // ---------------------------------------------------------------------------
-// generateToken
+// LEGACY FUNCTION TESTS (backward compatibility)
 // ---------------------------------------------------------------------------
 
-describe("generateToken", () => {
+describe("generateToken (legacy)", () => {
 	it("returns a non-empty string", () => {
 		const token = generateToken(payload);
 		expect(typeof token).toBe("string");
@@ -96,11 +110,7 @@ describe("generateToken", () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// generateRefreshToken
-// ---------------------------------------------------------------------------
-
-describe("generateRefreshToken", () => {
+describe("generateRefreshToken (legacy)", () => {
 	it("returns a non-empty string", () => {
 		const token = generateRefreshToken(payload);
 		expect(typeof token).toBe("string");
@@ -149,11 +159,7 @@ describe("generateRefreshToken", () => {
 	});
 });
 
-// ---------------------------------------------------------------------------
-// verifyToken
-// ---------------------------------------------------------------------------
-
-describe("verifyToken", () => {
+describe("verifyToken (legacy)", () => {
 	it("returns the original payload for a valid token", () => {
 		const token = generateToken(payload);
 		const result = verifyToken(token);

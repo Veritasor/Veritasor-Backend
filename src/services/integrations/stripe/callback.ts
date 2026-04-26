@@ -38,7 +38,8 @@ export function isValidStripeOAuthState(state: string): boolean {
  */
 export async function handleCallback(
   params: CallbackParams,
-  userId: string
+  userId: string,
+  businessId: string
 ): Promise<CallbackResult> {
   // Validate required parameters
   const code = params.code?.trim()
@@ -129,6 +130,7 @@ export async function handleCallback(
   
   const integrationData = {
     userId,
+    businessId,
     provider: 'stripe',
     externalId: stripeUserId,
     token: {
@@ -140,13 +142,13 @@ export async function handleCallback(
     metadata: {}
   }
 
-  const existingIntegrations = await IntegrationRepository.listByUserId(userId)
+  const existingIntegrations = await IntegrationRepository.listByBusinessId(businessId)
   const existingStripeIntegration = existingIntegrations.find((integration) =>
     integration.provider === 'stripe' && integration.externalId === stripeUserId
   )
 
   if (existingStripeIntegration) {
-    await IntegrationRepository.update(existingStripeIntegration.id, {
+    await IntegrationRepository.update(businessId, existingStripeIntegration.id, {
       token: integrationData.token,
       metadata: integrationData.metadata
     })

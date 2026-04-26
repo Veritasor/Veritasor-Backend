@@ -1,8 +1,7 @@
-import cors from "cors";
 import express, { type Express } from "express";
 import type { Server } from "node:http";
 import { config } from "./config/index.js";
-import { apiVersionMiddleware, versionResponseMiddleware } from "./middleware/apiVersion.js";
+import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { analyticsRouter } from "./routes/analytics.js";
@@ -16,9 +15,29 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import { StartupReadinessReport } from "./startup/readiness.js";
 
-export function createApp(): Express {
+export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
+
+
+
+import { runStartupDependencyReadinessChecks } from "./startup/readiness.js";
+
+export async function startServer(port: number): Promise<Server> {
+  // Run startup dependency checks
+  const readinessReport = await runStartupDependencyReadinessChecks();
+  if (!readinessReport.ready) {
+    const failedChecks = readinessReport.checks
+      .filter((check) => !check.ready)
+      .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
+      .join("; ");
+    console.warn(`Warning: Startup dependency checks failed: ${failedChecks}`);
+  }
+
+    // Log failed checks but continue with app creation
+    console.error(`Startup readiness checks failed: ${failedChecks}`);
+  }
 
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
@@ -46,12 +65,18 @@ export function createApp(): Express {
   return app;
 }
 
-export const app = createApp();
+export const app = createApp({ ready: true, checks: [] });
 
 export async function startServer(port: number): Promise<Server> {
-  return await new Promise((resolve) => {
+  const { runStartupDependencyReadinessChecks } = await import("./startup/readiness.js");
+
+  const readinessReport = await runStartupDependencyReadinessChecks();
+  const app = createApp(readinessReport);
+
+  return new Promise((resolve) => {
     const server = app.listen(port, () => {
       resolve(server);
     });
   });
 }
+     

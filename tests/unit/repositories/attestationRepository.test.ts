@@ -842,7 +842,13 @@ describe('Attestation Repository - Transaction Rollback Paths', () => {
     });
 
     it('should propagate foreign-key ConflictError from INSERT in rollback path', async () => {
-      const failClient = new RollbackMockDbClient(1, '23503', 'foreign key violation on INSERT');
+      // Call sequence for createWithConflictCheck:
+      //   1. SET LOCAL (applyStatementTimeout for getByBusinessAndPeriod)
+      //   2. SELECT    (getByBusinessAndPeriod — must succeed/return empty)
+      //   3. SET LOCAL (applyStatementTimeout for create)
+      //   4. INSERT    (create — throws 23503 here)
+      // throwAfterNCalls=3 lets calls 1-3 succeed, then call 4 throws.
+      const failClient = new RollbackMockDbClient(3, '23503', 'foreign key violation on INSERT');
       const input: CreateAttestationInput = {
         businessId: 'business-rollback',
         period: '2025-rb-08',
@@ -899,6 +905,363 @@ describe('Attestation Repository - Transaction Rollback Paths', () => {
       expect(after).not.toBeNull();
       expect(after!.status).toBe('pending');
       expect(after!.version).toBe(1);
+    });
+  });
+});
+
+// ─── High-Volume Query Patterns ───────────────────────────────────────────────
+//
+// These tests verify the behaviour added for issue #250:
+//   • Statement timeout is applied before every query
+//   • Slow / large-result queries emit a structured warning log
+//   • Index-column filter paths (business_id, created_at) are exercised
+//   • Large-page pagination returns correct slices and totals
+//   • Timeout errors propagate without being swallowed
+
+/**
+ * SpyDbClient wraps MockDbClient and records every SQL statement executed.
+ * Used to assert that SET LOCAL statement_timeout is issued before data queries.
+ */
+class SpyDbClient implements DbClient {
+  public queries: Array<{ sql: string; params?: any[] }> = [];
+  private delegate: MockDbClient;
+
+  constructor(delegate?: MockDbClient) {
+    this.delegate = delegate ?? new MockDbClient();
+  }
+
+  async query<T>(sql: string, params?: any[]): Promise<{ rows: T[] }> {
+    this.queries.push({ sql: sql.trim(), params });
+    return this.delegate.query<T>(sql, params);
+  }
+
+  /** Return the SQL strings in order */
+  sqlLog(): string[] {
+    return this.queries.map(q => q.sql);
+  }
+
+  /** True if a SET LOCAL statement_timeout was issued */
+  hasTimeoutSet(): boolean {
+    return this.queries.some(q => /SET LOCAL statement_timeout/i.test(q.sql));
+  }
+
+  addBusiness(id: string, userId: string, name: string) {
+    this.delegate.addBusiness(id, userId, name);
+  }
+}
+
+/**
+ * TimeoutDbClient simulates a PostgreSQL statement_timeout cancellation.
+ * The first query (SET LOCAL) succeeds; the second (the actual data query)
+ * throws with the pg error code '57014' (query_canceled).
+ */
+class TimeoutDbClient implements DbClient {
+  private callCount = 0;
+
+  async query<T>(sql: string, _params?: any[]): Promise<{ rows: T[] }> {
+    this.callCount++;
+    if (this.callCount === 1 && /SET LOCAL statement_timeout/i.test(sql)) {
+      return { rows: [] as T[] }; // timeout SET succeeds
+    }
+    const err: any = new Error('ERROR: canceling statement due to statement timeout');
+    err.code = '57014';
+    throw err;
+  }
+}
+
+describe('Attestation Repository - High-Volume Query Patterns', () => {
+  // ── Statement timeout ──────────────────────────────────────────────────────
+
+  describe('Statement timeout is applied before every query', () => {
+    it('create: issues SET LOCAL statement_timeout before INSERT', async () => {
+      const spy = new SpyDbClient();
+      spy.addBusiness('biz-hv-1', 'user-hv', 'HV Business 1');
+      await create(spy, {
+        businessId: 'biz-hv-1',
+        period: '2026-01',
+        merkleRoot: '0x' + 'a'.repeat(64),
+        txHash: '0x' + 'b'.repeat(64),
+        status: 'pending',
+      });
+      expect(spy.hasTimeoutSet()).toBe(true);
+      // Timeout SET must come before the INSERT
+      const idx = spy.sqlLog().findIndex(s => /SET LOCAL statement_timeout/i.test(s));
+      const insertIdx = spy.sqlLog().findIndex(s => /INSERT/i.test(s));
+      expect(idx).toBeLessThan(insertIdx);
+    });
+
+    it('getById: issues SET LOCAL statement_timeout before SELECT', async () => {
+      const base = new MockDbClient();
+      base.addBusiness('biz-hv-2', 'user-hv', 'HV Business 2');
+      const spy = new SpyDbClient(base);
+      const created = await create(spy, {
+        businessId: 'biz-hv-2',
+        period: '2026-02',
+        merkleRoot: '0x' + 'c'.repeat(64),
+        txHash: '0x' + 'd'.repeat(64),
+        status: 'pending',
+      });
+      spy.queries = []; // reset after create
+      await getById(spy, created.id);
+      expect(spy.hasTimeoutSet()).toBe(true);
+    });
+
+    it('list: issues SET LOCAL statement_timeout before SELECT', async () => {
+      const base = new MockDbClient();
+      base.addBusiness('biz-hv-3', 'user-hv', 'HV Business 3');
+      const spy = new SpyDbClient(base);
+      await create(spy, {
+        businessId: 'biz-hv-3',
+        period: '2026-03',
+        merkleRoot: '0x' + 'e'.repeat(64),
+        txHash: '0x' + 'f'.repeat(64),
+        status: 'pending',
+      });
+      spy.queries = [];
+      await list(spy, { businessId: 'biz-hv-3' }, { limit: 10, offset: 0 });
+      expect(spy.hasTimeoutSet()).toBe(true);
+    });
+
+    it('updateStatus: issues SET LOCAL statement_timeout before UPDATE', async () => {
+      const base = new MockDbClient();
+      base.addBusiness('biz-hv-4', 'user-hv', 'HV Business 4');
+      const spy = new SpyDbClient(base);
+      const created = await create(spy, {
+        businessId: 'biz-hv-4',
+        period: '2026-04',
+        merkleRoot: '0x' + 'g'.repeat(64),
+        txHash: '0x' + 'h'.repeat(64),
+        status: 'pending',
+      });
+      spy.queries = [];
+      await updateStatus(spy, created.id, 'confirmed');
+      expect(spy.hasTimeoutSet()).toBe(true);
+    });
+
+    it('remove: issues SET LOCAL statement_timeout before DELETE', async () => {
+      const base = new MockDbClient();
+      base.addBusiness('biz-hv-5', 'user-hv', 'HV Business 5');
+      const spy = new SpyDbClient(base);
+      const created = await create(spy, {
+        businessId: 'biz-hv-5',
+        period: '2026-05',
+        merkleRoot: '0x' + 'i'.repeat(64),
+        txHash: '0x' + 'j'.repeat(64),
+        status: 'pending',
+      });
+      spy.queries = [];
+      await remove(spy, created.id);
+      expect(spy.hasTimeoutSet()).toBe(true);
+    });
+  });
+
+  // ── Timeout error propagation ──────────────────────────────────────────────
+
+  describe('Statement timeout errors propagate without being swallowed', () => {
+    it('getById propagates pg error 57014 (query_canceled)', async () => {
+      const client = new TimeoutDbClient();
+      await expect(getById(client, 'any-id')).rejects.toMatchObject({ code: '57014' });
+    });
+
+    it('list propagates pg error 57014 (query_canceled)', async () => {
+      const client = new TimeoutDbClient();
+      await expect(
+        list(client, { businessId: 'biz-x' }, { limit: 10, offset: 0 })
+      ).rejects.toMatchObject({ code: '57014' });
+    });
+
+    it('updateStatus propagates pg error 57014 (query_canceled)', async () => {
+      const client = new TimeoutDbClient();
+      await expect(updateStatus(client, 'any-id', 'confirmed')).rejects.toMatchObject({ code: '57014' });
+    });
+  });
+
+  // ── Structured logging ─────────────────────────────────────────────────────
+
+  describe('Structured warning log is emitted for slow / large queries', () => {
+    it('list emits a warn log when result exceeds row threshold', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      // Build a client that returns 600 rows (above SLOW_QUERY_ROW_THRESHOLD=500)
+      const bigClient: DbClient = {
+        async query<T>(sql: string, _params?: any[]): Promise<{ rows: T[] }> {
+          if (/SET LOCAL/i.test(sql)) return { rows: [] as T[] };
+          if (/COUNT/i.test(sql)) return { rows: [{ count: '600' } as T] };
+          // Return 600 fake rows
+          const rows = Array.from({ length: 600 }, (_, i) => ({
+            id: `id-${i}`,
+            business_id: 'biz-big',
+            period: `2026-${String(i).padStart(3, '0')}`,
+            merkle_root: '0x' + 'a'.repeat(64),
+            tx_hash: '0x' + 'b'.repeat(64),
+            status: 'pending',
+            version: 1,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })) as T[];
+          return { rows };
+        },
+      };
+
+      await list(bigClient, { businessId: 'biz-big' }, { limit: 600, offset: 0 });
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warnArg: string = warnSpy.mock.calls[0][0] as string;
+      const parsed = JSON.parse(warnArg);
+      expect(parsed.event).toBe('attestation_repo_slow_query');
+      expect(parsed.op).toBe('list');
+      expect(parsed.rowCount).toBeGreaterThanOrEqual(500);
+
+      warnSpy.mockRestore();
+    });
+
+    it('list does NOT emit a warn log for small, fast results', async () => {
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      const smallClient: DbClient = {
+        async query<T>(sql: string, _params?: any[]): Promise<{ rows: T[] }> {
+          if (/SET LOCAL/i.test(sql)) return { rows: [] as T[] };
+          if (/COUNT/i.test(sql)) return { rows: [{ count: '2' } as T] };
+          const rows = Array.from({ length: 2 }, (_, i) => ({
+            id: `id-${i}`,
+            business_id: 'biz-small',
+            period: `2026-0${i + 1}`,
+            merkle_root: '0x' + 'a'.repeat(64),
+            tx_hash: '0x' + 'b'.repeat(64),
+            status: 'pending',
+            version: 1,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })) as T[];
+          return { rows };
+        },
+      };
+
+      await list(smallClient, { businessId: 'biz-small' }, { limit: 10, offset: 0 });
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+  });
+
+  // ── Index-column filter paths ──────────────────────────────────────────────
+
+  describe('Index-column filter paths', () => {
+    it('list with businessId filter uses business_id column in WHERE clause', async () => {
+      const spy = new SpyDbClient();
+      spy.addBusiness('biz-idx-1', 'user-idx', 'Idx Business 1');
+      await create(spy, {
+        businessId: 'biz-idx-1',
+        period: '2026-idx-01',
+        merkleRoot: '0x' + '1'.repeat(64),
+        txHash: '0x' + '2'.repeat(64),
+        status: 'pending',
+      });
+      spy.queries = [];
+      await list(spy, { businessId: 'biz-idx-1' }, { limit: 10, offset: 0 });
+      const dataQuery = spy.sqlLog().find(s => /SELECT/i.test(s) && !/COUNT/i.test(s) && !/SET LOCAL/i.test(s));
+      expect(dataQuery).toBeDefined();
+      expect(dataQuery).toMatch(/business_id\s*=\s*\$1/i);
+    });
+
+    it('list with no filter uses ORDER BY created_at DESC', async () => {
+      const spy = new SpyDbClient();
+      spy.queries = [];
+      await list(spy, {}, { limit: 5, offset: 0 });
+      const dataQuery = spy.sqlLog().find(s => /SELECT/i.test(s) && !/COUNT/i.test(s) && !/SET LOCAL/i.test(s));
+      expect(dataQuery).toBeDefined();
+      expect(dataQuery).toMatch(/ORDER BY created_at DESC/i);
+    });
+
+    it('getByBusinessAndPeriod uses business_id as leading filter column', async () => {
+      const spy = new SpyDbClient();
+      spy.addBusiness('biz-idx-2', 'user-idx', 'Idx Business 2');
+      await create(spy, {
+        businessId: 'biz-idx-2',
+        period: '2026-idx-02',
+        merkleRoot: '0x' + '3'.repeat(64),
+        txHash: '0x' + '4'.repeat(64),
+        status: 'pending',
+      });
+      spy.queries = [];
+      await getByBusinessAndPeriod(spy, 'biz-idx-2', '2026-idx-02');
+      const selectQuery = spy.sqlLog().find(s => /SELECT/i.test(s) && !/SET LOCAL/i.test(s));
+      expect(selectQuery).toBeDefined();
+      expect(selectQuery).toMatch(/business_id\s*=\s*\$1/i);
+    });
+  });
+
+  // ── Large-page pagination ──────────────────────────────────────────────────
+
+  describe('Large-page pagination returns correct slices and totals', () => {
+    it('returns correct total and empty items when offset exceeds total', async () => {
+      const client = new MockDbClient();
+      client.addBusiness('biz-page', 'user-page', 'Page Business');
+      // Insert 3 attestations
+      for (let i = 1; i <= 3; i++) {
+        await create(client, {
+          businessId: 'biz-page',
+          period: `2026-page-0${i}`,
+          merkleRoot: '0x' + String(i).repeat(64),
+          txHash: '0x' + String(i + 1).repeat(64),
+          status: 'pending',
+        });
+      }
+      const result = await list(client, { businessId: 'biz-page' }, { limit: 10, offset: 100 });
+      expect(result.total).toBe(3);
+      expect(result.items).toHaveLength(0);
+    });
+
+    it('returns correct page slice with limit and offset', async () => {
+      const client = new MockDbClient();
+      client.addBusiness('biz-slice', 'user-slice', 'Slice Business');
+      for (let i = 1; i <= 5; i++) {
+        await create(client, {
+          businessId: 'biz-slice',
+          period: `2026-slice-0${i}`,
+          merkleRoot: '0x' + String(i).repeat(64),
+          txHash: '0x' + String(i + 1).repeat(64),
+          status: 'pending',
+        });
+      }
+      const page1 = await list(client, { businessId: 'biz-slice' }, { limit: 2, offset: 0 });
+      expect(page1.total).toBe(5);
+      expect(page1.items).toHaveLength(2);
+
+      const page2 = await list(client, { businessId: 'biz-slice' }, { limit: 2, offset: 2 });
+      expect(page2.total).toBe(5);
+      expect(page2.items).toHaveLength(2);
+
+      // No overlap between pages
+      const ids1 = new Set(page1.items.map(i => i.id));
+      const ids2 = new Set(page2.items.map(i => i.id));
+      const overlap = [...ids1].filter(id => ids2.has(id));
+      expect(overlap).toHaveLength(0);
+    });
+
+    it('list with no filters returns all attestations across businesses', async () => {
+      // The MockDbClient no-filter SELECT path doesn't support the no-WHERE case,
+      // so we use a custom client that returns a known set of rows.
+      const fakeRows = [
+        { id: 'id-all-1', business_id: 'biz-all-1', period: '2026-all-01',
+          merkle_root: '0x' + 'a'.repeat(64), tx_hash: '0x' + 'b'.repeat(64),
+          status: 'pending', version: 1,
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+        { id: 'id-all-2', business_id: 'biz-all-2', period: '2026-all-02',
+          merkle_root: '0x' + 'c'.repeat(64), tx_hash: '0x' + 'd'.repeat(64),
+          status: 'confirmed', version: 1,
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+      ];
+      const noFilterClient: DbClient = {
+        async query<T>(sql: string, _params?: any[]): Promise<{ rows: T[] }> {
+          if (/SET LOCAL/i.test(sql)) return { rows: [] as T[] };
+          if (/COUNT/i.test(sql)) return { rows: [{ count: '2' } as T] };
+          return { rows: fakeRows as T[] };
+        },
+      };
+      const result = await list(noFilterClient, {}, { limit: 100, offset: 0 });
+      expect(result.total).toBeGreaterThanOrEqual(2);
+      expect(result.items.length).toBeGreaterThanOrEqual(2);
     });
   });
 });

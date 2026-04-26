@@ -1,5 +1,5 @@
 import { Request, Response } from 'express'
-import { deleteById, listByUserId } from '../../../repositories/integration.js'
+import { deleteById, listByBusinessId } from '../../../repositories/integration.js'
 import { deleteToken, isValidShopHost, normalizeShop } from './store.js'
 import { logger } from '../../../utils/logger.js'
 
@@ -39,11 +39,12 @@ async function revokeShopifyAccess(shop: string, accessToken: string): Promise<R
 
 export default async function disconnectShopify(req: Request, res: Response) {
   const userId = req.user?.userId ?? req.user?.id
-  if (!userId) {
+  const businessId = req.business?.id
+  if (!userId || !businessId) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
-  const rec = (await listByUserId(userId)).find((integration) => integration.provider === 'shopify')
+  const rec = (await listByBusinessId(businessId)).find((integration) => integration.provider === 'shopify')
   if (!rec) {
     return res.status(404).json({ error: 'Shopify integration not found' })
   }
@@ -86,16 +87,8 @@ export default async function disconnectShopify(req: Request, res: Response) {
     return res.status(502).json({ error: revocation.error })
   }
 
-  const deleted = await deleteById(userId, rec.id)
-  if (!deleted) {
-    logger.error(
-      JSON.stringify({
-        type: 'shopify_disconnect_database_delete_failed',
-        userId,
-        integrationId: rec.id,
-        shop,
-      }),
-    )
+  const ok = await deleteById(businessId, rec.id)
+  if (!ok) {
     return res.status(500).json({ error: 'Failed to disconnect Shopify integration' })
   }
 
