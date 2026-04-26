@@ -20,11 +20,14 @@ npm run test:coverage
 - `integration/` - Integration tests that test complete API flows
   - `auth.test.ts` - Authentication API tests (signup, login, refresh, password reset)
   - `integrations.test.ts` - Integrations API tests (list, connect, disconnect, OAuth flow)
+- `unit/services/` - Unit tests for service-layer modules
+  - `merkle.test.ts` - Merkle tree construction, proof generation/verification, and performance guardrail tests
 
 ## Test Setup
 
 Tests use:
-- **Jest** - Test framework
+- **Jest** - Test framework (integration tests)
+- **Vitest** - Unit test framework (`unit/`)
 - **Supertest** - HTTP assertion library for testing Express apps
 - **ts-jest** - TypeScript support for Jest
 
@@ -88,6 +91,98 @@ import { integrationsRouter } from '../../src/routes/integrations.js'
 
 // In beforeAll:
 app.use('/api/integrations', integrationsRouter)
+```
+
+## Merkle Service Tests (`unit/services/merkle.test.ts`)
+
+### Overview
+
+Unit tests covering the Merkle tree service split across three suites:
+
+| Suite | Focus |
+|---|---|
+| `MerkleTree` | Legacy Buffer-based class — construction, proof, verification |
+| `MerkleProofGuards` | Modular API input validation and tamper resistance |
+| `buildTree guardrails` | Size caps, structured warning logs, determinism |
+| `Benchmarks — complexity probes` | Logarithmic depth checks, large-tree smoke tests |
+
+### Performance Guardrails
+
+The Merkle service enforces size guardrails to prevent memory spikes and request timeouts on large attestation datasets.
+
+#### `MERKLE_MAX_LEAVES` (hard cap)
+
+| Property | Value |
+|---|---|
+| Default | `1 048 576` (2²⁰) |
+| Override | `MERKLE_MAX_LEAVES` env var |
+| Max override | `16 777 216` (2²⁴) |
+| Error type | `RangeError` |
+
+Calls to `buildTree()` or `new MerkleTree()` with more leaves than this cap throw immediately — no partial work is done.
+
+```bash
+# Example: raise the cap for a bulk attestation job
+MERKLE_MAX_LEAVES=4194304 npm run start
+```
+
+#### `MERKLE_WARN_LEAVES` (soft threshold)
+
+When leaf count reaches 10 % of `MERKLE_MAX_LEAVES`, the service emits a structured `console.warn` entry:
+
+```json
+{
+  "level": "warn",
+  "service": "merkle",
+  "event": "large_tree",
+  "leafCount": 104857,
+  "warnThreshold": 104857,
+  "maxAllowed": 1048576,
+  "message": "Building Merkle tree with 104857 leaves — approaching size guardrail"
+}
+```
+
+Pipe this to your log aggregator (Datadog, CloudWatch, etc.) and alert on `event: large_tree`.
+
+#### `MERKLE_PROOF_MAX_STEPS` (verification guard)
+
+`verifyProof()` rejects proof arrays longer than `256` steps. A valid proof for a 2²⁰-leaf tree is only 20 steps; a 256-step proof is either malformed or adversarial. The guard bounds worst-case CPU in the verification loop.
+
+### Complexity Notes
+
+Proof depth and hashing work scale as follows (empirical, Node 20, Apple M2):
+
+| Leaves | Proof depth | Approx build time |
+|---|---|---|
+| 1 024 | 10 steps | < 1 ms |
+| 65 536 | 16 steps | ~90 ms |
+| 1 048 576 | 20 steps | ~950 ms |
+
+Rule of thumb: `depth = ⌈log₂(n)⌉`, hashing work = `O(n)`.
+
+The 100 000-leaf smoke test in the benchmark suite runs on every `npm test` pass to catch regressions.
+
+### Threat Model Notes
+
+| Vector | Mitigation |
+|---|---|
+| **Oversized request body** driving OOM | `MERKLE_MAX_LEAVES` hard cap throws before any heap allocation on the tree |
+| **Slow hash DoS** via crafted long proof | `MERKLE_PROOF_MAX_STEPS = 256` bounds loop iterations in `verifyProof` |
+| **Tampered proof siblings** | Normalised hex validation in `normalizeHashHex` rejects malformed values; final root comparison catches modified hashes |
+| **Invalid proof position field** | `isProofStep` type guard rejects anything other than `'left'` or `'right'` |
+| **0x-prefixed inputs** from on-chain callers | `stripHexPrefix` normalises before validation — no silent mismatch |
+| **Non-integer leaf index** | `generateProof` throws on fractional indices to surface off-by-one bugs early |
+
+### Running Only Merkle Tests
+
+```bash
+npx vitest run tests/unit/services/merkle.test.ts
+```
+
+With coverage:
+
+```bash
+npx vitest run --coverage tests/unit/services/merkle.test.ts
 ```
 
 ## Database Strategy
