@@ -25,6 +25,11 @@ export enum IntegrationPermission {
   
   // Admin permissions
   ADMIN = 'integrations:admin',
+
+  // Platform Admin permissions
+  ADMIN_READ_STATS = 'admin:read:stats',
+  ADMIN_MANAGE_USERS = 'admin:manage:users',
+  ADMIN_READ_AUDIT_LOGS = 'admin:read:audit_logs',
 }
 
 /**
@@ -54,7 +59,9 @@ export const ROLE_PERMISSIONS = {
   ],
   
   // System admin has full control
-  admin: Object.values(IntegrationPermission),
+  admin: [
+    ...Object.values(IntegrationPermission),
+  ],
 } as const;
 
 /**

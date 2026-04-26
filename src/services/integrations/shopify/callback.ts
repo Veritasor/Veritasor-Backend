@@ -78,6 +78,7 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
     logger.warn({ event: 'shopify_callback_invalid_shop', shop, shopHost }, 'Shopify callback invalid shop hostname');
     return { success: false, error: 'Invalid shop hostname' };
   }
+  const shopHost = store.normalizeShop(shop)
 
   const stateRecord = store.consumeOAuthState(state);
   if (!stateRecord || stateRecord.shop !== shopHost) {

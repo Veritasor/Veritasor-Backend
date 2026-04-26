@@ -16,6 +16,7 @@ import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { StartupReadinessReport } from "./startup/readiness.js";
+import type { Server } from "http";
 
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
@@ -71,6 +72,15 @@ export async function startServer(port: number): Promise<Server> {
   const { runStartupDependencyReadinessChecks } = await import("./startup/readiness.js");
 
   const readinessReport = await runStartupDependencyReadinessChecks();
+  
+  if (!readinessReport.ready) {
+    const failedChecks = readinessReport.checks
+      .filter((check) => !check.ready)
+      .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
+      .join("; ");
+    console.warn(`[Startup] Proceeding with failed readiness checks: ${failedChecks}`);
+  }
+
   const app = createApp(readinessReport);
 
   return new Promise((resolve) => {

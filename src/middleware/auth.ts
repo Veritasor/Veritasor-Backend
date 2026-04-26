@@ -12,10 +12,12 @@ declare global {
   }
 }
 
+import { AuthenticationError } from "../types/errors.js";
+
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const userId = req.headers["x-user-id"] as string;
   if (!userId) {
-    return res.status(401).json({ error: "Unauthorized" });
+    return next(new AuthenticationError());
   }
   req.user = { id: userId, userId, email: "" };
   next();

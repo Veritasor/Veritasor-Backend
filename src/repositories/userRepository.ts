@@ -8,6 +8,7 @@ export interface User {
   updatedAt: Date
   resetToken?: string
   resetTokenExpiry?: Date
+  role: 'user' | 'admin' | 'business_admin'
 }
 
 /**
@@ -19,6 +20,7 @@ export interface UpdateUserData {
   passwordHash?: string
   resetToken?: string | null
   resetTokenExpiry?: Date | null
+  role?: 'user' | 'admin' | 'business_admin'
 }
 
 // In-memory user storage
@@ -68,6 +70,7 @@ export async function createUser(
     passwordHash,
     createdAt: now,
     updatedAt: now,
+    role: 'user', // Default role
   }
 
   const stored = saveUser(user)
@@ -76,6 +79,10 @@ export async function createUser(
 
 /**
  * Find user by email
+ * 
+ * @expectedIndex `email` (Unique)
+ * @migrationNote Ensure a unique B-tree index exists on the `email` column
+ * to prevent duplicate signups and allow fast exact-match lookups during login.
  */
 export async function findUserByEmail(email: string): Promise<User | null> {
   const userId = emailIndex.get(email)
@@ -87,6 +94,10 @@ export async function findUserByEmail(email: string): Promise<User | null> {
 
 /**
  * Find user by ID
+ * 
+ * @expectedIndex `id` (Primary Key)
+ * @migrationNote The `id` column should be the primary key of the users table
+ * with an implicit unique index for O(1) or O(log N) lookups.
  */
 export async function findUserById(id: string): Promise<User | null> {
   const user = users.get(id)
@@ -120,6 +131,7 @@ export async function updateUser(
         : updates.resetTokenExpiry !== undefined
         ? updates.resetTokenExpiry
         : current.resetTokenExpiry,
+    role: updates.role ?? current.role,
     updatedAt: new Date(),
   }
 
@@ -161,6 +173,12 @@ export async function setResetToken(
 
 /**
  * Find user by reset token
+ * 
+ * @expectedIndex `resetToken` (or composite `(resetToken, resetTokenExpiry)`)
+ * @migrationNote A standard index on `resetToken` is required. For high-volume 
+ * systems, a composite index on `(resetToken, resetTokenExpiry)` can optimize 
+ * queries that filter out expired tokens. Also, consider partial indexes if 
+ * the database supports them (e.g. `WHERE resetToken IS NOT NULL`).
  */
 export async function findUserByResetToken(
   token: string
@@ -188,6 +206,13 @@ export async function deleteUser(userId: string): Promise<boolean> {
   users.delete(userId)
 
   return true
+}
+
+/**
+ * Get all users (admin only)
+ */
+export async function getAllUsers(): Promise<User[]> {
+  return Array.from(users.values()).map(cloneUser)
 }
 
 /**

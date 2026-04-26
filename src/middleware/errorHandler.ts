@@ -98,6 +98,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): ErrorEnvelope 
   
   const baseEnvelope: Omit<ErrorEnvelope, "code" | "message" | "details"> = {
     status: "error",
+    error: "ERROR", // Default for legacy tests
     timestamp,
   };
   
@@ -111,6 +112,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): ErrorEnvelope 
     return {
       ...baseEnvelope,
       code: ErrorCodes.VALIDATION_ERROR,
+      error: "VALIDATION_ERROR",
       message: error.message,
       details: error.details,
       errors: error.details,
@@ -136,12 +138,14 @@ function createErrorEnvelope(error: unknown, requestId?: string): ErrorEnvelope 
       return {
         ...baseEnvelope,
         code: sanitizeErrorCode(error.code, ErrorCodes.INTERNAL_SERVER_ERROR),
+        error: error.code,
         message: "An unexpected error occurred",
       };
     }
     return {
       ...baseEnvelope,
       code: sanitizeErrorCode(error.code, ErrorCodes.INTERNAL_SERVER_ERROR),
+      error: error.code,
       message: error.message,
     };
   }
@@ -168,6 +172,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): ErrorEnvelope 
     return {
       ...baseEnvelope,
       code: ErrorCodes.INTERNAL_SERVER_ERROR,
+      error: "INTERNAL_SERVER_ERROR",
       message: "An unexpected error occurred",
     };
   }

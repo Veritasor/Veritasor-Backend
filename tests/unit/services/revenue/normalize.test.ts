@@ -1104,3 +1104,65 @@ describe("detectRevenueAnomaly — seasonality and false-positive scenarios", ()
     expect(["ok", "unusual_drop", "unusual_spike", "insufficient_data"]).toContain(result.flag);
   });
 });
+
+// -------------------------------------------------------------------------
+// Analytics Periods (DST & month boundaries)
+// -------------------------------------------------------------------------
+
+describe("analytics periods", () => {
+  describe("parsePeriodToBounds", () => {
+    it("should correctly parse a normal period to UTC boundaries", () => {
+      const { start, end } = parsePeriodToBounds("2024-03");
+      expect(start.toISOString()).toBe("2024-03-01T00:00:00.000Z");
+      expect(end.toISOString()).toBe("2024-04-01T00:00:00.000Z");
+    });
+
+    it("should handle year rollover (December to January)", () => {
+      const { start, end } = parsePeriodToBounds("2024-12");
+      expect(start.toISOString()).toBe("2024-12-01T00:00:00.000Z");
+      expect(end.toISOString()).toBe("2025-01-01T00:00:00.000Z");
+    });
+
+    it("should handle leap years correctly (February)", () => {
+      const { start, end } = parsePeriodToBounds("2024-02");
+      expect(start.toISOString()).toBe("2024-02-01T00:00:00.000Z");
+      expect(end.toISOString()).toBe("2024-03-01T00:00:00.000Z");
+    });
+
+    it("should reject invalid months like 00 or 13", () => {
+      expect(() => parsePeriodToBounds("2024-00")).toThrow(PeriodParseError);
+      expect(() => parsePeriodToBounds("2024-13")).toThrow(PeriodParseError);
+      expect(() => parsePeriodToBounds("2024-99")).toThrow(PeriodParseError);
+    });
+
+    it("should reject malformed formats", () => {
+      const invalid = ["2024-3", "24-03", "2024/03", "abcd-ef"];
+      for (const p of invalid) {
+        expect(() => parsePeriodToBounds(p)).toThrow(PeriodParseError);
+      }
+    });
+  });
+
+  describe("dateToPeriod", () => {
+    it("should derive the correct UTC period for a given date", () => {
+      // 2024-03-01 03:00 UTC
+      expect(dateToPeriod(new Date("2024-03-01T03:00:00.000Z"))).toBe("2024-03");
+    });
+
+    it("should stay in the correct month even during DST fall-back hour", () => {
+      expect(dateToPeriod(new Date("2024-11-01T03:59:00.000Z"))).toBe("2024-11");
+    });
+  });
+
+  describe("isTimestampInPeriod", () => {
+    it("should correctly identify timestamps within the period bounds", () => {
+      // 2024-03-08 00:00 UTC
+      expect(isTimestampInPeriod(1709856000, "2024-03")).toBe(true);
+      // 2024-03-31 23:59:59 UTC
+      expect(isTimestampInPeriod(1711929599, "2024-03")).toBe(true);
+      // 2024-04-01 00:00 UTC
+      expect(isTimestampInPeriod(1711929600, "2024-03")).toBe(false);
+    });
+  });
+});
+
