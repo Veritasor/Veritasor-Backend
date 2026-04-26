@@ -25,6 +25,38 @@ Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and 
 - Validation errors never expose internal schema structure beyond field paths and human-readable messages.
 - Extra keys are stripped before the request body reaches route handlers, preventing prototype pollution via unexpected fields.
 - Coercion is explicit (`z.coerce.*`) — implicit coercion is not used, avoiding silent type confusion.
++
++## Permission Exhaustiveness
++
++The permission system in `src/types/permissions.ts` is designed to be exhaustive. This means that every permission defined in the `IntegrationPermission` enum must be:
++1.  **Documented**: Every permission must have an entry in `PERMISSION_METADATA`.
++2.  **Validated**: Every permission string from external sources (tokens, headers) must be validated via `IntegrationPermissionSchema` (Zod).
++3.  **Accounted for in Roles**: Every permission is automatically included in the `admin` role via `Object.values(IntegrationPermission)`.
++
++Unit tests in `tests/unit/permissions.test.ts` verify these invariants. Adding a new permission without updating the metadata or tests will result in a build/test failure.
++
++**Threat model notes:**
++- **Unknown Permissions**: The strict Zod schema prevents attackers from injecting custom permission strings into the authorization context.
++- **Exhaustive Gating**: By forcing developers to document new permissions in `PERMISSION_METADATA`, we increase visibility of new security boundaries during code reviews.
++
++### Permission-Role Matrix
++
++| Permission | User | Business Admin | System Admin |
++|:---|:---:|:---:|:---:|
++| `READ_AVAILABLE` | ✅ | ✅ | ✅ |
++| `READ_CONNECTED` | ✅ | ✅ | ✅ |
++| `READ_OWN` | ✅ | ✅ | ✅ |
++| `CONNECT` | ✅ | ✅ | ✅ |
++| `DISCONNECT_OWN` | ✅ | ✅ | ✅ |
++| `DISCONNECT_ANY` | ❌ | ✅ | ✅ |
++| `MANAGE_OWN` | ✅ | ✅ | ✅ |
++| `MANAGE_ANY` | ❌ | ✅ | ✅ |
++| `ADMIN` | ❌ | ❌ | ✅ |
++| `ADMIN_READ_STATS` | ❌ | ❌ | ✅ |
++| `ADMIN_MANAGE_USERS` | ❌ | ❌ | ✅ |
++| `ADMIN_READ_AUDIT_LOGS` | ❌ | ❌ | ✅ |
++
++*Matrix is automatically enforced for System Admin via `Object.values(IntegrationPermission)`.*
 
 ## Redaction Policy
 
@@ -500,13 +532,13 @@ The `detail` string in `AnomalyResult` and the `AnomalyLogRecord` payload embed
 aggregator escapes or sanitises these fields before rendering them in dashboards
 or alert messages.
 
-### Webhooks & Integrations
+### Webhooks & Integrations — Threat Model Notes
 
-- OAuth state parameters must be validated and be single-use to prevent CSRF.
-- Integration tokens and credentials must never appear in API responses or logs;
-  the E2E suite includes sensitive-string assertions to enforce this.
-- Idempotency keys on attestation submissions prevent duplicate on-chain
-  transactions under burst conditions.
+- **CSRF / State Forgery**: OAuth state parameters must be validated and be single-use to prevent cross-site request forgery.
+- **Credential Leakage**: Integration tokens and credentials must never appear in API responses or logs; the E2E suite includes sensitive-string assertions to enforce this.
+- **Replay Attacks**: Webhooks must verify provider signatures and use idempotency keys (or event IDs) to prevent replayed payloads from being processed multiple times.
+- **Provider Spoofing**: IP allowlisting for webhook endpoints (where supported by the provider) should be used in production to ensure payloads originate from the legitimate service.
+- **Least-Privilege Scopes**: OAuth flows must request only the minimum scopes necessary for the integration to function, limiting the blast radius of a credential compromise.
 
 ---
 
