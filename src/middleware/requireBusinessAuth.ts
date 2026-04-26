@@ -2,6 +2,7 @@ import { Request, Response, NextFunction, RequestHandler } from "express";
 import { verifyToken } from "../utils/jwt.js";
 import { findUserById } from "../repositories/userRepository.js";
 import { businessRepository } from "../repositories/business.js";
+import { logger } from "../utils/logger.js";
 
 // Extend Express Request to include user and business
 declare global {
@@ -21,106 +22,61 @@ declare global {
         website: string | null;
         createdAt: string;
         updatedAt: string;
+        suspended?: boolean;
       };
     }
   }
 }
 
 /**
- * Business authorization boundary validation result
+ * Validates JWT token and returns the user, or null on any failure.
+ * Catches all errors so callers never see an unhandled rejection.
  */
-interface BusinessAuthResult {
-  success: boolean;
-  error?: {
-    code: 'MISSING_AUTH' | 'INVALID_TOKEN' | 'USER_NOT_FOUND' | 'MISSING_BUSINESS_ID' | 'BUSINESS_NOT_FOUND' | 'ACCESS_DENIED';
-    message: string;
-    status: number;
-  };
-  user?: any;
-  business?: any;
-}
-
-/**
- * Validates JWT token and extracts user information
- * @param token - JWT token from Authorization header
- * @returns User payload or null if invalid
- */
-async function validateUserToken(token: string): Promise<any | null> {
+async function validateUserToken(token: string): Promise<{ id: string; userId: string; email?: string } | null> {
   try {
     const payload = verifyToken(token);
-    if (!payload) {
-      return null;
-    }
+    if (!payload) return null;
 
-    // Verify user still exists in database
     const user = await findUserById(payload.userId);
-    if (!user) {
-      return null;
-    }
+    if (!user) return null;
 
-    return {
-      id: payload.userId,
-      userId: payload.userId,
-      email: payload.email,
-    };
-  } catch (error) {
+    return { id: payload.userId, userId: payload.userId, email: payload.email };
+  } catch {
     return null;
   }
 }
 
 /**
- * Validates business access for a given user
- * @param businessId - Business ID to validate
- * @param userId - User ID requesting access
- * @returns Business object if valid, null otherwise
- */
-async function validateBusinessAccess(businessId: string, userId: string): Promise<any | null> {
-  try {
-    const business = await businessRepository.getById(businessId);
-    if (!business) {
-      return null;
-    }
-
-    // Ensure user owns the business (authorization boundary)
-    if (business.userId !== userId) {
-      return null;
-    }
-
-    return business;
-  } catch (error) {
-    return null;
-  }
-}
-
-/**
- * Extracts business ID from various sources with validation
- * @param req - Express request object
- * @returns Business ID or null if invalid/missing
+ * Extracts and validates the business ID from the request.
+ *
+ * Priority order (matches documented API contract):
+ *   1. x-business-id header
+ *   2. body.business_id
+ *   3. body.businessId
+ *
+ * Uses req.headers directly (lowercase, per Node.js HTTP spec) so the
+ * function works correctly with plain mock objects in tests as well as
+ * real Express requests.
  */
 function extractBusinessId(req: Request): string | null {
-  // Priority 1: x-business-id header (explicit business context)
-  const businessIdHeader = req.header('x-business-id');
-  if (businessIdHeader && businessIdHeader.trim().length > 0) {
-    const trimmed = businessIdHeader.trim();
-    // Basic UUID format validation (adjust based on your ID format)
-    if (/^[a-zA-Z0-9\-_]{1,50}$/.test(trimmed)) {
-      return trimmed;
-    }
+  const ID_RE = /^[a-zA-Z0-9\-_]{1,50}$/;
+
+  // Priority 1: x-business-id header
+  const headerVal = req.headers['x-business-id'];
+  const headerStr = Array.isArray(headerVal) ? headerVal[0] : headerVal;
+  if (headerStr) {
+    const trimmed = headerStr.trim();
+    if (trimmed && ID_RE.test(trimmed)) return trimmed;
   }
 
-  // Priority 2: business_id from request body (for POST/PUT requests)
-  if (req.body && typeof req.body.business_id === 'string') {
-    const bodyBusinessId = req.body.business_id.trim();
-    if (bodyBusinessId.length > 0 && /^[a-zA-Z0-9\-_]{1,50}$/.test(bodyBusinessId)) {
-      return bodyBusinessId;
-    }
-  }
-
-  // Priority 3: businessId from request body (alternative field name)
-  if (req.body && typeof req.body.businessId === 'string') {
-    const bodyBusinessId = req.body.businessId.trim();
-    if (bodyBusinessId.length > 0 && /^[a-zA-Z0-9\-_]{1,50}$/.test(bodyBusinessId)) {
-      return bodyBusinessId;
+  // Priority 2 & 3: request body
+  if (req.body) {
+    for (const field of ['business_id', 'businessId'] as const) {
+      const val = req.body[field];
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed && ID_RE.test(trimmed)) return trimmed;
+      }
     }
   }
 
@@ -128,113 +84,126 @@ function extractBusinessId(req: Request): string | null {
 }
 
 /**
- * Comprehensive business authorization boundary check
- * 
- * This middleware enforces strict business authorization boundaries by:
- * 1. Validating JWT token authentication
- * 2. Verifying user existence in database
- * 3. Extracting and validating business ID from multiple sources
- * 4. Ensuring business exists and user has ownership rights
- * 5. Attaching user and business objects to request for downstream use
- * 
- * Security features:
- * - JWT token validation with user existence check
- * - Business ownership verification (authorization boundary)
- * - Input validation for business ID format
- * - Multiple business ID source support with priority ordering
- * - Detailed error responses for debugging (in development)
- * 
- * @param req - Express request object
- * @param res - Express response object
- * @param next - Express next function
+ * requireBusinessAuth
+ *
+ * Enforces business-scoped authentication on every request:
+ *   1. Validates the Bearer JWT and confirms the user still exists in the DB.
+ *   2. Extracts the business ID from x-business-id header or request body.
+ *   3. Fetches the business and verifies the authenticated user owns it.
+ *   4. Rejects suspended businesses with 403 BUSINESS_SUSPENDED.
+ *   5. Attaches req.user and req.business for downstream handlers.
+ *
+ * Error codes (stable contract):
+ *   401 MISSING_AUTH        – missing / malformed Authorization header
+ *   401 INVALID_TOKEN       – expired, invalid, or revoked JWT; user not found
+ *   400 MISSING_BUSINESS_ID – no business ID in header or body
+ *   403 BUSINESS_NOT_FOUND  – business absent or owned by a different user
+ *   403 BUSINESS_SUSPENDED  – business exists but is suspended
  */
 export async function requireBusinessAuth(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // ── Step 1: Authorization header ──────────────────────────────────────────
   const authHeader = req.headers.authorization;
-
-  // Step 1: Validate Authorization header
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).json({ 
+    res.status(401).json({
       error: "Business authentication required",
       message: "Missing or invalid authorization header. Format: 'Bearer <token>'",
-      code: "MISSING_AUTH"
+      code: "MISSING_AUTH",
     });
     return;
   }
 
-  const token = authHeader.slice(7); // Remove 'Bearer ' prefix
+  const token = authHeader.slice(7);
 
-  // Step 2: Validate user token and existence
+  // ── Step 2: Token + user validation ───────────────────────────────────────
   const user = await validateUserToken(token);
   if (!user) {
-    res.status(401).json({ 
-      error: "Invalid authentication", 
+    res.status(401).json({
+      error: "Invalid authentication",
       message: "Token is invalid, expired, or user not found",
-      code: "INVALID_TOKEN" 
+      code: "INVALID_TOKEN",
     });
     return;
   }
 
-  // Step 3: Extract and validate business ID
+  // ── Step 3: Business ID extraction ────────────────────────────────────────
   const businessId = extractBusinessId(req);
   if (!businessId) {
-    res.status(400).json({ 
+    res.status(400).json({
       error: "Business context required",
       message: "Business ID is required. Provide via 'x-business-id' header or 'business_id'/'businessId' in request body",
-      code: "MISSING_BUSINESS_ID"
+      code: "MISSING_BUSINESS_ID",
     });
     return;
   }
 
-  // Step 4: Validate business access and ownership
-  const business = await validateBusinessAccess(businessId, user.id);
-  if (!business) {
-    res.status(403).json({ 
-      error: "Business access denied", 
+  // ── Step 4: Business ownership check ──────────────────────────────────────
+  let business: Awaited<ReturnType<typeof businessRepository.getById>>;
+  try {
+    business = await businessRepository.getById(businessId);
+  } catch {
+    business = null;
+  }
+
+  if (!business || business.userId !== user.id) {
+    res.status(403).json({
+      error: "Business access denied",
       message: "Business not found or access denied. User must own the business.",
-      code: "BUSINESS_NOT_FOUND" 
+      code: "BUSINESS_NOT_FOUND",
     });
     return;
   }
 
-  // Step 5: Attach authenticated context to request
-  req.user = user;
-  req.business = business;
-
-  // Step 6: Log successful authentication (for security auditing)
-  if (process.env.NODE_ENV !== 'test') {
-    console.log(`Business auth success: user=${user.id}, business=${business.id}, business_name=${business.name}`);
+  // ── Step 5: Suspended business check ──────────────────────────────────────
+  if ((business as any).suspended === true) {
+    logger.warn(JSON.stringify({
+      event: "business_auth.suspended",
+      userId: user.id,
+      businessId: business.id,
+    }));
+    res.status(403).json({
+      error: "Business suspended",
+      message: "This business account has been suspended.",
+      code: "BUSINESS_SUSPENDED",
+    });
+    return;
   }
+
+  // ── Step 6: Attach context and proceed ────────────────────────────────────
+  req.user = user;
+  req.business = business as Request["business"];
+
+  logger.info(JSON.stringify({
+    event: "business_auth.success",
+    userId: user.id,
+    businessId: business.id,
+  }));
 
   next();
 }
 
 /**
- * Legacy middleware for backward compatibility
- * @deprecated Use requireBusinessAuth instead
+ * Legacy middleware for backward compatibility.
+ * @deprecated Use requireBusinessAuth instead.
  */
 export const requireBusinessAuthLegacy: RequestHandler = (req, res, next) => {
-  const parseBusinessId = (authorization?: string, businessIdHeader?: string): string | null => {
-    if (!authorization || !authorization.startsWith('Bearer ')) {
-      return null
-    }
+  const auth = req.headers.authorization;
+  const businessIdHeader = req.headers['x-business-id'];
+  const businessId = Array.isArray(businessIdHeader)
+    ? businessIdHeader[0]?.trim()
+    : businessIdHeader?.trim();
 
-    const businessId = businessIdHeader?.trim()
-    return businessId ? businessId : null
-  }
-
-  const businessId = parseBusinessId(req.header('authorization'), req.header('x-business-id'))
-  if (!businessId) {
+  if (!auth || !auth.startsWith('Bearer ') || !businessId) {
     res.status(401).json({
       error: 'Unauthorized',
       message: 'Bearer token and x-business-id header are required',
-    })
-    return
+    });
+    return;
   }
 
-  res.locals.businessId = businessId
-  next()
-}
+  res.locals.businessId = businessId;
+  next();
+};
