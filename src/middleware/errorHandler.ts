@@ -10,6 +10,7 @@
  *   code: string,        // Machine-readable error code
  *   message: string,     // Human-readable message
  *   details?: any,       // Additional error details (validation errors, etc.)
+ *   errors?: any,        // Legacy validation details alias
  *   timestamp: string,   // ISO 8601 timestamp
  *   requestId?: string   // Request ID for tracing (if available)
  * }
@@ -29,19 +30,61 @@
  */
 
 import { Request, Response, NextFunction } from "express";
+import { z } from "zod";
 import {
   ValidationError,
   AppError,
-  AuthenticationError,
-  AuthorizationError,
-  NotFoundError,
-  ConflictError,
-  RateLimitError,
-  DatabaseError,
-  ExternalServiceError,
+  ErrorCodes,
   isAppError,
   isValidationError,
 } from "../types/errors.js";
+
+type ErrorEnvelope = {
+  status: "error";
+  code: string;
+  message: string;
+  timestamp: string;
+  requestId?: string;
+  details?: unknown;
+  errors?: unknown;
+};
+
+type PostgresError = Error & {
+  code?: string;
+  detail?: string;
+  constraint?: string;
+  table?: string;
+  schema?: string;
+};
+
+const CLIENT_SAFE_POSTGRES_CONFLICT_CODES = new Set([
+  "23503", // foreign_key_violation
+  "23505", // unique_violation
+]);
+
+function sanitizeErrorCode(code: string | undefined, fallback: string): string {
+  if (!code || !/^[A-Z0-9_]+$/.test(code)) {
+    return fallback;
+  }
+
+  return code;
+}
+
+function isPostgresError(error: unknown): error is PostgresError {
+  return (
+    error instanceof Error &&
+    typeof (error as PostgresError).code === "string" &&
+    /^[0-9A-Z]{5}$/.test((error as PostgresError).code ?? "")
+  );
+}
+
+function normalizeZodIssues(error: z.ZodError): Array<{ path: string[]; message: string; code: string }> {
+  return error.issues.map((issue) => ({
+    path: issue.path.map(String),
+    message: issue.message,
+    code: issue.code,
+  }));
+}
 
 /**
  * Generates the standardized error envelope
@@ -50,10 +93,10 @@ import {
  * @param requestId - Optional request ID for tracing
  * @returns Standardized error response object
  */
-function createErrorEnvelope(error: unknown, requestId?: string): Record<string, any> {
+function createErrorEnvelope(error: unknown, requestId?: string): ErrorEnvelope {
   const timestamp = new Date().toISOString();
   
-  const baseEnvelope: Record<string, any> = {
+  const baseEnvelope: Omit<ErrorEnvelope, "code" | "message" | "details"> = {
     status: "error",
     timestamp,
   };
@@ -67,9 +110,22 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
   if (isValidationError(error)) {
     return {
       ...baseEnvelope,
-      code: "VALIDATION_ERROR",
+      code: ErrorCodes.VALIDATION_ERROR,
       message: error.message,
       details: error.details,
+      errors: error.details,
+    };
+  }
+
+  if (error instanceof z.ZodError) {
+    const details = normalizeZodIssues(error);
+
+    return {
+      ...baseEnvelope,
+      code: ErrorCodes.VALIDATION_ERROR,
+      message: "Validation Error",
+      details,
+      errors: details,
     };
   }
   
@@ -79,14 +135,30 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
     if (error.status >= 500) {
       return {
         ...baseEnvelope,
-        code: error.code,
+        code: sanitizeErrorCode(error.code, ErrorCodes.INTERNAL_SERVER_ERROR),
         message: "An unexpected error occurred",
       };
     }
     return {
       ...baseEnvelope,
-      code: error.code,
+      code: sanitizeErrorCode(error.code, ErrorCodes.INTERNAL_SERVER_ERROR),
       message: error.message,
+    };
+  }
+
+  if (isPostgresError(error)) {
+    if (CLIENT_SAFE_POSTGRES_CONFLICT_CODES.has(error.code ?? "")) {
+      return {
+        ...baseEnvelope,
+        code: ErrorCodes.CONFLICT,
+        message: "Resource conflict",
+      };
+    }
+
+    return {
+      ...baseEnvelope,
+      code: ErrorCodes.DATABASE_ERROR,
+      message: "An unexpected error occurred",
     };
   }
   
@@ -95,7 +167,7 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
     // Don't expose internal error messages for generic errors
     return {
       ...baseEnvelope,
-      code: "INTERNAL_SERVER_ERROR",
+      code: ErrorCodes.INTERNAL_SERVER_ERROR,
       message: "An unexpected error occurred",
     };
   }
@@ -103,8 +175,8 @@ function createErrorEnvelope(error: unknown, requestId?: string): Record<string,
   // Handle unknown errors
   return {
     ...baseEnvelope,
-    code: "UNKNOWN_ERROR",
-    message: "An unknown error occurred",
+    code: ErrorCodes.INTERNAL_SERVER_ERROR,
+    message: "An unexpected error occurred",
   };
 }
 
@@ -118,9 +190,21 @@ function getStatusCode(error: unknown): number {
   if (isValidationError(error)) {
     return 400;
   }
+
+  if (error instanceof z.ZodError) {
+    return 400;
+  }
   
   if (isAppError(error)) {
     return error.status;
+  }
+
+  if (isPostgresError(error)) {
+    if (CLIENT_SAFE_POSTGRES_CONFLICT_CODES.has(error.code ?? "")) {
+      return 409;
+    }
+
+    return 500;
   }
   
   if (error instanceof Error) {
@@ -156,19 +240,25 @@ export const errorHandler = (
   // Extract request ID if available (set by requestLogger middleware)
   const requestId = res.locals.requestId;
   
-  // Log the error for debugging (use console.error for server-side logging)
-  // In production, this would go to a proper logging service
+  const statusCode = getStatusCode(err);
+  
+  // Log structured server-side context without leaking DB details or request bodies.
   console.error("[Error]", {
-    message: err instanceof Error ? err.message : "Unknown error",
+    level: "error",
+    errorType: err instanceof Error ? err.name : typeof err,
+    message: err instanceof Error ? err.message : "Non-Error throwable",
     stack: err instanceof Error ? err.stack : undefined,
+    errorCode: isAppError(err)
+      ? sanitizeErrorCode(err.code, ErrorCodes.INTERNAL_SERVER_ERROR)
+      : isPostgresError(err)
+        ? err.code
+        : undefined,
+    statusCode,
     path: req.path,
     method: req.method,
     requestId,
     timestamp: new Date().toISOString(),
   });
-  
-  // Determine appropriate status code
-  const statusCode = getStatusCode(err);
   
   // Create standardized error envelope
   const errorEnvelope = createErrorEnvelope(err, requestId);

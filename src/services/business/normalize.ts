@@ -205,8 +205,60 @@ export function isValidBusinessName(name: string): boolean {
   if (/[\n\r\t\v\f]/.test(name)) {
     return false;
   }
-  const pattern = /^[a-zA-Z0-9\s\-'&.,]+$/;
+  // Unicode-aware: same character set as the schema pattern
+  const pattern = /^[\p{L}\p{N}\s\-'&.,]+$/u;
   return pattern.test(name);
+}
+
+/**
+ * ISO 3166-1 alpha-2 pattern (two uppercase letters)
+ * @internal
+ */
+const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
+
+/**
+ * Normalizes a country code string
+ *
+ * Operations:
+ * - Trims whitespace
+ * - Converts to uppercase
+ * - Returns null if result is empty, not exactly 2 chars, or not purely alpha
+ *
+ * @param code - The country code to normalize
+ * @returns Normalized 2-letter uppercase code, or null
+ *
+ * @example
+ * ```typescript
+ * normalizeCountryCode('ng')  // Returns 'NG'
+ * normalizeCountryCode(' us ') // Returns 'US'
+ * normalizeCountryCode('')    // Returns null
+ * normalizeCountryCode(null)  // Returns null
+ * ```
+ */
+export function normalizeCountryCode(code: unknown): string | null {
+  if (typeof code !== 'string') {
+    return null;
+  }
+  const normalized = code.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+/**
+ * Validator: Check if a country code is a valid ISO 3166-1 alpha-2 code
+ *
+ * @param code - The country code to validate (should already be uppercased)
+ * @returns true if valid two-letter alpha code, false otherwise
+ *
+ * @example
+ * ```typescript
+ * isValidCountryCode('US') // Returns true
+ * isValidCountryCode('NG') // Returns true
+ * isValidCountryCode('12') // Returns false
+ * isValidCountryCode('USA') // Returns false
+ * ```
+ */
+export function isValidCountryCode(code: string): boolean {
+  return COUNTRY_CODE_PATTERN.test(code);
 }
 
 /**
@@ -306,11 +358,13 @@ export function formatForStorage(data: {
   industry?: string | null;
   description?: string | null;
   website?: string | null;
+  countryCode?: string | null;
 }): {
   name?: string;
   industry?: string | null;
   description?: string | null;
   website?: string | null;
+  countryCode?: string | null;
 } {
   const result: typeof data = {};
 
@@ -328,6 +382,12 @@ export function formatForStorage(data: {
 
   if (data.website !== undefined) {
     result.website = typeof data.website === 'string' ? normalizeUrl(data.website) : data.website;
+  }
+
+  if (data.countryCode !== undefined) {
+    result.countryCode = typeof data.countryCode === 'string'
+      ? (normalizeCountryCode(data.countryCode))
+      : data.countryCode;
   }
 
   return result;

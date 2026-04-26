@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import request from "supertest";
 import express, { Express } from "express";
+import { z } from "zod";
 import { errorHandler, notFoundHandler } from "../../src/middleware/errorHandler.js";
 import {
   ValidationError,
@@ -10,6 +11,7 @@ import {
   ConflictError,
 } from "../../src/types/errors.js";
 import { runStartupDependencyReadinessChecks } from "../../src/startup/readiness.js";
+import { healthRouter, HealthResponseSchema } from "../../src/routes/health.js";
 
 /**
  * Integration tests for authentication API endpoints
@@ -102,6 +104,14 @@ function expectErrorEnvelope(
   expect(response.body).toHaveProperty("message");
   expect(response.body).toHaveProperty("timestamp");
   expect(new Date(response.body.timestamp).getTime()).toBeGreaterThan(0);
+}
+
+function normalizeErrorSnapshot(body: any): any {
+  return {
+    ...body,
+    timestamp: "ISO_TIMESTAMP",
+    requestId: body.requestId ? "REQUEST_ID" : undefined,
+  };
 }
 
 /**
@@ -388,6 +398,45 @@ function createMockAuthRouter() {
     } catch (error) {
       next(error);
     }
+  });
+
+  router.post("/zod-error", (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      z.object({
+        email: z.string().email(),
+        password: z.string().min(12),
+      }).parse(req.body);
+
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/postgres-conflict", (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    const error = new Error("duplicate key value violates unique constraint \"users_email_key\"") as Error & {
+      code?: string;
+      detail?: string;
+    };
+    error.name = "DatabaseError";
+    error.code = "23505";
+    error.detail = "Key (email)=(private@example.com) already exists.";
+    next(error);
+  });
+
+  router.post("/postgres-error", (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    const error = new Error("connection terminated unexpectedly") as Error & {
+      code?: string;
+      detail?: string;
+    };
+    error.name = "DatabaseError";
+    error.code = "57P01";
+    error.detail = "connection string contained password=super-secret";
+    next(error);
+  });
+
+  router.post("/unknown-throwable", (_req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    next({ secret: "do-not-leak" });
   });
 
   return router;
@@ -923,14 +972,120 @@ describe("Error Envelope Standardization", () => {
 
     expectErrorEnvelope(response, "NOT_FOUND", 404);
   });
+
+  describe("snapshot coverage for client error shape", () => {
+    it("should render direct Zod errors as validation envelopes", async () => {
+      const response = await request(app)
+        .post("/api/auth/zod-error")
+        .send({ email: "not-an-email", password: "short" })
+        .expect(400);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "VALIDATION_ERROR",
+          "details": [
+            {
+              "code": "invalid_string",
+              "message": "Invalid email",
+              "path": [
+                "email",
+              ],
+            },
+            {
+              "code": "too_small",
+              "message": "String must contain at least 12 character(s)",
+              "path": [
+                "password",
+              ],
+            },
+          ],
+          "errors": [
+            {
+              "code": "invalid_string",
+              "message": "Invalid email",
+              "path": [
+                "email",
+              ],
+            },
+            {
+              "code": "too_small",
+              "message": "String must contain at least 12 character(s)",
+              "path": [
+                "password",
+              ],
+            },
+          ],
+          "message": "Validation Error",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+    });
+
+    it("should render PostgreSQL constraint errors without leaking row details", async () => {
+      const response = await request(app)
+        .post("/api/auth/postgres-conflict")
+        .send({})
+        .expect(409);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "CONFLICT",
+          "message": "Resource conflict",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+      expect(JSON.stringify(response.body)).not.toMatch(/private@example\\.com|users_email_key/i);
+    });
+
+    it("should render PostgreSQL operational errors as generic database errors", async () => {
+      const response = await request(app)
+        .post("/api/auth/postgres-error")
+        .send({})
+        .expect(500);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "DATABASE_ERROR",
+          "message": "An unexpected error occurred",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+      expect(JSON.stringify(response.body)).not.toMatch(/password=super-secret|connection terminated/i);
+    });
+
+    it("should render unknown throwables as generic internal server errors", async () => {
+      const response = await request(app)
+        .post("/api/auth/unknown-throwable")
+        .send({})
+        .expect(500);
+
+      expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
+        {
+          "code": "INTERNAL_SERVER_ERROR",
+          "message": "An unexpected error occurred",
+          "requestId": "REQUEST_ID",
+          "status": "error",
+          "timestamp": "ISO_TIMESTAMP",
+        }
+      `);
+      expect(JSON.stringify(response.body)).not.toMatch(/do-not-leak/i);
+    });
+  });
 });
 
 /**
  * Health route integration tests.
  *
- * Tests the health check endpoint with both shallow and deep modes.
- * Note: These tests mock environment variables to test behavior without
- * requiring actual external services.
+ * Tests the health check endpoint with both shallow and deep modes using the actual
+ * healthRouter. Environment variables are unset to prevent real service connections.
+ *
+ * Validates response schema conformance against HealthResponseSchema.
  */
 describe("GET /health", () => {
   let healthApp: Express;
@@ -938,243 +1093,190 @@ describe("GET /health", () => {
   beforeAll(() => {
     healthApp = express();
     healthApp.use(express.json());
-    // Import the health router
-    // Note: In a real test, we'd import the actual health router
-    // For this test, we'll create a mock that simulates the health behavior
+    healthApp.use("/health", healthRouter);
+  });
+
+  beforeEach(() => {
+    vi.resetModules();
   });
 
   describe("Shallow mode (default)", () => {
-    it("should return ok status when DATABASE_URL is not set", async () => {
-      // Mock: No DATABASE_URL set
+    it("should return ok status when no dependencies are configured", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+      delete process.env.SOROBAN_RPC_URL;
+      delete process.env.SMTP_HOST;
+
+      const response = await request(healthApp).get("/health").expect(200);
+
+      expect(response.body.status).toBe("ok");
+      expect(response.body.mode).toBe("shallow");
+      expect(response.body.service).toBe("veritasor-backend");
+      expect(response.body.timestamp).toBeDefined();
+      expect(new Date(response.body.timestamp).getTime()).toBeGreaterThan(0);
+
+      const parsed = HealthResponseSchema.safeParse(response.body);
+      expect(parsed.success).toBe(true);
+
+      process.env = originalEnv;
+    });
+
+    it("should return valid JSON schema conforming to HealthResponseSchema", async () => {
       const originalEnv = { ...process.env };
       delete process.env.DATABASE_URL;
       delete process.env.REDIS_URL;
 
-      // Create minimal test app for health check
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "shallow",
-        });
-      });
+      const response = await request(healthApp).get("/health").expect(200);
 
-      const response = await request(testApp).get("/health").expect(200);
-      expect(response.body.status).toBe("ok");
+      const parsed = HealthResponseSchema.safeParse(response.body);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) {
+        console.error("Schema validation errors:", parsed.error);
+      }
+
+      process.env = originalEnv;
+    });
+
+    it("should not expose sensitive information in health response", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+
+      const response = await request(healthApp).get("/health").expect(200);
+
+      expect(response.body).not.toHaveProperty("password");
+      expect(response.body).not.toHaveProperty("secret");
+      expect(response.body).not.toHaveProperty("token");
+      expect(response.body).not.toHaveProperty("connectionString");
+      expect(response.body).not.toHaveProperty("jwtSecret");
+
+      process.env = originalEnv;
+    });
+
+    it("should handle malformed mode query parameter defaults to shallow", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+
+      const response = await request(healthApp)
+        .get("/health?mode=invalid")
+        .expect(200);
+
       expect(response.body.mode).toBe("shallow");
 
-      // Restore original env
-      process.env.DATABASE_URL = originalEnv.DATABASE_URL;
-      process.env.REDIS_URL = originalEnv.REDIS_URL;
+      process.env = originalEnv;
     });
 
-    it("should include db status when DATABASE_URL is configured", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "shallow",
-          db: "ok",
-        });
-      });
+    it("should return 200 with ok status even when redis is not configured", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
 
-      const response = await request(testApp).get("/health").expect(200);
-      expect(response.body.db).toBe("ok");
-    });
+      const response = await request(healthApp).get("/health").expect(200);
 
-    it("should include redis status when REDIS_URL is configured", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "shallow",
-          db: "ok",
-          redis: "ok",
-        });
-      });
+      expect(response.body.status).toBe("ok");
+      expect(response.body.redis).toBeUndefined();
 
-      const response = await request(testApp).get("/health").expect(200);
-      expect(response.body.redis).toBe("ok");
-    });
-
-    it("should return degraded status when DB is down", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.status(200).json({
-          status: "degraded",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "shallow",
-          db: "down",
-        });
-      });
-
-      const response = await request(testApp).get("/health").expect(200);
-      expect(response.body.status).toBe("degraded");
-      expect(response.body.db).toBe("down");
+      process.env = originalEnv;
     });
   });
 
   describe("Deep mode", () => {
     it("should include mode: deep when mode=deep query param is passed", async () => {
-      const testApp = express();
-      testApp.get("/health", (req, res) => {
-        const mode = (req.query.mode as string) || "shallow";
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: mode,
-        });
-      });
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+      delete process.env.SOROBAN_RPC_URL;
+      delete process.env.SMTP_HOST;
 
-      const response = await request(testApp)
+      const response = await request(healthApp)
         .get("/health?mode=deep")
         .expect(200);
+
       expect(response.body.mode).toBe("deep");
+
+      const parsed = HealthResponseSchema.safeParse(response.body);
+      expect(parsed.success).toBe(true);
+
+      process.env = originalEnv;
     });
 
-    it("should include soroban status in deep mode when SOROBAN_RPC_URL is set", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "deep",
-          db: "ok",
-          soroban: "ok",
-        });
-      });
+    it("should include soroban status when SOROBAN_RPC_URL is not set", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+      delete process.env.SOROBAN_RPC_URL;
+      delete process.env.SMTP_HOST;
 
-      const response = await request(testApp)
+      const response = await request(healthApp)
         .get("/health?mode=deep")
         .expect(200);
-      expect(response.body.soroban).toBe("ok");
+
+      expect(response.body.soroban).toBeUndefined();
+
+      process.env = originalEnv;
     });
 
-    it("should include email status in deep mode when SMTP_HOST is set", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "deep",
-          db: "ok",
-          email: "ok",
-        });
-      });
+    it("should include email status when SMTP_HOST is not set", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
+      delete process.env.SOROBAN_RPC_URL;
+      delete process.env.SMTP_HOST;
 
-      const response = await request(testApp)
+      const response = await request(healthApp)
         .get("/health?mode=deep")
         .expect(200);
-      expect(response.body.email).toBe("ok");
-    });
 
-    it("should return 503 when critical dependency is down in deep mode", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.status(503).json({
-          status: "unhealthy",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "deep",
-          db: "down",
-        });
-      });
+      expect(response.body.email).toBeUndefined();
 
-      const response = await request(testApp)
-        .get("/health?mode=deep")
-        .expect(503);
-      expect(response.body.status).toBe("unhealthy");
-      expect(response.body.db).toBe("down");
-    });
-
-    it("should return degraded when non-critical dependency is down in deep mode", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "degraded",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "deep",
-          db: "ok",
-          redis: "down",
-        });
-      });
-
-      const response = await request(testApp)
-        .get("/health?mode=deep")
-        .expect(200);
-      expect(response.body.status).toBe("degraded");
-      expect(response.body.redis).toBe("down");
+      process.env = originalEnv;
     });
   });
 
   describe("Security and edge cases", () => {
-    it("should not expose sensitive information in health response", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "shallow",
-        });
-      });
+    it("should respond to HEAD request without body", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
 
-      const response = await request(testApp).get("/health").expect(200);
-      // Should not contain any sensitive data
-      expect(response.body).not.toHaveProperty("password");
-      expect(response.body).not.toHaveProperty("secret");
-      expect(response.body).not.toHaveProperty("token");
-      expect(response.body).not.toHaveProperty("connectionString");
+      const response = await request(healthApp).head("/health").expect(200);
+
+      expect(response.body).toEqual({});
+
+      process.env = originalEnv;
     });
 
-    it("should handle malformed mode query parameter gracefully", async () => {
-      const testApp = express();
-      testApp.get("/health", (req, res) => {
-        const mode = (req.query.mode as string) || "shallow";
-        // Invalid mode should default to shallow
-        const effectiveMode = mode === "deep" ? "deep" : "shallow";
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: effectiveMode,
-        });
-      });
+    it("should handle gzip accept-encoding gracefully", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
 
-      const response = await request(testApp)
-        .get("/health?mode=invalid")
+      const response = await request(healthApp)
+        .get("/health")
+        .set("Accept-Encoding", "gzip")
         .expect(200);
-      expect(response.body.mode).toBe("shallow");
+
+      expect(response.body.status).toBeDefined();
+      expect(response.body.service).toBe("veritasor-backend");
+
+      process.env = originalEnv;
     });
 
-    it("should return valid JSON with all required fields", async () => {
-      const testApp = express();
-      testApp.get("/health", (_req, res) => {
-        res.json({
-          status: "ok",
-          service: "veritasor-backend",
-          timestamp: new Date().toISOString(),
-          mode: "shallow",
-        });
-      });
+    it("should not be affected by JSON content-type", async () => {
+      const originalEnv = { ...process.env };
+      delete process.env.DATABASE_URL;
+      delete process.env.REDIS_URL;
 
-      const response = await request(testApp).get("/health").expect(200);
-      expect(response.body).toHaveProperty("status");
-      expect(response.body).toHaveProperty("service");
-      expect(response.body).toHaveProperty("timestamp");
-      expect(response.body).toHaveProperty("mode");
-      expect(response.body.service).toBe("veritasor-backend");
+      const response = await request(healthApp)
+        .get("/health")
+        .set("Content-Type", "application/json")
+        .expect(200);
+
+      expect(response.body.status).toBe("ok");
+
+      process.env = originalEnv;
     });
   });
 });

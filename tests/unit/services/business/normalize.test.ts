@@ -28,6 +28,8 @@ import {
   sanitizeText,
   isEmpty,
   formatForStorage,
+  normalizeCountryCode,
+  isValidCountryCode,
 } from '../../../../src/services/business/normalize';
 
 describe('Business Normalization Utilities', () => {
@@ -324,6 +326,76 @@ describe('Business Normalization Utilities', () => {
       const result2 = formatForStorage(result1 as any);
 
       expect(result1).toEqual(result2);
+    });
+
+    it('should normalize countryCode when provided', () => {
+      const result = formatForStorage({ name: 'Test', countryCode: 'ng' });
+      expect(result.countryCode).toBe('NG');
+    });
+
+    it('should pass through null countryCode', () => {
+      const result = formatForStorage({ name: 'Test', countryCode: null });
+      expect(result.countryCode).toBeNull();
+    });
+
+    it('should leave countryCode undefined when not provided', () => {
+      const result = formatForStorage({ name: 'Test' });
+      expect(result.countryCode).toBeUndefined();
+    });
+  });
+
+  describe('normalizeCountryCode', () => {
+    it('should uppercase a lowercase code', () => {
+      expect(normalizeCountryCode('ng')).toBe('NG');
+      expect(normalizeCountryCode('us')).toBe('US');
+    });
+
+    it('should trim and uppercase', () => {
+      expect(normalizeCountryCode('  gb  ')).toBe('GB');
+    });
+
+    it('should return null for empty string', () => {
+      expect(normalizeCountryCode('')).toBeNull();
+      expect(normalizeCountryCode('   ')).toBeNull();
+    });
+
+    it('should return null for non-string input', () => {
+      expect(normalizeCountryCode(null)).toBeNull();
+      expect(normalizeCountryCode(undefined)).toBeNull();
+      expect(normalizeCountryCode(42)).toBeNull();
+    });
+
+    it('should preserve already-uppercase codes', () => {
+      expect(normalizeCountryCode('DE')).toBe('DE');
+    });
+  });
+
+  describe('isValidCountryCode', () => {
+    it('should accept valid two-letter codes', () => {
+      expect(isValidCountryCode('US')).toBe(true);
+      expect(isValidCountryCode('NG')).toBe(true);
+      expect(isValidCountryCode('GB')).toBe(true);
+    });
+
+    it('should reject codes with fewer than 2 chars', () => {
+      expect(isValidCountryCode('U')).toBe(false);
+      expect(isValidCountryCode('')).toBe(false);
+    });
+
+    it('should reject codes with more than 2 chars', () => {
+      expect(isValidCountryCode('USA')).toBe(false);
+    });
+
+    it('should reject numeric codes', () => {
+      expect(isValidCountryCode('12')).toBe(false);
+    });
+
+    it('should reject lowercase codes (must be pre-uppercased)', () => {
+      expect(isValidCountryCode('us')).toBe(false);
+    });
+
+    it('should reject alphanumeric codes', () => {
+      expect(isValidCountryCode('U1')).toBe(false);
     });
   });
 });

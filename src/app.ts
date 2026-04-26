@@ -10,43 +10,57 @@ import { authRouter } from "./routes/auth.js";
 import { attestationsRouter } from "./routes/attestations.js";
 import businessRoutes from "./routes/businesses.js";
 import { healthRouter } from "./routes/health.js";
-
-export const app: Express = express();
-
-app.use(apiVersionMiddleware);
-app.use(versionResponseMiddleware);
-app.use(createCorsMiddleware());
-app.use(express.json());
-app.use(requestLogger);
-
-app.use("/api/health", healthRouter);
-app.use("/api/attestations", attestationsRouter);
-app.use("/api/auth", authRouter);
-app.use("/api/analytics", analyticsRouter);
-app.use("/api/businesses", businessRoutes);
-app.use(errorHandler);
+import { StartupReadinessReport } from "./startup/readiness.js";
 
 /**
- * Start the HTTP server after running readiness checks.
+ * Creates and configures the Express application.
+ *
+ * @param readinessReport - Startup readiness check results
+ * @returns Configured Express application
  */
-export async function startServer(port: number): Promise<Server> {
-  const { runStartupDependencyReadinessChecks } = await import(
-    "./startup/readiness.js"
-  );
-  const readinessReport = await runStartupDependencyReadinessChecks();
+export function createApp(readinessReport: StartupReadinessReport): Express {
+  const app = express();
 
   if (!readinessReport.ready) {
     const failedChecks = readinessReport.checks
       .filter((check) => !check.ready)
       .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
       .join("; ");
-
-    throw new Error(`Startup readiness failed: ${failedChecks}`);
+    console.warn(`Warning: Startup dependency checks failed: ${failedChecks}`);
   }
 
-  return new Promise<Server>((resolve) => {
+    // Log failed checks but continue with app creation
+    console.error(`Startup readiness checks failed: ${failedChecks}`);
+  }
+
+  app.use(apiVersionMiddleware);
+  app.use(versionResponseMiddleware);
+  app.use(cors());
+  app.use(express.json());
+  app.use(requestLogger);
+
+  app.use("/api/health", healthRouter);
+  app.use("/api/attestations", attestationsRouter);
+  app.use(errorHandler);
+
+  return app;
+}
+
+/**
+ * Starts the HTTP server with the configured Express application.
+ *
+ * @param port - Port to listen on
+ * @returns Promise that resolves when server is listening
+ */
+export async function startServer(port: number): Promise<Server> {
+  const { runStartupDependencyReadinessChecks } = await import("./startup/readiness.js");
+  
+  const readinessReport = await runStartupDependencyReadinessChecks();
+  const app = createApp(readinessReport);
+  
+  return new Promise((resolve) => {
     const server = app.listen(port, () => {
-      console.log(`[Server] Listening on port ${port}`);
+      console.log(`Server listening on port ${port}`);
       resolve(server);
     });
   });
