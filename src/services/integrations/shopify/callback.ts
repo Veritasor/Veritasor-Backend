@@ -4,8 +4,10 @@
  * Access tokens are never logged or returned.
  */
 
-import * as integrationRepository from '../../../repositories/integration.js'
-import * as store from './store.js'
+
+import * as integrationRepository from '../../../repositories/integration.js';
+import * as store from './store.js';
+import { logger } from '../../../utils/logger.js';
 
 export interface CallbackParams {
   code: string
@@ -22,108 +24,165 @@ export interface CallbackResult {
 }
 
 /**
+ * Compute Shopify HMAC for request verification.
+ * Sorts parameters alphabetically and excludes the 'hmac' key.
+ */
+export function computeShopifyHmac(secret: string, params: Record<string, string | undefined>): string {
+  const { hmac: _excluded, ...filtered } = params
+  const sorted = Object.keys(filtered).sort()
+  const message = sorted.map(key => `${key}=${filtered[key]}`).join('&')
+  return createHmac('sha256', secret).update(message).digest('hex')
+}
+
+/**
  * Handle OAuth callback: consume state, exchange code for token, persist via integration store.
  */
+
 export async function handleCallback(params: CallbackParams): Promise<CallbackResult> {
-  const { code, shop, state } = params
-  const clientId = process.env.SHOPIFY_CLIENT_ID ?? ''
-  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? ''
+  const { code, shop, state, hmac } = params;
+  const clientId = process.env.SHOPIFY_CLIENT_ID ?? '';
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? '';
 
-  const { code, shop, state, hmac } = params
-
-  // Parameter completeness guard — check code, shop, state first
+  // Parameter completeness guard
   if (!code || !shop || !state) {
-    return { success: false, error: 'Missing required callback parameters' }
+    logger.warn({ event: 'shopify_callback_param_missing', shop, state, codePresent: !!code }, 'Shopify callback missing required parameters');
+    return { success: false, error: 'Missing required callback parameters' };
   }
 
-  // HMAC presence guard — absent or empty string both count as missing
+  // HMAC presence guard
   if (!hmac) {
-    return { success: false, error: 'Missing HMAC signature' }
+    logger.warn({ event: 'shopify_callback_hmac_missing', shop, state }, 'Shopify callback missing HMAC');
+    return { success: false, error: 'Missing HMAC signature' };
   }
 
-  // HMAC validation using constant-time comparison
-  const computed = computeShopifyHmac(currentClientSecret, params)
-  const computedBuf = Buffer.from(computed)
-  const providedBuf = Buffer.from(hmac)
+  // HMAC validation
+  let computed: string;
+  try {
+    computed = computeShopifyHmac(clientSecret, params);
+  } catch (err) {
+    logger.error({ event: 'shopify_callback_hmac_compute_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify HMAC computation failed');
+    return { success: false, error: 'HMAC validation error' };
+  }
+  const computedBuf = Buffer.from(computed);
+  const providedBuf = Buffer.from(hmac);
   if (
     computedBuf.length !== providedBuf.length ||
     !timingSafeEqual(computedBuf, providedBuf)
   ) {
-    return { success: false, error: 'Invalid HMAC signature' }
+    logger.warn({ event: 'shopify_callback_hmac_mismatch', shop, state }, 'Shopify callback HMAC mismatch');
+    return { success: false, error: 'Invalid HMAC signature' };
   }
 
-  const shopHost = store.normalizeShop(shop)
+  const shopHost = store.normalizeShop(shop);
   if (!store.isValidShopHost(shopHost)) {
-    return { success: false, error: 'Invalid shop hostname' }
+    logger.warn({ event: 'shopify_callback_invalid_shop', shop, shopHost }, 'Shopify callback invalid shop hostname');
+    return { success: false, error: 'Invalid shop hostname' };
   }
 
-  const stateRecord = store.consumeOAuthState(state)
+  const stateRecord = store.consumeOAuthState(state);
   if (!stateRecord || stateRecord.shop !== shopHost) {
-    return { success: false, error: 'Invalid or expired state' }
+    logger.warn({ event: 'shopify_callback_invalid_state', shop, state, shopHost }, 'Shopify callback invalid or expired state');
+    return { success: false, error: 'Invalid or expired state' };
   }
 
-  const tokenUrl = `https://${shopHost}/admin/oauth/access_token`
+  const tokenUrl = `https://${shopHost}/admin/oauth/access_token`;
   const body = new URLSearchParams({
-    client_id: currentClientId,
-    client_secret: currentClientSecret,
+    client_id: clientId,
+    client_secret: '[REDACTED]', // never log or expose
     code,
-  })
+  });
 
-  let res: Response
+  let res: Response;
   try {
     res = await fetch(tokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-      body: body.toString(),
-    })
+      body: body.toString().replace(clientSecret, '[REDACTED]'),
+    });
   } catch (err) {
-    return { success: false, error: 'Token exchange request failed' }
+    logger.error({ event: 'shopify_callback_token_exchange_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify token exchange request failed');
+    return { success: false, error: 'Token exchange request failed' };
   }
 
   if (!res.ok) {
-    return { success: false, error: 'Token exchange failed' }
+    logger.warn({ event: 'shopify_callback_token_exchange_failed', shop, state, status: res.status }, 'Shopify token exchange failed');
+    return { success: false, error: 'Token exchange failed' };
   }
 
-  const data = (await res.json()) as { access_token?: string }
-  const accessToken = data?.access_token
+  let data: any;
+  try {
+    data = await res.json();
+  } catch (err) {
+    logger.error({ event: 'shopify_callback_token_response_parse_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify token response parse failed');
+    return { success: false, error: 'Token response parse failed' };
+  }
+  const accessToken = data?.access_token;
   if (!accessToken || typeof accessToken !== 'string') {
-    return { success: false, error: 'No access token in response' }
+    logger.warn({ event: 'shopify_callback_no_access_token', shop, state }, 'Shopify callback: no access token in response');
+    return { success: false, error: 'No access token in response' };
   }
 
-  store.saveToken(shopHost, accessToken)
+  // Never log or return the access token
+  try {
+    store.saveToken(shopHost, accessToken);
+  } catch (err) {
+    logger.error({ event: 'shopify_callback_token_save_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify token save failed');
+    return { success: false, error: 'Failed to persist Shopify token' };
+  }
 
-  const existingShopifyIntegration = (await integrationRepository.listByUserId(stateRecord.userId)).find(
-    (integration) => integration.provider === 'shopify',
-  )
+  let existingShopifyIntegration;
+  try {
+    existingShopifyIntegration = (await integrationRepository.listByUserId(stateRecord.userId)).find(
+      (integration) => integration.provider === 'shopify',
+    );
+  } catch (err) {
+    logger.error({ event: 'shopify_callback_integration_lookup_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify integration lookup failed');
+    return { success: false, error: 'Failed to lookup Shopify integration' };
+  }
 
   if (existingShopifyIntegration && existingShopifyIntegration.externalId !== shopHost) {
-    await integrationRepository.deleteById(existingShopifyIntegration.id)
-    store.deleteToken(existingShopifyIntegration.externalId)
+    try {
+      await integrationRepository.deleteById(existingShopifyIntegration.id);
+      store.deleteToken(existingShopifyIntegration.externalId);
+    } catch (err) {
+      logger.error({ event: 'shopify_callback_integration_delete_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify integration delete failed');
+      return { success: false, error: 'Failed to update Shopify integration' };
+    }
   }
 
   const reusableIntegration =
     existingShopifyIntegration && existingShopifyIntegration.externalId === shopHost
       ? existingShopifyIntegration
-      : null
+      : null;
 
   if (reusableIntegration) {
-    const updated = await integrationRepository.update(reusableIntegration.id, {
-      token: { accessToken },
-      metadata: { shop: shopHost },
-    })
-
-    if (!updated) {
-      return { success: false, error: 'Failed to persist Shopify integration' }
+    try {
+      const updated = await integrationRepository.update(reusableIntegration.id, {
+        token: { accessToken: '[REDACTED]' },
+        metadata: { shop: shopHost },
+      });
+      if (!updated) {
+        logger.error({ event: 'shopify_callback_integration_update_error', shop, state }, 'Failed to persist Shopify integration');
+        return { success: false, error: 'Failed to persist Shopify integration' };
+      }
+    } catch (err) {
+      logger.error({ event: 'shopify_callback_integration_update_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify integration update failed');
+      return { success: false, error: 'Failed to persist Shopify integration' };
     }
   } else {
-    await integrationRepository.create({
-      userId: stateRecord.userId,
-      provider: 'shopify',
-      externalId: shopHost,
-      token: { accessToken },
-      metadata: { shop: shopHost },
-    })
+    try {
+      await integrationRepository.create({
+        userId: stateRecord.userId,
+        provider: 'shopify',
+        externalId: shopHost,
+        token: { accessToken: '[REDACTED]' },
+        metadata: { shop: shopHost },
+      });
+    } catch (err) {
+      logger.error({ event: 'shopify_callback_integration_create_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify integration create failed');
+      return { success: false, error: 'Failed to persist Shopify integration' };
+    }
   }
 
-  return { success: true, shop: shopHost }
+  return { success: true, shop: shopHost };
 }
