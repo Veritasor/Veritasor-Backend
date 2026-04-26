@@ -39,25 +39,11 @@ import {
   ConflictError,
   ConflictErrorType,
   createConflictError,
+  ReadConsistency,
+  ConsistencyOptions,
 } from '../types/attestation.js';
+import { getAttestation } from '../services/soroban/getAttestation.js';
 import { logger } from '../utils/logger.js';
-
-// ─── Tunables ─────────────────────────────────────────────────────────────────
-
-/**
- * Maximum milliseconds a single repository query may run before PostgreSQL
- * cancels it.  Override with ATTESTATION_QUERY_TIMEOUT_MS env var.
- */
-const STATEMENT_TIMEOUT_MS: number =
-  parseInt(process.env.ATTESTATION_QUERY_TIMEOUT_MS ?? '5000', 10);
-
-/** Row count above which a structured warning is logged. */
-const SLOW_QUERY_ROW_THRESHOLD = 500;
-
-/** Elapsed-time threshold (ms) above which a structured warning is logged. */
-const SLOW_QUERY_WARN_MS = 1000;
-
-// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
  * Database row type with snake_case column names
@@ -93,43 +79,70 @@ function mapRowToAttestation(row: AttestationRow): Attestation {
 }
 
 /**
- * Apply a per-query statement timeout via `SET LOCAL statement_timeout`.
- *
- * `SET LOCAL` is scoped to the current transaction; if the client is not
- * inside an explicit transaction the setting is discarded after the query
- * completes, which is the desired behaviour for connection-pool clients.
- *
- * @param client  - DB client to configure
- * @param timeoutMs - Timeout in milliseconds (0 = no timeout)
+ * Verifies a local attestation record against the Soroban chain state.
+ * Handles indexing lag by auto-updating the database status.
+ * Logs critical errors on data integrity violations (Merkle root mismatch).
+ * 
+ * @param client - Database client for potential updates
+ * @param local - The attestation record from the database
+ * @returns The (potentially updated) attestation record
  */
-async function applyStatementTimeout(client: DbClient, timeoutMs: number): Promise<void> {
-  if (timeoutMs > 0) {
-    await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+async function verifyConsistency(
+  client: DbClient,
+  local: Attestation
+): Promise<Attestation> {
+  try {
+    const chainData = await getAttestation(local.businessId, local.period);
+
+    if (!chainData) {
+      // Chain has no record. If local is 'confirmed', this is a discrepancy.
+      if (local.status === 'confirmed') {
+        logger.warn(
+          { id: local.id, businessId: local.businessId, period: local.period },
+          'Consistency check: Attestation marked as confirmed in DB but not found on-chain'
+        );
+      }
+      return local;
+    }
+
+    // Check for Merkle root mismatch (Integrity violation)
+    if (chainData.merkle_root !== local.merkleRoot) {
+      logger.error(
+        {
+          id: local.id,
+          businessId: local.businessId,
+          period: local.period,
+          localRoot: local.merkleRoot,
+          chainRoot: chainData.merkle_root,
+        },
+        'CRITICAL CONSISTENCY ERROR: Merkle root mismatch between DB and Chain'
+      );
+    }
+
+    // Handle Indexing Lag: If chain says it's there but DB says pending/submitted, update DB.
+    if (local.status === 'pending' || local.status === 'submitted') {
+      logger.info(
+        { id: local.id, businessId: local.businessId, period: local.period },
+        'Consistency check: Auto-correcting indexing lag. Updating status to confirmed'
+      );
+      const updated = await updateStatus(client, local.id, 'confirmed');
+      return updated || local;
+    }
+
+    return local;
+  } catch (error) {
+    logger.error(
+      { err: error, id: local.id, businessId: local.businessId, period: local.period },
+      'Consistency check: Failed to verify with Soroban'
+    );
+    // On network failure or other errors, fall back to local data but log it
+    return local;
   }
 }
 
 /**
- * Emit a structured warning when a query is slow or returns many rows.
- */
-function warnIfSlow(op: string, elapsedMs: number, rowCount: number, context: Record<string, unknown> = {}): void {
-  if (elapsedMs >= SLOW_QUERY_WARN_MS || rowCount >= SLOW_QUERY_ROW_THRESHOLD) {
-    logger.warn(JSON.stringify({
-      event: 'attestation_repo_slow_query',
-      op,
-      elapsedMs,
-      rowCount,
-      thresholdMs: SLOW_QUERY_WARN_MS,
-      thresholdRows: SLOW_QUERY_ROW_THRESHOLD,
-      ...context,
-    }));
-  }
-}
-
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-/**
- * Creates a new attestation record in the database.
- *
+ * Creates a new attestation record in the database
+ * 
  * @param client - Database client for executing queries
  * @param data   - Attestation data to insert
  * @returns Promise resolving to the created Attestation record
@@ -192,17 +205,26 @@ export async function create(
  */
 export async function getById(
   client: DbClient,
-  id: string
+  id: string,
+  options: ConsistencyOptions = {}
 ): Promise<Attestation | null> {
   const sql = `SELECT * FROM attestations WHERE id = $1`;
 
   await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
   const t0 = Date.now();
   const result = await client.query<AttestationRow>(sql, [id]);
-  warnIfSlow('getById', Date.now() - t0, result.rows.length, { id });
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+  
+  const attestation = mapRowToAttestation(result.rows[0]);
 
-  if (result.rows.length === 0) return null;
-  return mapRowToAttestation(result.rows[0]);
+  if (options.consistency === ReadConsistency.STRONG) {
+    return verifyConsistency(client, attestation);
+  }
+
+  return attestation;
 }
 
 /**
@@ -219,7 +241,8 @@ export async function getById(
 export async function getByBusinessAndPeriod(
   client: DbClient,
   businessId: string,
-  period: string
+  period: string,
+  options: ConsistencyOptions = {}
 ): Promise<Attestation | null> {
   // Explicit index hint via leading column ensures planner uses
   // attestations_business_id_idx even on large tables.
@@ -232,10 +255,18 @@ export async function getByBusinessAndPeriod(
   await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
   const t0 = Date.now();
   const result = await client.query<AttestationRow>(sql, [businessId, period]);
-  warnIfSlow('getByBusinessAndPeriod', Date.now() - t0, result.rows.length, { businessId, period });
+  
+  if (result.rows.length === 0) {
+    return null;
+  }
+  
+  const attestation = mapRowToAttestation(result.rows[0]);
 
-  if (result.rows.length === 0) return null;
-  return mapRowToAttestation(result.rows[0]);
+  if (options.consistency === ReadConsistency.STRONG) {
+    return verifyConsistency(client, attestation);
+  }
+
+  return attestation;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express'
-import { deleteById, listByUserId } from '../../../repositories/integration.js'
+import { deleteById, listByBusinessId } from '../../../repositories/integration.js'
 import { deleteToken, isValidShopHost, normalizeShop } from './store.js'
 
 const SHOPIFY_UNINSTALL_PATH = '/admin/api_permissions/current.json'
@@ -35,11 +35,12 @@ async function revokeShopifyAccess(shop: string, accessToken: string): Promise<{
 
 export default async function disconnectShopify(req: Request, res: Response) {
   const userId = req.user?.userId ?? req.user?.id
-  if (!userId) {
+  const businessId = req.business?.id
+  if (!userId || !businessId) {
     return res.status(401).json({ error: 'Unauthorized' })
   }
 
-  const rec = (await listByUserId(userId)).find((integration) => integration.provider === 'shopify')
+  const rec = (await listByBusinessId(businessId)).find((integration) => integration.provider === 'shopify')
   if (!rec) {
     return res.status(404).json({ error: 'Shopify integration not found' })
   }
@@ -62,7 +63,7 @@ export default async function disconnectShopify(req: Request, res: Response) {
     return res.status(502).json({ error: revocation.error })
   }
 
-  const ok = await deleteById(rec.id)
+  const ok = await deleteById(businessId, rec.id)
   if (!ok) {
     return res.status(500).json({ error: 'Failed to disconnect Shopify integration' })
   }

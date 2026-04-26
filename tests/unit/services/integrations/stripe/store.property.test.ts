@@ -1,6 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import * as fc from 'fast-check'
-import { setOAuthState, consumeOAuthState } from '../../../../../src/services/integrations/stripe/store'
+import {
+  setOAuthState,
+  consumeOAuthState,
+  upsertStripeIntegration,
+  getStripeIntegration,
+  clearStripeIntegrationStore,
+  StripeStoreValidationError,
+} from '../../../../../src/services/integrations/stripe/store'
 
 /**
  * Property-Based Tests: Stripe OAuth State Store — Metadata Variants
@@ -30,9 +37,9 @@ describe('Stripe OAuth State Store - Property-Based Tests', () => {
       fc.assert(
         fc.property(
           fc.oneof(
-            fc.hexaString({ minLength: 16, maxLength: 64 }),
+            fc.stringMatching(/^[0-9a-f]{16,64}$/),
             fc.uuid(),
-            fc.stringOf(fc.char(), { minLength: 16, maxLength: 64 }),
+            fc.string({ minLength: 16, maxLength: 64 }),
           ),
           fc.integer({ min: 1, max: 60 }),
           (state, minutesInFuture) => {
@@ -258,6 +265,255 @@ describe('Stripe OAuth State Store - Property-Based Tests', () => {
           }
         ),
         { numRuns: 50 }
+      )
+    })
+  })
+})
+
+
+// ─── Arbitraries ─────────────────────────────────────────────────────────────
+
+/**
+ * Generates a realistic Stripe account ID: "acct_" + 16 lowercase hex chars.
+ * Mirrors the shape Stripe returns as `stripe_user_id` in OAuth responses.
+ */
+const stripeUserIdArb = fc
+  .stringMatching(/^[0-9a-f]{16}$/)
+  .map((s) => `acct_${s}`)
+
+/**
+ * Generates a realistic Stripe access token with sk_test_ or sk_live_ prefix.
+ */
+const accessTokenArb = fc
+  .tuple(
+    fc.constantFrom('sk_test_', 'sk_live_'),
+    fc.stringMatching(/^[0-9a-f]{24}$/),
+  )
+  .map(([prefix, suffix]) => `${prefix}${suffix}`)
+
+/**
+ * Generates a realistic internal business ID.
+ */
+const businessIdArb = fc
+  .stringMatching(/^[0-9a-f]{8}$/)
+  .map((s) => `biz_${s}`)
+
+/**
+ * Full integration input record (no timestamps — managed by the store).
+ */
+const integrationInputArb = fc.record({
+  stripeUserId: stripeUserIdArb,
+  accessToken: accessTokenArb,
+  businessId: businessIdArb,
+})
+
+// ─── Property tests: upsertStripeIntegration / getStripeIntegration ──────────
+
+describe('Stripe Integration Store — ID Mapping Properties', () => {
+  beforeEach(() => {
+    clearStripeIntegrationStore()
+  })
+
+  // ── Property 7: Round-trip identity ────────────────────────────────────────
+  describe('Property 7: Round-trip identity — stored fields are returned unchanged', () => {
+    it('getStripeIntegration returns the exact stripeUserId, accessToken, and businessId that were upserted', () => {
+      /**
+       * For any valid integration input, upserting and then retrieving by
+       * stripeUserId SHALL return a record whose mapped fields are identical
+       * to the input. The store must not mutate or drop any field.
+       */
+      fc.assert(
+        fc.property(integrationInputArb, ({ stripeUserId, accessToken, businessId }) => {
+          upsertStripeIntegration({ stripeUserId, accessToken, businessId })
+          const retrieved = getStripeIntegration(stripeUserId)
+          expect(retrieved).toBeDefined()
+          expect(retrieved!.stripeUserId).toBe(stripeUserId)
+          expect(retrieved!.accessToken).toBe(accessToken)
+          expect(retrieved!.businessId).toBe(businessId)
+        }),
+        { numRuns: 100 },
+      )
+    })
+  })
+
+  // ── Property 8: Timestamps are set on creation ──────────────────────────────
+  describe('Property 8: Timestamps — createdAt and updatedAt are set on first upsert', () => {
+    it('createdAt and updatedAt are numeric and equal on first insert', () => {
+      /**
+       * A freshly inserted record must have numeric timestamps within the
+       * wall-clock window of the call. On first insert, createdAt === updatedAt.
+       */
+      fc.assert(
+        fc.property(integrationInputArb, ({ stripeUserId, accessToken, businessId }) => {
+          const before = Date.now()
+          const result = upsertStripeIntegration({ stripeUserId, accessToken, businessId })
+          const after = Date.now()
+          expect(typeof result.createdAt).toBe('number')
+          expect(typeof result.updatedAt).toBe('number')
+          expect(result.createdAt).toBeGreaterThanOrEqual(before)
+          expect(result.createdAt).toBeLessThanOrEqual(after)
+          expect(result.createdAt).toBe(result.updatedAt)
+        }),
+        { numRuns: 100 },
+      )
+    })
+  })
+
+  // ── Property 9: Upsert preserves createdAt ──────────────────────────────────
+  describe('Property 9: Upsert preserves createdAt on subsequent writes', () => {
+    it('re-upserting with a new accessToken keeps the original createdAt', () => {
+      /**
+       * The store's idempotent upsert contract: createdAt is set once and
+       * never overwritten. updatedAt must be >= the original updatedAt.
+       */
+      fc.assert(
+        fc.property(
+          integrationInputArb,
+          accessTokenArb,
+          ({ stripeUserId, accessToken, businessId }, newToken) => {
+            const first = upsertStripeIntegration({ stripeUserId, accessToken, businessId })
+            const second = upsertStripeIntegration({ stripeUserId, accessToken: newToken, businessId })
+            expect(second.createdAt).toBe(first.createdAt)
+            expect(second.updatedAt).toBeGreaterThanOrEqual(first.updatedAt)
+            expect(second.accessToken).toBe(newToken)
+          },
+        ),
+        { numRuns: 100 },
+      )
+    })
+  })
+
+  // ── Property 10: Key isolation ───────────────────────────────────────────────
+  describe('Property 10: Key isolation — distinct Stripe IDs map to independent records', () => {
+    it('upserting two different stripeUserIds does not cross-contaminate their records', () => {
+      /**
+       * Two integrations with different stripeUserIds must be stored and
+       * retrieved independently. Writing one must not affect the other.
+       */
+      fc.assert(
+        fc.property(
+          integrationInputArb,
+          integrationInputArb,
+          (a, b) => {
+            fc.pre(a.stripeUserId !== b.stripeUserId)
+            upsertStripeIntegration(a)
+            upsertStripeIntegration(b)
+            const retrievedA = getStripeIntegration(a.stripeUserId)
+            const retrievedB = getStripeIntegration(b.stripeUserId)
+            expect(retrievedA!.businessId).toBe(a.businessId)
+            expect(retrievedB!.businessId).toBe(b.businessId)
+            expect(retrievedA!.accessToken).toBe(a.accessToken)
+            expect(retrievedB!.accessToken).toBe(b.accessToken)
+          },
+        ),
+        { numRuns: 100 },
+      )
+    })
+  })
+
+  // ── Property 11: Missing record returns undefined ────────────────────────────
+  describe('Property 11: Missing record — unknown stripeUserId returns undefined', () => {
+    it('getStripeIntegration returns undefined for a stripeUserId that was never upserted', () => {
+      /**
+       * The store must not fabricate records. Any ID that was never written
+       * must return undefined, regardless of its shape.
+       */
+      fc.assert(
+        fc.property(
+          fc.stringMatching(/^[0-9a-f]{16}$/).map((s) => `acct_${s}_probe`),
+          (unknownId) => {
+            expect(getStripeIntegration(unknownId)).toBeUndefined()
+          },
+        ),
+        { numRuns: 50 },
+      )
+    })
+  })
+
+  // ── Property 12: Large / boundary field values ───────────────────────────────
+  describe('Property 12: Large and boundary field values are stored without truncation', () => {
+    it('accessToken and businessId at maximum realistic lengths round-trip correctly', () => {
+      /**
+       * Edge case: very long tokens (e.g. from metadata blobs) must not be
+       * silently truncated or rejected by the in-memory store.
+       */
+      fc.assert(
+        fc.property(
+          stripeUserIdArb,
+          fc.stringMatching(/^[0-9a-f]{256}$/).map((s) => `sk_test_${s}`),
+          fc.stringMatching(/^[0-9a-f]{64}$/).map((s) => `biz_${s}`),
+          (stripeUserId, longToken, longBizId) => {
+            upsertStripeIntegration({ stripeUserId, accessToken: longToken, businessId: longBizId })
+            const retrieved = getStripeIntegration(stripeUserId)
+            expect(retrieved!.accessToken).toBe(longToken)
+            expect(retrieved!.businessId).toBe(longBizId)
+          },
+        ),
+        { numRuns: 50 },
+      )
+    })
+  })
+
+  // -- Property 13: Validation rejects empty / non-string inputs ---------------
+  describe('Property 13: Validation � invalid inputs throw StripeStoreValidationError', () => {
+    it('upsertStripeIntegration throws on empty stripeUserId', () => {
+      fc.assert(
+        fc.property(
+          fc.constantFrom('', '   ', '\t', '\n'),
+          accessTokenArb,
+          businessIdArb,
+          (badId, accessToken, businessId) => {
+            expect(() =>
+              upsertStripeIntegration({ stripeUserId: badId, accessToken, businessId }),
+            ).toThrow(StripeStoreValidationError)
+          },
+        ),
+        { numRuns: 20 },
+      )
+    })
+
+    it('upsertStripeIntegration throws on empty accessToken', () => {
+      fc.assert(
+        fc.property(
+          stripeUserIdArb,
+          fc.constantFrom('', '   '),
+          businessIdArb,
+          (stripeUserId, badToken, businessId) => {
+            expect(() =>
+              upsertStripeIntegration({ stripeUserId, accessToken: badToken, businessId }),
+            ).toThrow(StripeStoreValidationError)
+          },
+        ),
+        { numRuns: 20 },
+      )
+    })
+
+    it('upsertStripeIntegration throws on empty businessId', () => {
+      fc.assert(
+        fc.property(
+          stripeUserIdArb,
+          accessTokenArb,
+          fc.constantFrom('', '   '),
+          (stripeUserId, accessToken, badBizId) => {
+            expect(() =>
+              upsertStripeIntegration({ stripeUserId, accessToken, businessId: badBizId }),
+            ).toThrow(StripeStoreValidationError)
+          },
+        ),
+        { numRuns: 20 },
+      )
+    })
+
+    it('setOAuthState throws on empty state string', () => {
+      fc.assert(
+        fc.property(
+          fc.constantFrom('', '   '),
+          fc.integer({ min: 1, max: 60 }).map((m) => Date.now() + m * 60_000),
+          (badState, expiresAt) => {
+            expect(() => setOAuthState(badState, expiresAt)).toThrow(StripeStoreValidationError)
+          },
+        ),
+        { numRuns: 20 },
       )
     })
   })

@@ -25,6 +25,10 @@ export type SorobanRetryPolicy = {
   retryMaxDelayMs: number;
   /** Jitter ratio applied to retry delays to reduce synchronized retries. */
   retryJitterRatio: number;
+  /** Circuit breaker failure threshold - number of consecutive failures before opening. */
+  circuitBreakerThreshold: number;
+  /** Circuit breaker reset timeout in milliseconds. */
+  circuitBreakerResetMs: number;
 };
 
 type ServerMethodName =
@@ -37,6 +41,31 @@ type RetryableResultPredicate<T> = (result: T) => boolean;
 type SleepFn = (delayMs: number) => Promise<void>;
 type RandomFn = () => number;
 
+/**
+ * Circuit breaker states for resilience against cascading failures.
+ */
+export enum CircuitBreakerState {
+  CLOSED = "closed",     // Normal operation
+  OPEN = "open",         // Failing, rejecting requests
+  HALF_OPEN = "half_open" // Testing if service recovered
+}
+
+/**
+ * Observability hooks for monitoring and metrics collection.
+ */
+export type SorobanObservabilityHooks = {
+  /** Called before each RPC attempt */
+  onRequestStart?: (operationName: string, attempt: number) => void;
+  /** Called after each successful RPC response */
+  onRequestSuccess?: (operationName: string, attempt: number, durationMs: number) => void;
+  /** Called after each failed RPC attempt */
+  onRequestFailure?: (operationName: string, attempt: number, durationMs: number, error: unknown) => void;
+  /** Called when circuit breaker state changes */
+  onCircuitBreakerStateChange?: (oldState: CircuitBreakerState, newState: CircuitBreakerState) => void;
+  /** Called when a retry occurs */
+  onRetry?: (operationName: string, attempt: number, delayMs: number, error: unknown) => void;
+};
+
 export type ExecuteSorobanRequestOptions<T> = {
   operationName: string;
   execute: () => Promise<T>;
@@ -44,6 +73,9 @@ export type ExecuteSorobanRequestOptions<T> = {
   shouldRetryResult?: RetryableResultPredicate<T>;
   sleep?: SleepFn;
   random?: RandomFn;
+  observabilityHooks?: SorobanObservabilityHooks;
+  requestId?: string; // For request tracing
+  circuitBreaker?: CircuitBreaker; // Shared circuit breaker instance
 };
 
 export class SorobanRpcTimeoutError extends Error {
@@ -57,6 +89,17 @@ export class SorobanRpcTimeoutError extends Error {
   }
 }
 
+export class SorobanCircuitBreakerError extends Error {
+  constructor(
+    message: string,
+    public readonly state: CircuitBreakerState,
+    public readonly operationName: string,
+  ) {
+    super(message);
+    this.name = "SorobanCircuitBreakerError";
+  }
+}
+
 const DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org";
 const DEFAULT_RETRY_POLICY: SorobanRetryPolicy = {
   timeoutMs: 5_000,
@@ -64,6 +107,8 @@ const DEFAULT_RETRY_POLICY: SorobanRetryPolicy = {
   retryBaseDelayMs: 200,
   retryMaxDelayMs: 1_500,
   retryJitterRatio: 0.2,
+  circuitBreakerThreshold: 5,
+  circuitBreakerResetMs: 30_000,
 };
 
 const MIN_TIMEOUT_MS = 100;
@@ -71,6 +116,89 @@ const MAX_TIMEOUT_MS = 60_000;
 const MAX_RETRIES = 5;
 const MIN_DELAY_MS = 1;
 const MAX_DELAY_MS = 30_000;
+const MIN_CIRCUIT_BREAKER_THRESHOLD = 1;
+const MAX_CIRCUIT_BREAKER_THRESHOLD = 20;
+const MIN_CIRCUIT_BREAKER_RESET_MS = 1_000;
+const MAX_CIRCUIT_BREAKER_RESET_MS = 300_000;
+
+/**
+ * Circuit breaker implementation for resilience against cascading failures.
+ */
+export class CircuitBreaker {
+  private state: CircuitBreakerState = CircuitBreakerState.CLOSED;
+  private failureCount = 0;
+  private lastFailureTime = 0;
+  private readonly threshold: number;
+  private readonly resetTimeoutMs: number;
+  private readonly onStateChange?: (oldState: CircuitBreakerState, newState: CircuitBreakerState) => void;
+
+  constructor(
+    threshold: number,
+    resetTimeoutMs: number,
+    onStateChange?: (oldState: CircuitBreakerState, newState: CircuitBreakerState) => void,
+  ) {
+    this.threshold = threshold;
+    this.resetTimeoutMs = resetTimeoutMs;
+    this.onStateChange = onStateChange;
+  }
+
+  /**
+   * Records a successful operation, potentially closing the circuit.
+   */
+  recordSuccess(): void {
+    if (this.state === CircuitBreakerState.HALF_OPEN) {
+      this.transitionTo(CircuitBreakerState.CLOSED);
+    }
+    this.failureCount = 0;
+  }
+
+  /**
+   * Records a failed operation, potentially opening the circuit.
+   */
+  recordFailure(): void {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+
+    if (this.state === CircuitBreakerState.CLOSED && this.failureCount >= this.threshold) {
+      this.transitionTo(CircuitBreakerState.OPEN);
+    } else if (this.state === CircuitBreakerState.HALF_OPEN) {
+      this.transitionTo(CircuitBreakerState.OPEN);
+    }
+  }
+
+  /**
+   * Checks if the circuit breaker allows the request to proceed.
+   */
+  canProceed(): boolean {
+    switch (this.state) {
+      case CircuitBreakerState.CLOSED:
+        return true;
+      case CircuitBreakerState.OPEN:
+        if (Date.now() - this.lastFailureTime >= this.resetTimeoutMs) {
+          this.transitionTo(CircuitBreakerState.HALF_OPEN);
+          return true;
+        }
+        return false;
+      case CircuitBreakerState.HALF_OPEN:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Gets the current circuit breaker state.
+   */
+  getState(): CircuitBreakerState {
+    return this.state;
+  }
+
+  private transitionTo(newState: CircuitBreakerState): void {
+    const oldState = this.state;
+    this.state = newState;
+    this.onStateChange?.(oldState, newState);
+  }
+}
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -185,6 +313,18 @@ export function getSorobanRetryPolicy(
       0,
       1,
     ),
+    circuitBreakerThreshold: parseIntegerEnv(
+      "SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD",
+      DEFAULT_RETRY_POLICY.circuitBreakerThreshold,
+      MIN_CIRCUIT_BREAKER_THRESHOLD,
+      MAX_CIRCUIT_BREAKER_THRESHOLD,
+    ),
+    circuitBreakerResetMs: parseIntegerEnv(
+      "SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS",
+      DEFAULT_RETRY_POLICY.circuitBreakerResetMs,
+      MIN_CIRCUIT_BREAKER_RESET_MS,
+      MAX_CIRCUIT_BREAKER_RESET_MS,
+    ),
   };
 
   const policy = {
@@ -243,6 +383,11 @@ function hasRetryableCode(error: NodeJS.ErrnoException): boolean {
     "UND_ERR_CONNECT_TIMEOUT",
     "UND_ERR_HEADERS_TIMEOUT",
     "UND_ERR_BODY_TIMEOUT",
+    "UND_ERR_SOCKET",
+    "UND_ERR_CLOSED",
+    "ENETDOWN",
+    "EHOSTDOWN",
+    "ECONNABORTED",
   ].includes(error.code ?? "");
 }
 
@@ -252,6 +397,12 @@ function hasRetryableCode(error: NodeJS.ErrnoException): boolean {
  * Security note: only transient transport failures are retried. Validation
  * errors, contract errors, and other deterministic failures are surfaced
  * immediately to avoid replaying unsafe requests.
+ *
+ * Enhanced to handle:
+ * - DNS resolution failures
+ * - Stale connection errors
+ * - Rate limiting (429 responses)
+ * - Network connectivity issues
  */
 export function isRetryableSorobanError(error: unknown): boolean {
   if (error instanceof SorobanRpcTimeoutError || isAbortError(error)) {
@@ -275,10 +426,18 @@ export function isRetryableSorobanError(error: unknown): boolean {
     message.includes("try again later") ||
     message.includes("socket hang up") ||
     message.includes("network error") ||
-    message.includes("fetch failed") ||
+    message.includes("connection reset") ||
+    message.includes("connection refused") ||
+    message.includes("connection timeout") ||
+    message.includes("dns") ||
+    message.includes("name resolution") ||
     message.includes("503") ||
     message.includes("504") ||
-    message.includes("429")
+    message.includes("429") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    message.includes("fetch failed") ||
+    message.includes("undici") // Undici-specific errors
   );
 }
 
@@ -312,7 +471,8 @@ async function withSorobanTimeout<T>(
 }
 
 /**
- * Executes a Soroban RPC operation with bounded timeout and retry behavior.
+ * Executes a Soroban RPC operation with bounded timeout, retry behavior,
+ * circuit breaker protection, and observability hooks.
  */
 export async function executeSorobanRequest<T>(
   options: ExecuteSorobanRequestOptions<T>,
@@ -320,14 +480,51 @@ export async function executeSorobanRequest<T>(
   const policy = getSorobanRetryPolicy(options.policy);
   const sleepFn = options.sleep ?? sleep;
   const random = options.random ?? Math.random;
+  const hooks = options.observabilityHooks;
+
+  // Use provided circuit breaker or create a new one for standalone usage
+  const circuitBreaker = options.circuitBreaker ?? new CircuitBreaker(
+    policy.circuitBreakerThreshold,
+    policy.circuitBreakerResetMs,
+    (oldState, newState) => {
+      hooks?.onCircuitBreakerStateChange?.(oldState, newState);
+      logger.warn(
+        {
+          operationName: options.operationName,
+          oldState,
+          newState,
+          requestId: options.requestId,
+        },
+        "soroban: circuit breaker state changed",
+      );
+    },
+  );
+
+  // Check circuit breaker before proceeding
+  if (!circuitBreaker.canProceed()) {
+    const error = new SorobanCircuitBreakerError(
+      `Circuit breaker is ${circuitBreaker.getState()} for Soroban RPC ${options.operationName}`,
+      circuitBreaker.getState(),
+      options.operationName,
+    );
+    hooks?.onRequestFailure?.(options.operationName, 0, 0, error);
+    throw error;
+  }
 
   for (let attempt = 1; attempt <= policy.maxRetries + 1; attempt += 1) {
+    const startTime = Date.now();
+    hooks?.onRequestStart?.(options.operationName, attempt);
+
     try {
       const result = await withSorobanTimeout(
         options.operationName,
         policy.timeoutMs,
         options.execute,
       );
+
+      const duration = Date.now() - startTime;
+      circuitBreaker.recordSuccess();
+      hooks?.onRequestSuccess?.(options.operationName, attempt, duration);
 
       const shouldRetry =
         options.shouldRetryResult?.(result) === true &&
@@ -338,37 +535,50 @@ export async function executeSorobanRequest<T>(
       }
 
       const delayMs = calculateRetryDelay(attempt, policy, random);
+      hooks?.onRetry?.(options.operationName, attempt, delayMs, null);
+
       logger.warn(
         {
           attempt,
           delayMs,
           operationName: options.operationName,
+          requestId: options.requestId,
         },
         "soroban: retrying RPC call after retryable response",
       );
       await sleepFn(delayMs);
       continue;
     } catch (error) {
+      const duration = Date.now() - startTime;
       const retryable =
         isRetryableSorobanError(error) && attempt <= policy.maxRetries;
 
       if (!retryable) {
+        circuitBreaker.recordFailure();
+        hooks?.onRequestFailure?.(options.operationName, attempt, duration, error);
         throw error;
       }
 
       const delayMs = calculateRetryDelay(attempt, policy, random);
+      hooks?.onRetry?.(options.operationName, attempt, delayMs, error);
+
       logger.warn(
         {
           attempt,
           delayMs,
           operationName: options.operationName,
+          requestId: options.requestId,
           errorMessage: error instanceof Error ? error.message : String(error),
+          duration,
         },
         "soroban: retrying RPC call after transient transport error",
       );
       await sleepFn(delayMs);
     }
   }
+
+  // This should never be reached due to the loop logic, but TypeScript requires it
+  throw new Error("Unexpected execution path in executeSorobanRequest");
 }
 
 function wrapServerMethod<TArgs extends unknown[], TResult>(
@@ -376,12 +586,18 @@ function wrapServerMethod<TArgs extends unknown[], TResult>(
   methodName: ServerMethodName,
   method: (...args: TArgs) => Promise<TResult>,
   policy: Partial<SorobanRetryPolicy>,
+  observabilityHooks?: SorobanObservabilityHooks,
+  requestId?: string,
+  circuitBreaker?: CircuitBreaker,
 ): (...args: TArgs) => Promise<TResult> {
   return async (...args: TArgs): Promise<TResult> =>
     executeSorobanRequest<TResult>({
       operationName: methodName,
       execute: () => method.apply(server, args),
       policy,
+      observabilityHooks,
+      requestId,
+      circuitBreaker,
       shouldRetryResult:
         methodName === "sendTransaction"
           ? (result) =>
@@ -398,12 +614,33 @@ function wrapServerMethod<TArgs extends unknown[], TResult>(
 export function createSorobanRpcServer(
   rpcUrl: string,
   policyOverrides: Partial<SorobanRetryPolicy> = {},
+  observabilityHooks?: SorobanObservabilityHooks,
+  requestId?: string,
 ): rpc.Server {
   const server = new rpc.Server(rpcUrl, {
     allowHttp:
       rpcUrl.startsWith("http://localhost") ||
       rpcUrl.startsWith("http://127.0.0.1"),
   });
+
+  // Shared circuit breaker for all operations on this server instance
+  const policy = getSorobanRetryPolicy(policyOverrides);
+  const circuitBreaker = new CircuitBreaker(
+    policy.circuitBreakerThreshold,
+    policy.circuitBreakerResetMs,
+    (oldState, newState) => {
+      observabilityHooks?.onCircuitBreakerStateChange?.(oldState, newState);
+      logger.warn(
+        {
+          rpcUrl,
+          oldState,
+          newState,
+          requestId,
+        },
+        "soroban: circuit breaker state changed",
+      );
+    },
+  );
 
   const wrappedMethods = new Map<
     ServerMethodName,
@@ -434,6 +671,9 @@ export function createSorobanRpcServer(
           methodName,
           value as (...args: unknown[]) => Promise<unknown>,
           policyOverrides,
+          observabilityHooks,
+          requestId,
+          circuitBreaker,
         );
         wrappedMethods.set(methodName, wrapped);
         return wrapped;
