@@ -16,5 +16,10 @@ export default defineConfig({
       exclude: ['src/**/*.d.ts', 'src/index.ts'],
       reportsDirectory: 'coverage',
     },
+    server: {
+      deps: {
+        inline: ['C:']
+      }
+    }
   },
 })
