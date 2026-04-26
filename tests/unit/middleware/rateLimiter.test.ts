@@ -5,6 +5,7 @@ import {
   rateLimiter,
   resetRateLimiterStore,
 } from "../../../src/middleware/rateLimiter.js";
+import { logger } from "../../../src/utils/logger";
 
 function createResponse(): Response {
   const headers = new Map<string, string>();
@@ -189,21 +190,43 @@ describe("rateLimiter", () => {
     expect((secondResponse as unknown as { statusCode: number }).statusCode).toBe(200);
   });
 
-  it("should fall back to safe defaults when environment variables are invalid", () => {
-    process.env.RATE_LIMIT_WINDOW_MS = "invalid";
-    process.env.RATE_LIMIT_MAX = "0";
+   it("should fall back to safe defaults when environment variables are invalid", () => {
+     process.env.RATE_LIMIT_WINDOW_MS = "invalid";
+     process.env.RATE_LIMIT_MAX = "0";
 
-    const middleware = rateLimiter({
-      bucket: (req) => (req.headers["x-bucket"] as string) || "",
-    });
-    const req = createRequest({ headers: { "x-bucket": "" } });
-    const res = createResponse();
-    const next = vi.fn() as NextFunction;
+     const middleware = rateLimiter({
+       bucket: (req) => (req.headers["x-bucket"] as string) || "",
+     });
+     const req = createRequest({ headers: { "x-bucket": "" } });
+     const res = createResponse();
+     const next = vi.fn() as NextFunction;
 
-    middleware(req, res, next);
+     middleware(req, res, next);
 
-    expect(next).toHaveBeenCalledOnce();
-    expect(res.getHeader("x-ratelimit-limit")).toBe("100");
-    expect(res.getHeader("x-ratelimit-bucket")).toBe("POST:/api/auth/login");
-  });
-});
+     expect(next).toHaveBeenCalledOnce();
+     expect(res.getHeader("x-ratelimit-limit")).toBe("100");
+     expect(res.getHeader("x-ratelimit-bucket")).toBe("POST:/api/auth/login");
+   });
+
+   it("should allow burst of up to max requests in fixed window", () => {
+     const middleware = rateLimiter({ bucket: "burst-test", max: 3, windowMs: 1000 });
+     const req = createRequest();
+     const next = vi.fn() as NextFunction;
+
+     // Make 3 requests (should all be allowed)
+     for (let i = 0; i < 3; i++) {
+       const res = createResponse();
+       middleware(req, res, next);
+       expect(next).toHaveBeenCalledTimes(i + 1);
+       expect((res as unknown as { statusCode: number }).statusCode).toBe(200);
+       expect(res.getHeader("x-ratelimit-remaining")).toBe((2 - i).toString());
+     }
+
+     // 4th request should be rate limited
+     const res = createResponse();
+     middleware(req, res, next);
+     expect(next).toHaveBeenCalledTimes(3); // next not called for 4th request
+     expect((res as unknown as { statusCode: number }).statusCode).toBe(429);
+     expect(res.getHeader("x-ratelimit-remaining")).toBe("0");
+   });
+ });

@@ -5,6 +5,7 @@ import {
   createUser,
   findUserByEmail,
   findUserById,
+  findUserByResetToken,
   setResetToken,
   updateUser,
   updateUserPassword,
@@ -328,5 +329,45 @@ describe('User Repository - partial update safety', () => {
   it('returns null when updating a non-existent user', async () => {
     const result = await updateUser('missing-id', { email: 'none@example.com' })
     expect(result).toBeNull()
+  })
+})
+
+describe('User Repository - queries and indexes', () => {
+  beforeEach(() => {
+    clearAllUsers()
+  })
+
+  it('finds user by email (testing email index behavior)', async () => {
+    const user = await createUser('find@example.com', 'hash')
+    const found = await findUserByEmail('find@example.com')
+    expect(found).not.toBeNull()
+    expect(found!.id).toBe(user.id)
+  })
+
+  it('returns null for non-existent email lookup', async () => {
+    const found = await findUserByEmail('nonexistent@example.com')
+    expect(found).toBeNull()
+  })
+
+  it('finds user by reset token only if not expired', async () => {
+    const user = await createUser('token@example.com', 'hash')
+    await setResetToken(user.id, 'valid-token', 30) // 30 mins validity
+    
+    const found = await findUserByResetToken('valid-token')
+    expect(found).not.toBeNull()
+    expect(found!.id).toBe(user.id)
+  })
+
+  it('returns null for expired reset token (simulates token + expiry index check)', async () => {
+    const user = await createUser('expired@example.com', 'hash')
+    await setResetToken(user.id, 'expired-token', -1) // expired 1 min ago
+    
+    const found = await findUserByResetToken('expired-token')
+    expect(found).toBeNull()
+  })
+
+  it('returns null for non-existent reset token', async () => {
+    const found = await findUserByResetToken('invalid-token')
+    expect(found).toBeNull()
   })
 })

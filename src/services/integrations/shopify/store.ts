@@ -8,6 +8,7 @@
 export interface ShopifyOAuthState {
   shop: string
   userId: string
+  businessId: string
 }
 
 const SHOP_HOST_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.myshopify\.com$/
@@ -29,8 +30,8 @@ export function isValidShopHost(shop: string): boolean {
   return SHOP_HOST_REGEX.test(shop)
 }
 
-export function setOAuthState(state: string, shop: string, userId: string): void {
-  stateToShop.set(state, { shop: normalizeShop(shop), userId })
+export function setOAuthState(state: string, shop: string, userId: string, businessId: string): void {
+  stateToShop.set(state, { shop: normalizeShop(shop), userId, businessId })
 }
 
 export function consumeOAuthState(state: string): ShopifyOAuthState | undefined {

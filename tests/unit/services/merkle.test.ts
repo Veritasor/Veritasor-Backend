@@ -4,6 +4,10 @@ import { buildTree, getRoot, MERKLE_MAX_LEAVES, MERKLE_WARN_LEAVES } from '../..
 import {
   generateProof,
   verifyProof,
+  isProof,
+  isProofStep,
+  isHashHex,
+  normalizeHashHex,
   MERKLE_PROOF_MAX_STEPS,
 } from '../../../src/services/merkle/generateProof';
 

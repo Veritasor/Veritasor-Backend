@@ -10,6 +10,7 @@
  * - Automatic string trimming and normalization
  * - URL validation and normalization
  * - Business name and industry validation
+ * - Country code validation (ISO 3166-1 alpha-2)
  * - Type-safe parsed inputs
  *
  * @module services/business/schemas
@@ -43,23 +44,31 @@ const WEBSITE_MAX_LENGTH = 2048;
 
 /**
  * Regex pattern for validating business names.
- * Allows alphanumeric, spaces, hyphens, apostrophes, and ampersands.
- * Prevents injection of special characters that could cause display issues.
+ * Unicode-aware: allows letters from any script, numbers, spaces, hyphens,
+ * apostrophes, ampersands, periods, and commas.
+ * Prevents injection of control characters and HTML-special symbols.
  */
-const BUSINESS_NAME_PATTERN = /^[a-zA-Z0-9\s\-'&.,]+$/;
+const BUSINESS_NAME_PATTERN = /^[\p{L}\p{N}\s\-'&.,]+$/u;
 
 /**
  * Regex pattern for validating industry values.
  * Allows similar characters to business names for consistency.
  */
-const INDUSTRY_PATTERN = /^[a-zA-Z0-9\s\-'&.,]+$/;
+const INDUSTRY_PATTERN = /^[\p{L}\p{N}\s\-'&.,]+$/u;
 
 /**
  * Regex pattern for URL validation.
  * Supports http, https, www formats, and basic domain names without protocol.
  * This is permissive to allow various input formats that will be normalized later.
  */
-const URL_PATTERN = /^(https?:\/\/)?(www\.)?([a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}|localhost|127\.0\.0\.1)(:[0-9]+)?(\/[^\s]*)?$/;
+const URL_PATTERN =
+  /^(https?:\/\/)?(www\.)?([a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA-Z]{2,}|localhost|127\.0\.0\.1)(:[0-9]+)?(\/[^\s]*)?$/;
+
+/**
+ * Regex pattern for ISO 3166-1 alpha-2 country codes.
+ * Matches exactly two uppercase ASCII letters after normalization.
+ */
+const COUNTRY_CODE_PATTERN = /^[A-Z]{2}$/;
 
 /**
  * Create Business Input Schema
@@ -76,13 +85,15 @@ const URL_PATTERN = /^(https?:\/\/)?(www\.)?([a-zA-Z0-9]([a-zA-Z0-9\-]*\.)+[a-zA
  *   name: '  My Business  ',
  *   industry: 'Technology',
  *   description: 'We make cool stuff',
- *   website: 'https://example.com'
+ *   website: 'https://example.com',
+ *   countryCode: 'ng',
  * });
  * // Returns: {
  * //   name: 'My Business',
  * //   industry: 'Technology',
  * //   description: 'We make cool stuff',
- * //   website: 'https://example.com'
+ * //   website: 'https://example.com',
+ * //   countryCode: 'NG',
  * // }
  * ```
  */
@@ -117,10 +128,24 @@ export const createBusinessInputSchema = z.object({
     .nullable()
     .transform((val) => (val === '' || val === undefined) ? null : val),
 
+  countryCode: z
+    .string()
+    .length(2, 'Country code must be exactly 2 characters')
+    .toUpperCase()
+    .refine(
+      (code) => COUNTRY_CODE_PATTERN.test(code),
+      'Invalid country code format. Must be an ISO 3166-1 alpha-2 code (e.g., US, GB, NG).',
+    )
+    .optional()
+    .nullable()
+    .transform((val) => (val === '' || val === undefined) ? null : val),
+
   website: z
     .string()
     .max(WEBSITE_MAX_LENGTH, `Website URL must be at most ${WEBSITE_MAX_LENGTH} characters`)
-    .trim()    .transform((val) => val.toLowerCase())    .refine(
+    .trim()
+    .transform((val) => val.toLowerCase())
+    .refine(
       (url) => url === '' || URL_PATTERN.test(url),
       'Website must be a valid URL (e.g., https://example.com or www.example.com)',
     )
@@ -148,9 +173,10 @@ export type CreateBusinessInput = z.infer<typeof createBusinessInputSchema>;
  * ```typescript
  * const input = await updateBusinessInputSchema.parseAsync({
  *   name: 'Updated Business Name',
- *   website: 'https://newsite.com'
+ *   website: 'https://newsite.com',
+ *   countryCode: 'GB',
  * });
- * // Returns: { name: 'Updated Business Name', website: 'https://newsite.com' }
+ * // Returns: { name: 'Updated Business Name', website: 'https://newsite.com', countryCode: 'GB' }
  * ```
  */
 export const updateBusinessInputSchema = z.object({
@@ -185,6 +211,18 @@ export const updateBusinessInputSchema = z.object({
     .optional()
     .transform((val) => (val === '' ? null : val)),
 
+  countryCode: z
+    .string()
+    .length(2, 'Country code must be exactly 2 characters')
+    .toUpperCase()
+    .refine(
+      (code) => COUNTRY_CODE_PATTERN.test(code),
+      'Invalid country code format. Must be an ISO 3166-1 alpha-2 code (e.g., US, GB, NG).',
+    )
+    .nullable()
+    .optional()
+    .transform((val) => (val === '' ? null : val)),
+
   website: z
     .string()
     .max(WEBSITE_MAX_LENGTH, `Website URL must be at most ${WEBSITE_MAX_LENGTH} characters`)
@@ -197,7 +235,7 @@ export const updateBusinessInputSchema = z.object({
     .nullable()
     .optional()
     .transform((val) => (val === '' ? null : val)),
-}).passthrough();;
+}).passthrough();
 
 /**
  * Parsed Update Business Input Type
@@ -211,11 +249,11 @@ export type UpdateBusinessInput = z.infer<typeof updateBusinessInputSchema>;
  * Parse and normalize create business input
  *
  * Safely parses and normalizes user-supplied create business input.
- * Throws ValidationError on invalid input.
+ * Throws ZodError on invalid input.
  *
  * @param input - Raw input data from request body
  * @returns Normalized input ready for service layer
- * @throws ValidationError if input fails validation
+ * @throws ZodError if input fails validation
  *
  * @example
  * ```typescript
@@ -238,11 +276,11 @@ export async function parseCreateBusinessInput(input: unknown): Promise<CreateBu
  * Parse and normalize update business input
  *
  * Safely parses and normalizes user-supplied update business input.
- * Throws ValidationError on invalid input.
+ * Throws ZodError on invalid input.
  *
  * @param input - Raw input data from request body
  * @returns Normalized input ready for service layer
- * @throws ValidationError if input fails validation
+ * @throws ZodError if input fails validation
  *
  * @example
  * ```typescript
@@ -274,7 +312,7 @@ export async function parseUpdateBusinessInput(input: unknown): Promise<UpdateBu
  * ```typescript
  * const result = await safeParseCreateBusinessInput(req.body);
  * if (!result.success) {
- *   return res.status(400).json({ errors: result.errors });
+ *   return res.status(400).json({ errors: result.error.issues });
  * }
  * const business = await createBusiness(userId, result.data);
  * ```
@@ -296,3 +334,34 @@ export async function safeParseUpdateBusinessInput(input: unknown) {
   const result = await updateBusinessInputSchema.safeParseAsync(input);
   return result;
 }
+
+/**
+ * Business List Query Schema
+ *
+ * Validates pagination and filtering parameters for listing businesses.
+ */
+export const businessListQuerySchema = z.object({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(20),
+  cursor: z
+    .string()
+    .optional(),
+  sortBy: z
+    .enum(['createdAt', 'name'])
+    .default('createdAt'),
+  sortOrder: z
+    .enum(['asc', 'desc'])
+    .default('desc'),
+  industry: z
+    .string()
+    .max(INDUSTRY_MAX_LENGTH)
+    .trim()
+    .optional()
+    .transform((val) => (val === '' ? undefined : val)),
+});
+
+export type BusinessListQuery = z.infer<typeof businessListQuerySchema>;

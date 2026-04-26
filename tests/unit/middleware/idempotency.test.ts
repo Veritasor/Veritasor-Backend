@@ -177,6 +177,42 @@ describe('idempotencyMiddleware', () => {
       expect(next2).not.toHaveBeenCalled();
     });
 
+    it('should return 422 when same key is used with different body', async () => {
+      const key = 'collision-test-key';
+      const middleware = idempotencyMiddleware({ scope: 'test' });
+
+      // First request
+      const req1 = createMockRequest({ 
+        headers: { 'idempotency-key': key },
+        body: { amount: 100 }
+      });
+      const res1 = createMockResponse();
+      const next1 = createMockNext();
+      
+      await middleware(req1, res1, next1);
+      res1.status(201);
+      res1.json({ success: true });
+
+      // Second request with SAME key but DIFFERENT body
+      const req2 = createMockRequest({ 
+        headers: { 'idempotency-key': key },
+        body: { amount: 200 } // Different!
+      });
+      const res2 = createMockResponse();
+      const next2 = createMockNext();
+      
+      await middleware(req2, res2, next2);
+
+      // Should return 422
+      expect(res2.status).toHaveBeenCalledWith(422);
+      expect(res2.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'IDEMPOTENCY_KEY_COLLISION',
+        })
+      );
+      expect(next2).not.toHaveBeenCalled();
+    });
+
     it('should not cache error responses (4xx)', async () => {
       const key = 'error-test-key';
       const req1 = createMockRequest({ headers: { 'idempotency-key': key } });
@@ -518,7 +554,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should store and retrieve entries', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 60000);
     
     const result = await inMemoryIdempotencyStore.get('key1');
@@ -531,7 +572,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should delete entries', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 60000);
     
     if (inMemoryIdempotencyStore.delete) {
@@ -542,7 +588,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should clear all entries', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 60000);
     await inMemoryIdempotencyStore.set('key2', entry, 60000);
     
@@ -556,7 +607,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should expire entries after TTL', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 50);
     
     // Wait for expiration

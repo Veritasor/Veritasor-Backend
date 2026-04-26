@@ -7,6 +7,7 @@ import {
   getSorobanConfig,
   getSorobanRetryPolicy,
   isRetryableSorobanError,
+  CircuitBreaker,
 } from '../../../../src/services/soroban/client.js'
 
 describe('Soroban client retry and timeout policy', () => {
@@ -21,6 +22,8 @@ describe('Soroban client retry and timeout policy', () => {
     delete process.env.SOROBAN_RPC_RETRY_BASE_DELAY_MS
     delete process.env.SOROBAN_RPC_RETRY_MAX_DELAY_MS
     delete process.env.SOROBAN_RPC_RETRY_JITTER_RATIO
+    delete process.env.SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD
+    delete process.env.SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS
   })
 
   describe('getSorobanConfig', () => {
@@ -66,6 +69,8 @@ describe('Soroban client retry and timeout policy', () => {
         retryBaseDelayMs: 25,
         retryMaxDelayMs: 100,
         retryJitterRatio: 0.4,
+        circuitBreakerThreshold: 5,
+        circuitBreakerResetMs: 30000,
       })
     })
 
@@ -86,6 +91,22 @@ describe('Soroban client retry and timeout policy', () => {
       )
     })
 
+    it('rejects invalid circuit breaker threshold', () => {
+      process.env.SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD = '0'
+
+      expect(() => getSorobanRetryPolicy()).toThrow(
+        'Invalid SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD. Expected an integer between 1 and 20.',
+      )
+    })
+
+    it('rejects invalid circuit breaker reset timeout', () => {
+      process.env.SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS = '500'
+
+      expect(() => getSorobanRetryPolicy()).toThrow(
+        'Invalid SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS. Expected an integer between 1000 and 300000.',
+      )
+    })
+
     it('rejects non-integer timeout values', () => {
       process.env.SOROBAN_RPC_TIMEOUT_MS = 'slow'
 
@@ -101,9 +122,25 @@ describe('Soroban client retry and timeout policy', () => {
       const networkError = Object.assign(new Error('socket hang up'), {
         code: 'ECONNRESET',
       })
+      const dnsError = Object.assign(new Error('ENOTFOUND'), {
+        code: 'ENOTFOUND',
+      })
+      const staleConnectionError = Object.assign(new Error('UND_ERR_SOCKET'), {
+        code: 'UND_ERR_SOCKET',
+      })
 
       expect(isRetryableSorobanError(timeoutError)).toBe(true)
       expect(isRetryableSorobanError(networkError)).toBe(true)
+      expect(isRetryableSorobanError(dnsError)).toBe(true)
+      expect(isRetryableSorobanError(staleConnectionError)).toBe(true)
+    })
+
+    it('treats rate limiting as retryable', () => {
+      const rateLimitError = new Error('429 Too Many Requests')
+      const rateLimitMessageError = new Error('rate limit exceeded')
+
+      expect(isRetryableSorobanError(rateLimitError)).toBe(true)
+      expect(isRetryableSorobanError(rateLimitMessageError)).toBe(true)
     })
 
     it('does not retry deterministic validation errors', () => {
@@ -247,6 +284,8 @@ describe('Soroban client retry and timeout policy', () => {
             retryBaseDelayMs: 1,
             retryMaxDelayMs: 1,
             retryJitterRatio: 0,
+            circuitBreakerThreshold: 5,
+            circuitBreakerResetMs: 30000,
           },
           sleep,
         }),
@@ -254,6 +293,193 @@ describe('Soroban client retry and timeout policy', () => {
 
       expect(execute).toHaveBeenCalledTimes(1)
       expect(sleep).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('circuit breaker functionality', () => {
+    it('opens circuit breaker after consecutive failures and rejects requests', async () => {
+      const circuitBreaker = new CircuitBreaker(3, 1000)
+      const execute = vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('network error'), { code: 'ECONNRESET' }),
+        )
+      const sleep = vi.fn(async () => undefined)
+
+      // First 3 attempts should fail and open the circuit
+      for (let i = 0; i < 3; i++) {
+        await expect(
+          executeSorobanRequest({
+            operationName: 'getAccount',
+            execute,
+            policy: {
+              timeoutMs: 50,
+              maxRetries: 0,
+              retryBaseDelayMs: 1,
+              retryMaxDelayMs: 1,
+              retryJitterRatio: 0,
+              circuitBreakerThreshold: 3,
+              circuitBreakerResetMs: 1000,
+            },
+            sleep,
+            circuitBreaker,
+          }),
+        ).rejects.toThrow('network error')
+      }
+
+      // Next attempt should be rejected by circuit breaker
+      await expect(
+        executeSorobanRequest({
+          operationName: 'getAccount',
+          execute: vi.fn().mockResolvedValue('should not be called'),
+          policy: {
+            timeoutMs: 50,
+            maxRetries: 0,
+            retryBaseDelayMs: 1,
+            retryMaxDelayMs: 1,
+            retryJitterRatio: 0,
+            circuitBreakerThreshold: 3,
+            circuitBreakerResetMs: 1000,
+          },
+          sleep,
+          circuitBreaker,
+        }),
+      ).rejects.toMatchObject({
+        name: 'SorobanCircuitBreakerError',
+        state: 'open',
+        operationName: 'getAccount',
+      })
+    })
+
+    it('closes circuit breaker after successful request', async () => {
+      const circuitBreaker = new CircuitBreaker(2, 1000)
+      const execute = vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('network error'), { code: 'ECONNRESET' }),
+        )
+        .mockResolvedValueOnce('success')
+      const sleep = vi.fn(async () => undefined)
+
+      // First attempt fails
+      await expect(
+        executeSorobanRequest({
+          operationName: 'getAccount',
+          execute,
+          policy: {
+            timeoutMs: 50,
+            maxRetries: 0,
+            retryBaseDelayMs: 1,
+            retryMaxDelayMs: 1,
+            retryJitterRatio: 0,
+            circuitBreakerThreshold: 2,
+            circuitBreakerResetMs: 1000,
+          },
+          sleep,
+          circuitBreaker,
+        }),
+      ).rejects.toThrow('network error')
+
+      // Second attempt succeeds and closes circuit
+      const result = await executeSorobanRequest({
+        operationName: 'getAccount',
+        execute,
+        policy: {
+          timeoutMs: 50,
+          maxRetries: 0,
+          retryBaseDelayMs: 1,
+          retryMaxDelayMs: 1,
+          retryJitterRatio: 0,
+          circuitBreakerThreshold: 2,
+          circuitBreakerResetMs: 1000,
+        },
+        sleep,
+        circuitBreaker,
+      expect(result).toBe('success')
+    })
+  })
+
+  describe('observability hooks', () => {
+    it('calls observability hooks for successful requests', async () => {
+      const execute = vi.fn().mockResolvedValue('success')
+      const onRequestStart = vi.fn()
+      const onRequestSuccess = vi.fn()
+      const onRequestFailure = vi.fn()
+      const onCircuitBreakerStateChange = vi.fn()
+      const onRetry = vi.fn()
+
+      const result = await executeSorobanRequest({
+        operationName: 'getAccount',
+        execute,
+        policy: {
+          timeoutMs: 50,
+          maxRetries: 0,
+          retryBaseDelayMs: 1,
+          retryMaxDelayMs: 1,
+          retryJitterRatio: 0,
+          circuitBreakerThreshold: 5,
+          circuitBreakerResetMs: 30000,
+        },
+        observabilityHooks: {
+          onRequestStart,
+          onRequestSuccess,
+          onRequestFailure,
+          onCircuitBreakerStateChange,
+          onRetry,
+        },
+        requestId: 'test-request-123',
+      })
+
+      expect(result).toBe('success')
+      expect(onRequestStart).toHaveBeenCalledWith('getAccount', 1)
+      expect(onRequestSuccess).toHaveBeenCalledWith('getAccount', 1, expect.any(Number))
+      expect(onRequestFailure).not.toHaveBeenCalled()
+      expect(onCircuitBreakerStateChange).not.toHaveBeenCalled()
+      expect(onRetry).not.toHaveBeenCalled()
+    })
+
+    it('calls observability hooks for failed and retried requests', async () => {
+      const execute = vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('network error'), { code: 'ECONNRESET' }),
+        )
+        .mockResolvedValueOnce('success')
+      const onRequestStart = vi.fn()
+      const onRequestSuccess = vi.fn()
+      const onRequestFailure = vi.fn()
+      const onRetry = vi.fn()
+      const sleep = vi.fn(async () => undefined)
+
+      const result = await executeSorobanRequest({
+        operationName: 'getAccount',
+        execute,
+        policy: {
+          timeoutMs: 50,
+          maxRetries: 1,
+          retryBaseDelayMs: 1,
+          retryMaxDelayMs: 1,
+          retryJitterRatio: 0,
+          circuitBreakerThreshold: 5,
+          circuitBreakerResetMs: 30000,
+        },
+        sleep,
+        observabilityHooks: {
+          onRequestStart,
+          onRequestSuccess,
+          onRequestFailure,
+          onRetry,
+        },
+        requestId: 'test-request-456',
+      })
+
+      expect(result).toBe('success')
+      expect(onRequestStart).toHaveBeenCalledTimes(2)
+      expect(onRequestStart).toHaveBeenNthCalledWith(1, 'getAccount', 1)
+      expect(onRequestStart).toHaveBeenNthCalledWith(2, 'getAccount', 2)
+      expect(onRequestFailure).toHaveBeenCalledWith('getAccount', 1, expect.any(Number), expect.any(Error))
+      expect(onRetry).toHaveBeenCalledWith('getAccount', 1, 1, expect.any(Error))
+      expect(onRequestSuccess).toHaveBeenCalledWith('getAccount', 2, expect.any(Number))
     })
   })
 

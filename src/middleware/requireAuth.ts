@@ -10,6 +10,7 @@ declare global {
         id: string;
         userId: string;
         email?: string;
+        role: 'user' | 'admin' | 'business_admin';
       };
     }
   }
@@ -50,6 +51,7 @@ export async function requireAuth(
     id: payload.userId,
     userId: payload.userId,
     email: payload.email,
+    role: user.role,
   };
 
   next();
