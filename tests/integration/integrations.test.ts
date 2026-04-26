@@ -1004,6 +1004,7 @@ describe("handleCallback — state nonce validation", () => {
   it("state not in store returns Invalid or expired state", async () => {
     // Do NOT seed the store — state is absent
     const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded");
+    const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded"); // userId and integrationId are not passed here, but handleCallback will pass them
     const result = await handleCallback(params);
     expect(result).toEqual({ success: false, error: "Invalid or expired state" });
   });
@@ -1514,6 +1515,7 @@ describe("OAuth State Tampering", () => {
 
       // Tamper: mutate the stored state to point to a different integration
       const entry = oauthStateStore.find((s) => s.state === stripeState);
+      const entry = oauthStateStore.find((s: any) => s.state === stripeState); // Cast to any for find
       if (entry) {
         entry.integrationId = "shopify";
       }

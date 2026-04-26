@@ -8,7 +8,8 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docs:routes": "tsx scripts/generate-routes.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^14.5.0",

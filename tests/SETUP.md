@@ -1,3 +1,33 @@
+## Signup Abuse Prevention Edge Cases
+
+### Normalization Logic
+
+- **IP Addresses:**
+  - All IPs are normalized before rate limiting. IPv6 addresses are canonicalized, and IPv4-mapped IPv6 addresses (e.g., `::ffff:127.0.0.1`) are treated as their IPv4 equivalent.
+  - This ensures that adversarial clients cannot bypass rate limits by using alternate IP notations.
+- **Emails:**
+  - All emails are normalized by trimming, lowercasing, and removing plus-addressing (e.g., `user+tag@example.com` → `user@example.com`).
+  - For Gmail/Googlemail addresses, optional dot removal is supported (not enabled by default for privacy).
+  - This prevents abuse via aliasing tricks and ensures consistent enforcement.
+
+### Edge Case Test Coverage
+
+- **IPv6 normalization:**
+  - Tests ensure that different notations of the same IPv6 address are rate-limited as one.
+  - IPv4-mapped IPv6 addresses are treated as IPv4.
+- **Plus-address aliasing:**
+  - Tests ensure that `user+anything@example.com` and `user@example.com` are treated as the same for rate limiting.
+- **Burst traffic:**
+  - Simulated rapid signup attempts from the same IP/email are tested to ensure blocking after the configured threshold.
+
+All new logic is covered by unit tests in `tests/unit/utils/signupRateLimiter.test.ts` and `tests/unit/utils/abusePrevention.test.ts`.
+
+### Operator Notes
+
+- No silent failures: all blocks and denials are observable via structured logs and rate limit headers.
+- Error types are explicit and surfaced in API responses.
+
+**Minimum 95% coverage is enforced for these modules.**
 # Test Setup Guide
 
 ## Installation
