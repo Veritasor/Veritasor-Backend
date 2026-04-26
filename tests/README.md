@@ -4,6 +4,47 @@ This directory contains unit and integration tests for the Veritasor Backend API
 
 ---
 
+## Validate Middleware Tests
+
+Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and `validateQuery`.
+
+**Error mapping:** `ZodError.issues` are mapped to `{ path: (string|number)[], message: string }` before being stored in `ValidationError.details`. The error envelope exposes both `details` and `errors` (same array) so existing callers using `details` are unaffected.
+
+**Edge cases covered:**
+
+| Case | Description |
+|------|-------------|
+| Extra keys (default) | Stripped silently — Zod strips unknown keys by default |
+| Extra keys (strict) | Rejected with `VALIDATION_ERROR` when schema uses `.strict()` |
+| Coercion | `z.coerce.number()` converts query string `"42"` → `42` |
+| Coercion failure | Non-numeric string produces a `count` path error |
+| Union types | First matching branch accepted; no error |
+| Nested path shape | Each error has `path: string[]` and `message: string` |
+
+**Threat model notes:**
+- Validation errors never expose internal schema structure beyond field paths and human-readable messages.
+- Extra keys are stripped before the request body reaches route handlers, preventing prototype pollution via unexpected fields.
+- Coercion is explicit (`z.coerce.*`) — implicit coercion is not used, avoiding silent type confusion.
+
+## Redaction Policy
+
+`requestLogger` never writes sensitive values to logs. The policy is enforced via two exported sets in `src/middleware/requestLogger.ts`:
+
+| Set | Members |
+|-----|---------|
+| `REDACTED_HEADERS` | `authorization`, `cookie`, `set-cookie`, `x-api-key`, `x-auth-token` |
+| `REDACTED_QUERY_PARAMS` | `token`, `access_token`, `refresh_token`, `api_key`, `apikey`, `secret`, `password`, `reset_token`, `code` |
+
+Matched values are replaced with the literal string `[REDACTED]` before the log entry is written. Non-sensitive fields pass through unchanged.
+
+**Threat model notes:**
+- Bearer tokens in `Authorization` headers are excluded from logs entirely (headers are not logged).
+- Cookies and `Set-Cookie` are in `REDACTED_HEADERS` for future-proofing if header logging is added.
+- OAuth `code` and `state` query params are redacted to prevent authorization-code interception via log aggregators.
+- Webhook payloads and request bodies are never logged (existing policy).
+
+To extend the policy, add entries to `REDACTED_HEADERS` or `REDACTED_QUERY_PARAMS` in `src/middleware/requestLogger.ts`. Tests in `tests/integration/auth.test.ts` under `"requestLogger redaction policy"` verify coverage.
+
 ## Running Tests
 
 ```bash

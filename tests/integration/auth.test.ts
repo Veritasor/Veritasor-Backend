@@ -1463,6 +1463,107 @@ describe("Security Considerations", () => {
 
 
 /**
+ * requestLogger redaction policy tests.
+ *
+ * Verifies that sensitive query params and headers are never written to logs.
+ */
+describe("requestLogger redaction policy", () => {
+  it("REDACTED_QUERY_PARAMS covers expected sensitive keys", () => {
+    for (const key of ["token", "access_token", "refresh_token", "api_key", "secret", "password", "reset_token", "code"]) {
+      expect(REDACTED_QUERY_PARAMS.has(key)).toBe(true);
+    }
+  });
+
+  it("REDACTED_HEADERS covers authorization, cookie, and set-cookie", () => {
+    for (const header of ["authorization", "cookie", "set-cookie"]) {
+      expect(REDACTED_HEADERS.has(header)).toBe(true);
+    }
+  });
+
+  it("does not redact non-sensitive query params", async () => {
+    const loggedQueries: Record<string, unknown>[] = [];
+    const testApp = express();
+    testApp.use((req, res, next) => {
+      const origInfo = (req as any).app.locals;
+      next();
+    });
+    testApp.use(requestLogger);
+    testApp.get("/probe", (_req, res) => res.json({ ok: true }));
+
+    // Capture log output by spying on logger
+    const { logger } = await import("../../src/utils/logger.js");
+    const spy = vi.spyOn(logger, "info").mockImplementation((msg: string) => {
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === "request") loggedQueries.push(parsed.query);
+      } catch {}
+    });
+
+    await request(testApp).get("/probe?page=2&limit=10").expect(200);
+
+    spy.mockRestore();
+
+    expect(loggedQueries.length).toBeGreaterThan(0);
+    const q = loggedQueries[0];
+    expect(q["page"]).toBe("2");
+    expect(q["limit"]).toBe("10");
+  });
+
+  it("redacts sensitive query params in logs", async () => {
+    const loggedQueries: Record<string, unknown>[] = [];
+    const testApp = express();
+    testApp.use(requestLogger);
+    testApp.get("/probe", (_req, res) => res.json({ ok: true }));
+
+    const { logger } = await import("../../src/utils/logger.js");
+    const spy = vi.spyOn(logger, "info").mockImplementation((msg: string) => {
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === "request") loggedQueries.push(parsed.query);
+      } catch {}
+    });
+
+    await request(testApp)
+      .get("/probe?token=supersecret&access_token=abc123&page=1")
+      .expect(200);
+
+    spy.mockRestore();
+
+    expect(loggedQueries.length).toBeGreaterThan(0);
+    const q = loggedQueries[0];
+    expect(q["token"]).toBe("[REDACTED]");
+    expect(q["access_token"]).toBe("[REDACTED]");
+    expect(q["page"]).toBe("1");
+  });
+
+  it("redacts password and reset_token query params", async () => {
+    const loggedQueries: Record<string, unknown>[] = [];
+    const testApp = express();
+    testApp.use(requestLogger);
+    testApp.get("/probe", (_req, res) => res.json({ ok: true }));
+
+    const { logger } = await import("../../src/utils/logger.js");
+    const spy = vi.spyOn(logger, "info").mockImplementation((msg: string) => {
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === "request") loggedQueries.push(parsed.query);
+      } catch {}
+    });
+
+    await request(testApp)
+      .get("/probe?password=hunter2&reset_token=xyz&code=oauth_code")
+      .expect(200);
+
+    spy.mockRestore();
+
+    const q = loggedQueries[0];
+    expect(q["password"]).toBe("[REDACTED]");
+    expect(q["reset_token"]).toBe("[REDACTED]");
+    expect(q["code"]).toBe("[REDACTED]");
+  });
+});
+
+/**
  * Startup dependency readiness integration checks.
  *
  * Validates success, failure, and edge behavior for app boot dependency checks.
