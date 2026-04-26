@@ -27,43 +27,11 @@ export interface StartupReadinessReport {
 export async function runStartupDependencyReadinessChecks(): Promise<StartupReadinessReport> {
   const checks: DependencyReadinessResult[] = [];
 
-  const isProduction = process.env.NODE_ENV === "production";
-  const jwtSecret = process.env.JWT_SECRET?.trim() ?? "";
-
-  const configReady = !isProduction || jwtSecret.length >= 32;
+  const configReady = true; // If we reach here, src/config/index.ts validation has already passed.
   checks.push({
     dependency: "config",
     ready: configReady,
-    reason: configReady
-      ? undefined
-      : "JWT_SECRET must be set to at least 32 characters in production",
   });
-
-  // CORS origin allowlist check (production only)
-  if (isProduction) {
-    const rawOrigins = process.env.ALLOWED_ORIGINS?.trim() ?? "";
-    const origins = rawOrigins
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const corsReady = origins.length > 0;
-
-    checks.push({
-      dependency: "config",
-      ready: corsReady,
-      reason: corsReady
-        ? undefined
-        : "ALLOWED_ORIGINS must be set in production (comma-separated list of allowed origins)",
-    });
-
-    // Non-fatal warning for HTTP origins in production
-    const httpOrigins = origins.filter((o) => o.startsWith("http://"));
-    if (httpOrigins.length > 0) {
-      console.warn(
-        `[Startup] WARNING: ALLOWED_ORIGINS contains non-TLS origins: ${httpOrigins.join(", ")}`,
-      );
-    }
-  }
 
   const dbConnectionString = process.env.DATABASE_URL?.trim();
   if (dbConnectionString) {

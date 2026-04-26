@@ -91,7 +91,7 @@ export interface TokenPayload {
  * const token = generateToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateToken(payload: TokenPayload): string {
-  return jwt.sign(payload, JWT_SECRET, {
+  return jwt.sign(payload, config.jwtSecret, {
     expiresIn: '1h',
     issuer: JWT_ISSUER,
     audience: JWT_AUDIENCE,
@@ -111,7 +111,8 @@ export function generateToken(payload: TokenPayload): string {
  * const refreshToken = generateRefreshToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateRefreshToken(payload: TokenPayload): string {
-  return jwt.sign(payload, JWT_REFRESH_SECRET, {
+  const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
+  return jwt.sign(payload, secret, {
     expiresIn: '7d',
     issuer: JWT_ISSUER,
     audience: JWT_REFRESH_AUDIENCE,
@@ -135,7 +136,7 @@ export function generateRefreshToken(payload: TokenPayload): string {
  */
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET, {
+    const decoded = jwt.verify(token, config.jwtSecret, {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
     } as VerifyOptions)
@@ -160,7 +161,8 @@ export function verifyToken(token: string): TokenPayload | null {
  */
 export function verifyRefreshToken(token: string): TokenPayload | null {
   try {
-    const decoded = jwt.verify(token, JWT_REFRESH_SECRET, {
+    const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
+    const decoded = jwt.verify(token, secret, {
       issuer: JWT_ISSUER,
       audience: JWT_REFRESH_AUDIENCE,
     } as VerifyOptions)

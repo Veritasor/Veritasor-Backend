@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 describe("getAllowedOrigins", () => {
   beforeEach(() => {
     vi.resetModules();
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
   });
 
   afterEach(() => {
@@ -49,13 +50,12 @@ describe("getAllowedOrigins", () => {
     expect(result).toEqual(["https://a.com", "https://b.com"]);
   });
 
-  it("should return empty array in production when ALLOWED_ORIGINS is unset", async () => {
+  it("should fail in production when ALLOWED_ORIGINS is unset", async () => {
     process.env.NODE_ENV = "production";
     delete process.env.ALLOWED_ORIGINS;
-    const getAllowedOrigins = await loadGetAllowedOrigins();
-    const result = getAllowedOrigins();
-
-    expect(result).toEqual([]);
+    process.env.JWT_SECRET = "a-very-long-and-secure-secret-that-is-over-32-chars";
+    
+    await expect(loadGetAllowedOrigins()).rejects.toThrow("Invalid environment configuration");
   });
 
   it('should return "*" in development when ALLOWED_ORIGINS is unset', async () => {
