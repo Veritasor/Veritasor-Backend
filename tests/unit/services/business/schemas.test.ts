@@ -191,6 +191,54 @@ describe('Business Input Schemas', () => {
         await expect(createBusinessInputSchema.parseAsync(input)).rejects.toThrow();
       }
     });
+
+    describe('countryCode field', () => {
+      it('should accept valid ISO 3166-1 alpha-2 codes', async () => {
+        const codes = ['US', 'GB', 'NG', 'DE', 'FR'];
+        for (const countryCode of codes) {
+          const result = await createBusinessInputSchema.parseAsync({ name: 'Test', countryCode });
+          expect(result.countryCode).toBe(countryCode);
+        }
+      });
+
+      it('should normalize lowercase to uppercase', async () => {
+        const result = await createBusinessInputSchema.parseAsync({ name: 'Test', countryCode: 'ng' });
+        expect(result.countryCode).toBe('NG');
+      });
+
+      it('should normalize mixed case to uppercase', async () => {
+        const result = await createBusinessInputSchema.parseAsync({ name: 'Test', countryCode: 'Gb' });
+        expect(result.countryCode).toBe('GB');
+      });
+
+      it('should reject a 1-character code', async () => {
+        await expect(
+          createBusinessInputSchema.parseAsync({ name: 'Test', countryCode: 'U' }),
+        ).rejects.toThrow();
+      });
+
+      it('should reject a 3-character code', async () => {
+        await expect(
+          createBusinessInputSchema.parseAsync({ name: 'Test', countryCode: 'USA' }),
+        ).rejects.toThrow();
+      });
+
+      it('should reject numeric codes', async () => {
+        await expect(
+          createBusinessInputSchema.parseAsync({ name: 'Test', countryCode: '12' }),
+        ).rejects.toThrow();
+      });
+
+      it('should treat undefined countryCode as null (field is optional)', async () => {
+        const result = await createBusinessInputSchema.parseAsync({ name: 'Test' });
+        expect(result.countryCode).toBeNull();
+      });
+
+      it('should treat null countryCode as null', async () => {
+        const result = await createBusinessInputSchema.parseAsync({ name: 'Test', countryCode: null });
+        expect(result.countryCode).toBeNull();
+      });
+    });
   });
 
   describe('updateBusinessInputSchema', () => {

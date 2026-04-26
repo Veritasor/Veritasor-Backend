@@ -4,6 +4,7 @@ import {
   generateRefreshToken,
   verifyRefreshToken,
 } from '../../utils/jwt.js'
+import { AuthenticationError } from '../../types/errors.js'
 
 // Simple in-memory store for used tokens (rotation protection)
 const usedRefreshTokens = new Set<string>()
@@ -18,6 +19,14 @@ export interface RefreshResponse {
 }
 
 /**
+ * Clear all used refresh tokens.
+ * @internal For testing only — resets rotation-protection state between test runs.
+ */
+export function clearUsedRefreshTokens(): void {
+  usedRefreshTokens.clear()
+}
+
+/**
  * Unified Auth Session Rotation Policy:
  * - validates refresh token
  * - prevents reuse
@@ -29,22 +38,22 @@ export async function refresh(
   const { refreshToken } = request
 
   if (!refreshToken) {
-    throw new Error('Refresh token is required')
+    throw new AuthenticationError('Refresh token is required')
   }
 
   // 🚨 prevent reuse (IMPORTANT for rotation)
   if (usedRefreshTokens.has(refreshToken)) {
-    throw new Error('Invalid refresh token')
+    throw new AuthenticationError('Invalid refresh token')
   }
 
   const payload = verifyRefreshToken(refreshToken)
   if (!payload) {
-    throw new Error('Invalid or expired refresh token')
+    throw new AuthenticationError('Invalid or expired refresh token')
   }
 
   const user = await findUserById(payload.userId)
   if (!user) {
-    throw new Error('User not found')
+    throw new AuthenticationError('User not found')
   }
 
   // mark old token as used

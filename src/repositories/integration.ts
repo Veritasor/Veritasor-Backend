@@ -3,6 +3,7 @@ import crypto from 'crypto'
 export interface Integration {
   id: string
   userId: string
+  businessId: string
   provider: string
   externalId: string
   token: Record<string, any>
@@ -16,6 +17,7 @@ export interface Integration {
  */
 export interface CreateIntegrationData {
   userId: string
+  businessId: string
   provider: string
   externalId: string
   token: Record<string, any>
@@ -64,6 +66,24 @@ export async function listByUserId(userId: string): Promise<Integration[]> {
 }
 
 /**
+ * Retrieve all integration records for a specific business
+ * 
+ * @param businessId - The unique identifier of the business
+ * @returns Array of Integration objects (empty array if no integrations exist)
+ */
+export async function listByBusinessId(businessId: string): Promise<Integration[]> {
+  const businessIntegrations: Integration[] = []
+  
+  for (const integration of integrations.values()) {
+    if (integration.businessId === businessId) {
+      businessIntegrations.push(cloneIntegration(integration))
+    }
+  }
+  
+  return businessIntegrations
+}
+
+/**
  * Create a new integration record
  * 
  * @param data - Object containing all required fields for a new integration
@@ -75,6 +95,7 @@ export async function create(data: CreateIntegrationData): Promise<Integration> 
   const integration: Integration = {
     id: crypto.randomUUID(),
     userId: data.userId,
+    businessId: data.businessId,
     provider: data.provider,
     externalId: data.externalId,
     token: cloneObject(data.token),
@@ -90,21 +111,21 @@ export async function create(data: CreateIntegrationData): Promise<Integration> 
 
 /**
  * Update token and/or metadata for an existing integration.
- * The caller must provide the owning user ID so writes cannot cross tenant boundaries.
+ * The caller must provide the owning business ID so writes cannot cross tenant boundaries.
  * 
- * @param userId - The unique identifier of the owning user/tenant
+ * @param businessId - The unique identifier of the owning business/tenant
  * @param id - The unique identifier of the integration to update
  * @param data - Object containing fields to update (token and/or metadata)
  * @returns The updated Integration object if the record exists within the caller scope, null otherwise
  */
 export async function update(
-  userId: string,
+  businessId: string,
   id: string,
   data: UpdateIntegrationData
 ): Promise<Integration | null> {
   const integration = integrations.get(id)
   
-  if (!integration || integration.userId !== userId) {
+  if (!integration || integration.businessId !== businessId) {
     return null
   }
   
@@ -126,13 +147,13 @@ export async function update(
 /**
  * Permanently remove an integration record inside the caller's tenant scope.
  * 
- * @param userId - The unique identifier of the owning user/tenant
+ * @param businessId - The unique identifier of the owning business/tenant
  * @param id - The unique identifier of the integration to delete
  * @returns true if a record was deleted from the caller scope, false otherwise
  */
-export async function deleteById(userId: string, id: string): Promise<boolean> {
+export async function deleteById(businessId: string, id: string): Promise<boolean> {
   const integration = integrations.get(id)
-  if (!integration || integration.userId !== userId) {
+  if (!integration || integration.businessId !== businessId) {
     return false
   }
 

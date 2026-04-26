@@ -7,31 +7,41 @@ import { IntegrationPermission, ROLE_PERMISSIONS } from "../../src/types/permiss
 import { clearAll } from "../../src/repositories/integration.js";
 import { integrationRepository } from "../../src/repositories/integrations.js";
 
-// Mock the auth middleware to simulate different user roles
-vi.mock("../../src/middleware/auth.js", () => ({
-  requireAuth: (req: any, res: any, next: any) => {
+// Mock the business auth middleware to simulate different user roles
+vi.mock("../../src/middleware/requireBusinessAuth.js", () => ({
+  requireBusinessAuth: (req: any, res: any, next: any) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Unauthorized" });
+      return res.status(401).json({ error: "Business authentication required" });
     }
 
     const token = authHeader.substring(7);
-    const mockUser = getMockUserFromToken(token);
-    if (!mockUser) {
+    const mockData = getMockUserAndBusinessFromToken(token);
+    if (!mockData) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    req.user = mockUser;
+    req.user = mockData.user;
+    req.business = mockData.business;
     next();
   },
 }));
 
-// Helper function to get mock user from token
-function getMockUserFromToken(token: string) {
+// Helper function to get mock user and business from token
+function getMockUserAndBusinessFromToken(token: string) {
   const tokenMap: Record<string, any> = {
-    "user_token": { id: "user_123", userId: "user_123", email: "user@example.com" },
-    "admin_token": { id: "admin_123", userId: "admin_123", email: "admin@example.com" },
-    "business_admin_token": { id: "biz_admin_123", userId: "biz_admin_123", email: "bizadmin@example.com" },
+    "user_token": { 
+      user: { id: "user_123", userId: "user_123", email: "user@example.com" },
+      business: { id: "business_123", userId: "user_123", name: "Test Business" }
+    },
+    "admin_token": { 
+      user: { id: "admin_123", userId: "admin_123", email: "admin@example.com" },
+      business: { id: "business_admin", userId: "admin_123", name: "Admin Business" }
+    },
+    "business_admin_token": { 
+      user: { id: "biz_admin_123", userId: "biz_admin_123", email: "bizadmin@example.com" },
+      business: { id: "business_biz", userId: "biz_admin_123", name: "Biz Admin Business" }
+    },
   };
   return tokenMap[token];
 }
@@ -40,6 +50,7 @@ function getMockUserFromToken(token: string) {
 const mockIntegrationData = {
   id: "integration_123",
   userId: "user_123",
+  businessId: "business_123",
   provider: "stripe",
   externalId: "acct_123456",
   token: { access_token: "sk_test_123", refresh_token: "rt_123" },
@@ -483,10 +494,116 @@ describe("Integrations Granular Permission System", () => {
     });
   });
 
-  describe("Error Handling", () => {
-    it("should return consistent error format", async () => {
+  describe("Business-Scoped Authorization", () => {
+    it("should prevent business A from reading business B's integrations", async () => {
+      // Create integration for business_123
+      const integration = await integrationRepository.create({
+        provider: 'stripe',
+        userId: 'user_123',
+        businessId: 'business_123',
+        meta: { externalId: 'acct_business_a' }
+      });
+
+      // Try to access it with business_biz token (different business)
+      const response = await request(app)
+        .get(`/api/integrations/${integration.id}`)
+        .set("Authorization", "Bearer business_admin_token") // This uses business_biz
+        .expect(404);
+
+      expect(response.body.message).toMatch(/not found or access denied/i);
+    });
+
+    it("should allow business to read their own integrations", async () => {
+      // Create integration for business_123
+      const integration = await integrationRepository.create({
+        provider: 'razorpay',
+        userId: 'user_123',
+        businessId: 'business_123',
+        meta: { externalId: 'acct_business_own' }
+      });
+
+      // Access it with the correct business token
+      const response = await request(app)
+        .get(`/api/integrations/${integration.id}`)
+        .set("Authorization", "Bearer user_token") // This uses business_123
+        .expect(200);
+
+      expect(response.body.id).toBe(integration.id);
+      expect(response.body.provider).toBe('razorpay');
+    });
+
+    it("should prevent business A from deleting business B's integrations", async () => {
+      // Create integration for business_123
+      const integration = await integrationRepository.create({
+        provider: 'shopify',
+        userId: 'user_123',
+        businessId: 'business_123',
+        meta: { externalId: 'shop_business_a' }
+      });
+
+      // Try to delete it with different business token
+      const response = await request(app)
+        .delete(`/api/integrations/${integration.id}`)
+        .set("Authorization", "Bearer business_admin_token") // business_biz
+        .expect(404);
+
+      expect(response.body.message).toMatch(/not found or access denied/i);
+
+      // Verify integration still exists
+      const stillExists = integrationRepository.findById(integration.id);
+      expect(stillExists).toBeTruthy();
+    });
+
+    it("should allow business to delete their own integrations", async () => {
+      // Create integration for business_123
+      const integration = await integrationRepository.create({
+        provider: 'stripe',
+        userId: 'user_123',
+        businessId: 'business_123',
+        meta: { externalId: 'stripe_business_own' }
+      });
+
+      // Delete it with correct business token
+      const response = await request(app)
+        .delete(`/api/integrations/${integration.id}`)
+        .set("Authorization", "Bearer user_token") // business_123
+        .expect(200);
+
+      expect(response.body.message).toMatch(/disconnected successfully/i);
+
+      // Verify integration is deleted
+      const deleted = integrationRepository.findById(integration.id);
+      expect(deleted).toBeNull();
+    });
+
+    it("should list only integrations for the authenticated business", async () => {
+      // Clear existing integrations
+      // Create integrations for different businesses
+      await integrationRepository.create({
+        provider: 'stripe',
+        userId: 'user_123',
+        businessId: 'business_123',
+        meta: { externalId: 'stripe_biz_a' }
+      });
+
+      await integrationRepository.create({
+        provider: 'razorpay',
+        userId: 'biz_admin_123',
+        businessId: 'business_biz',
+        meta: { externalId: 'razorpay_biz_b' }
+      });
+
+      // Request with business_123 token should only see their integration
       const response = await request(app)
         .get("/api/integrations/connected")
+        .set("Authorization", "Bearer user_token") // business_123
+        .expect(200);
+
+      expect(response.body.integrations.length).toBe(1);
+      expect(response.body.integrations[0].type).toBe('stripe');
+      expect(response.body.integrations[0].externalId).toBe('stripe_biz_a');
+    });
+  });
         .expect(401);
 
       expect(response.body).toHaveProperty("error");
@@ -1004,6 +1121,7 @@ describe("handleCallback — state nonce validation", () => {
   it("state not in store returns Invalid or expired state", async () => {
     // Do NOT seed the store — state is absent
     const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded");
+    const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded"); // userId and integrationId are not passed here, but handleCallback will pass them
     const result = await handleCallback(params);
     expect(result).toEqual({ success: false, error: "Invalid or expired state" });
   });
@@ -1514,6 +1632,7 @@ describe("OAuth State Tampering", () => {
 
       // Tamper: mutate the stored state to point to a different integration
       const entry = oauthStateStore.find((s) => s.state === stripeState);
+      const entry = oauthStateStore.find((s: any) => s.state === stripeState); // Cast to any for find
       if (entry) {
         entry.integrationId = "shopify";
       }

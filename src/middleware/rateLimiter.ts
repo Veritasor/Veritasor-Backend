@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { logger } from "../utils/logger.js";
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
@@ -88,6 +89,9 @@ setInterval(() => {
  *
  * Bucketed limits isolate sensitive routes from one another so abuse against
  * one endpoint does not consume the request budget for a different endpoint.
+ *
+ * Note: This implementation uses a fixed window algorithm, which allows for bursts
+ * of up to `max` requests per window per bucket.
  */
 export const rateLimiter = (options: RateLimiterOptions = {}) => {
   const windowMs = options.windowMs ?? parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, DEFAULT_WINDOW_MS);
@@ -108,10 +112,21 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
     record.count += 1;
     applyRateLimitHeaders(res, bucket, max, record, now);
 
-    if (record.count > max) {
-      res.status(429).json({ error: "Too many requests, please try again later." });
-      return;
-    }
+     if (record.count > max) {
+       logger.warn(
+         `Rate limit exceeded for bucket "${bucket}" and identifier "${identifier}".`,
+         JSON.stringify({
+           bucket,
+           identifier,
+           count: record.count,
+           max,
+           windowMs,
+           timestamp: new Date(now).toISOString(),
+         })
+       );
+       res.status(429).json({ error: "Too many requests, please try again later." });
+       return;
+     }
 
     next();
   };
