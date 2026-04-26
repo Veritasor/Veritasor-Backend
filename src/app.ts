@@ -75,7 +75,6 @@ export async function startServer(port: number): Promise<Server> {
 
   return new Promise((resolve) => {
     const server = app.listen(port, () => {
-      console.log(`Server listening on port ${port}`);
       resolve(server);
     });
   });

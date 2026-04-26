@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import express, { type Express } from 'express'
 import request from 'supertest'
 import { integrationsShopifyRouter } from '../../src/routes/integrations-shopify.js'
-import { clearAll as clearIntegrations, listByUserId } from '../../src/repositories/integration.js'
+import * as integrationRepository from '../../src/repositories/integration.js'
 import { clearAll as clearShopifyStore, getToken } from '../../src/services/integrations/shopify/store.js'
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -23,7 +23,7 @@ describe('Shopify disconnect revocation assurance', () => {
     app.use(express.json())
     app.use('/api/integrations/shopify', integrationsShopifyRouter)
 
-    clearIntegrations()
+    integrationRepository.clearAll()
     clearShopifyStore()
 
     process.env.SHOPIFY_CLIENT_ID = 'shopify-client-id'
@@ -35,7 +35,7 @@ describe('Shopify disconnect revocation assurance', () => {
   })
 
   afterEach(() => {
-    clearIntegrations()
+    integrationRepository.clearAll()
     clearShopifyStore()
 
     delete process.env.SHOPIFY_CLIENT_ID
@@ -86,7 +86,7 @@ describe('Shopify disconnect revocation assurance', () => {
   it('revokes the Shopify app remotely before deleting the local integration', async () => {
     const { shopHost } = await connectShopifyInstallation()
 
-    const integrationsBeforeDisconnect = await listByUserId('user-123')
+    const integrationsBeforeDisconnect = await integrationRepository.listByUserId('user-123')
     expect(integrationsBeforeDisconnect).toHaveLength(1)
     expect(integrationsBeforeDisconnect[0]?.externalId).toBe(shopHost)
     expect(getToken(shopHost)).toBe('shpat_test_token')
@@ -113,7 +113,7 @@ describe('Shopify disconnect revocation assurance', () => {
       revoked: true,
       alreadyRevoked: false,
     })
-    expect(await listByUserId('user-123')).toHaveLength(0)
+    expect(await integrationRepository.listByUserId('user-123')).toHaveLength(0)
     expect(getToken(shopHost)).toBeUndefined()
   })
 
@@ -128,7 +128,23 @@ describe('Shopify disconnect revocation assurance', () => {
       .expect(502)
 
     expect(response.body.error).toMatch(/failed to revoke shopify access/i)
-    expect(await listByUserId('user-123')).toHaveLength(1)
+    expect(await integrationRepository.listByUserId('user-123')).toHaveLength(1)
+    expect(getToken(shopHost)).toBe('shpat_test_token')
+  })
+
+  it('returns 500 if local integration deletion fails after remote revocation', async () => {
+    const { shopHost } = await connectShopifyInstallation()
+
+    vi.mocked(global.fetch).mockResolvedValueOnce(jsonResponse(200, {}))
+    vi.spyOn(integrationRepository, 'deleteById').mockResolvedValueOnce(false)
+
+    const response = await request(app)
+      .delete('/api/integrations/shopify')
+      .set('x-user-id', 'user-123')
+      .expect(500)
+
+    expect(response.body.error).toBe('Failed to disconnect Shopify integration')
+    expect(await integrationRepository.listByUserId('user-123')).toHaveLength(1)
     expect(getToken(shopHost)).toBe('shpat_test_token')
   })
 
@@ -147,7 +163,7 @@ describe('Shopify disconnect revocation assurance', () => {
       revoked: true,
       alreadyRevoked: true,
     })
-    expect(await listByUserId('user-123')).toHaveLength(0)
+    expect(await integrationRepository.listByUserId('user-123')).toHaveLength(0)
     expect(getToken(shopHost)).toBeUndefined()
   })
 })
