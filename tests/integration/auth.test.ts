@@ -1489,7 +1489,7 @@ describe("Startup dependency readiness checks", () => {
 
     expect(report.ready).toBe(false);
     expect(report.checks).toContainEqual(
-      expect.objectContaining({ dependency: "config", ready: false }),
+      expect.objectContaining({ dependency: "config/jwt", ready: false }),
     );
   });
 
