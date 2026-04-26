@@ -200,12 +200,12 @@ async function checkIntegrationOwnership(
   // This is a placeholder implementation
   // In a real implementation, you would:
   // 1. Query the database for the integration
-  // 2. Check if the integration belongs to the user or their business
+  // 2. Check if the integration belongs to the user's business
   // 3. Return the result
 
-  // For now, we'll assume ownership if the integration ID contains the user ID
+  // For now, we'll assume ownership if the integration ID contains the business ID
   // or if a business ID is provided and matches
-  return !!(integrationId.includes(userId) || (businessId && integrationId.includes(businessId)));
+  return !!(businessId && integrationId.includes(businessId));
 }
 
 /**

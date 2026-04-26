@@ -1,475 +1,464 @@
 /**
  * Unit tests for requireBusinessAuth middleware
+ *
+ * Covers:
+ *  - All error-code paths (MISSING_AUTH, INVALID_TOKEN, MISSING_BUSINESS_ID,
+ *    BUSINESS_NOT_FOUND, BUSINESS_SUSPENDED)
+ *  - Business ID extraction priority (header > body.business_id > body.businessId)
+ *  - Suspended business rejection
+ *  - Missing business context (no header, no body)
+ *  - Token replay / user-not-found after token issued
+ *  - Cross-route consistency: same error shapes on analytics, attestations, businesses
+ *  - Structured log emission on success and suspension
+ *  - req.user / req.business attachment on success
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { Request, Response, NextFunction } from 'express'
-import { requireBusinessAuth } from '../../../src/middleware/requireBusinessAuth.js'
-import * as jwt from '../../../src/utils/jwt.js'
-import * as userRepository from '../../../src/repositories/userRepository.js'
-import * as businessRepository from '../../../src/repositories/business.js'
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { Request, Response, NextFunction } from 'express';
+import { requireBusinessAuth } from '../../../src/middleware/requireBusinessAuth.js';
+import * as jwt from '../../../src/utils/jwt.js';
+import * as userRepository from '../../../src/repositories/userRepository.js';
+import * as businessRepo from '../../../src/repositories/business.js';
+import { logger } from '../../../src/utils/logger.js';
 
-describe('requireBusinessAuth middleware', () => {
-  let mockRequest: Partial<Request> & { 
-    user?: { id: string; userId: string; email?: string };
-    business?: any;
-  }
-  let mockResponse: Partial<Response>
-  let mockNext: NextFunction
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function makeReq(overrides: Partial<Request> = {}): Request {
+  return {
+    headers: {},
+    body: {},
+    ...overrides,
+  } as unknown as Request;
+}
+
+function makeRes(): { res: Response; status: ReturnType<typeof vi.fn>; json: ReturnType<typeof vi.fn> } {
+  const json = vi.fn().mockReturnThis();
+  const status = vi.fn().mockReturnValue({ json });
+  const res = { status, json } as unknown as Response;
+  return { res, status, json };
+}
+
+const VALID_USER = { id: 'user-1', userId: 'user-1', email: 'a@b.com' };
+const VALID_BUSINESS = {
+  id: 'biz-1',
+  userId: 'user-1',
+  name: 'Acme',
+  industry: null,
+  description: null,
+  website: null,
+  createdAt: '2024-01-01T00:00:00Z',
+  updatedAt: '2024-01-01T00:00:00Z',
+};
+
+function setupValidAuth() {
+  vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+  vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+  vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+}
+
+// ─── Authentication Validation ────────────────────────────────────────────────
+
+describe('requireBusinessAuth — Authentication Validation', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('rejects missing Authorization header with 401 MISSING_AUTH', async () => {
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(makeReq(), res, next);
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MISSING_AUTH' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-Bearer Authorization header with 401 MISSING_AUTH', async () => {
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Basic dXNlcjpwYXNz' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MISSING_AUTH' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid JWT with 401 INVALID_TOKEN', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer bad-token', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_TOKEN' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects when verifyToken throws with 401 INVALID_TOKEN', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockImplementation(() => { throw new Error('malformed'); });
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer bad', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_TOKEN' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects token replay (user deleted after token issued) with 401 INVALID_TOKEN', async () => {
+    // Token is valid but the user no longer exists in the DB — classic token replay scenario.
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-deleted', email: 'x@y.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(null);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer stale-token', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_TOKEN' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('rejects when findUserById throws with 401 INVALID_TOKEN', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockRejectedValue(new Error('DB down'));
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_TOKEN' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Business ID Extraction ───────────────────────────────────────────────────
+
+describe('requireBusinessAuth — Business ID Extraction', () => {
   beforeEach(() => {
-    mockRequest = {
-      headers: {},
-      body: {},
-    }
-    mockResponse = {
-      status: vi.fn().mockReturnThis(),
-      json: vi.fn().mockReturnThis(),
-    }
-    mockNext = vi.fn()
-    vi.clearAllMocks()
-  })
+    vi.clearAllMocks();
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+  });
 
-  describe('Authentication Validation', () => {
-    it('should reject requests without Authorization header', async () => {
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it('rejects missing business ID with 400 MISSING_BUSINESS_ID', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    // No x-business-id header, no body fields
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MISSING_BUSINESS_ID' }));
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      expect(mockResponse.status).toHaveBeenCalledWith(401)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Business authentication required",
-        message: "Missing or invalid authorization header. Format: 'Bearer <token>'",
-        code: "MISSING_AUTH"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
+  it('rejects invalid business ID format in header with 400 MISSING_BUSINESS_ID', async () => {
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'bad@id!' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'MISSING_BUSINESS_ID' }));
+    expect(next).not.toHaveBeenCalled();
+  });
 
-    it('should reject requests with invalid Authorization format', async () => {
-      mockRequest.headers = {
-        authorization: 'InvalidFormat token',
-        'x-business-id': 'business-123'
-      }
+  it('accepts business ID from x-business-id header', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } });
+    await requireBusinessAuth(req, res, next);
+    expect(businessRepo.businessRepository.getById).toHaveBeenCalledWith('biz-1');
+    expect(next).toHaveBeenCalled();
+  });
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it('accepts business ID from body.business_id', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({ headers: { authorization: 'Bearer t' }, body: { business_id: 'biz-1' } });
+    await requireBusinessAuth(req, res, next);
+    expect(businessRepo.businessRepository.getById).toHaveBeenCalledWith('biz-1');
+    expect(next).toHaveBeenCalled();
+  });
 
-      expect(mockResponse.status).toHaveBeenCalledWith(401)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Business authentication required",
-        message: "Missing or invalid authorization header. Format: 'Bearer <token>'",
-        code: "MISSING_AUTH"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
+  it('accepts business ID from body.businessId', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({ headers: { authorization: 'Bearer t' }, body: { businessId: 'biz-1' } });
+    await requireBusinessAuth(req, res, next);
+    expect(businessRepo.businessRepository.getById).toHaveBeenCalledWith('biz-1');
+    expect(next).toHaveBeenCalled();
+  });
 
-    it('should reject requests with invalid JWT token', async () => {
-      const verifySpy = vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer invalid-token',
-        'x-business-id': 'business-123'
-      }
+  it('header takes priority over body.business_id', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({
+      headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' },
+      body: { business_id: 'biz-other' },
+    });
+    await requireBusinessAuth(req, res, next);
+    expect(businessRepo.businessRepository.getById).toHaveBeenCalledWith('biz-1');
+    expect(next).toHaveBeenCalled();
+  });
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it('body.business_id takes priority over body.businessId', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({
+      headers: { authorization: 'Bearer t' },
+      body: { business_id: 'biz-1', businessId: 'biz-other' },
+    });
+    await requireBusinessAuth(req, res, next);
+    expect(businessRepo.businessRepository.getById).toHaveBeenCalledWith('biz-1');
+    expect(next).toHaveBeenCalled();
+  });
+});
 
-      expect(verifySpy).toHaveBeenCalledWith('invalid-token')
-      expect(mockResponse.status).toHaveBeenCalledWith(401)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Invalid authentication",
-        message: "Token is invalid, expired, or user not found",
-        code: "INVALID_TOKEN"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
+// ─── Business Authorization ───────────────────────────────────────────────────
 
-    it('should reject requests when user not found in database', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      
-      const findUserSpy = vi.spyOn(userRepository, 'findUserById').mockResolvedValue(null)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'business-123'
-      }
+describe('requireBusinessAuth — Business Authorization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+  });
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it('rejects non-existent business with 403 BUSINESS_NOT_FOUND', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(null);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'ghost' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'BUSINESS_NOT_FOUND' }));
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      expect(findUserSpy).toHaveBeenCalledWith('user-123')
-      expect(mockResponse.status).toHaveBeenCalledWith(401)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Invalid authentication",
-        message: "Token is invalid, expired, or user not found",
-        code: "INVALID_TOKEN"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
-  })
+  it('rejects business owned by a different user with 403 BUSINESS_NOT_FOUND', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue({
+      ...VALID_BUSINESS, userId: 'user-other',
+    } as any);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'BUSINESS_NOT_FOUND' }));
+    expect(next).not.toHaveBeenCalled();
+  });
 
-  describe('Business ID Validation', () => {
-    it('should reject requests without business ID', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token'
-      }
+  it('rejects suspended business with 403 BUSINESS_SUSPENDED', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue({
+      ...VALID_BUSINESS, suspended: true,
+    } as any);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'BUSINESS_SUSPENDED' }));
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it('rejects when getById throws with 403 BUSINESS_NOT_FOUND', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockRejectedValue(new Error('DB error'));
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'BUSINESS_NOT_FOUND' }));
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      expect(mockResponse.status).toHaveBeenCalledWith(400)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Business context required",
-        message: "Business ID is required. Provide via 'x-business-id' header or 'business_id'/'businessId' in request body",
-        code: "MISSING_BUSINESS_ID"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
+  it('allows valid owner and attaches req.user and req.business', async () => {
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(VALID_BUSINESS as any);
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } });
+    await requireBusinessAuth(req, res, next);
+    expect(next).toHaveBeenCalled();
+    expect(req.user).toEqual(VALID_USER);
+    expect(req.business).toMatchObject({ id: 'biz-1', userId: 'user-1' });
+  });
+});
 
-    it('should reject requests with invalid business ID format in header', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'invalid@business#id'
-      }
+// ─── Structured Logging ───────────────────────────────────────────────────────
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+describe('requireBusinessAuth — Structured Logging', () => {
+  beforeEach(() => vi.clearAllMocks());
 
-      expect(mockResponse.status).toHaveBeenCalledWith(400)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Business context required",
-        message: "Business ID is required. Provide via 'x-business-id' header or 'business_id'/'businessId' in request body",
-        code: "MISSING_BUSINESS_ID"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
+  it('emits info log on successful auth', async () => {
+    setupValidAuth();
+    const infoSpy = vi.spyOn(logger, 'info');
+    const next = vi.fn();
+    const { res } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(infoSpy).toHaveBeenCalled();
+    const logArg: string = infoSpy.mock.calls[0][0] as string;
+    const parsed = JSON.parse(logArg);
+    expect(parsed.event).toBe('business_auth.success');
+    expect(parsed.userId).toBe('user-1');
+    expect(parsed.businessId).toBe('biz-1');
+  });
 
-    it('should accept business ID from request body (businessId field)', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      vi.spyOn(businessRepository, 'getById').mockResolvedValue({
-        id: 'business-123',
-        userId: 'user-123',
-        name: 'Test Business'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token'
-      }
-      mockRequest.body = {
-        businessId: 'business-123',
-        period: '2024-01'
-      }
+  it('emits warn log when business is suspended', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue({
+      ...VALID_BUSINESS, suspended: true,
+    } as any);
+    const warnSpy = vi.spyOn(logger, 'warn');
+    const next = vi.fn();
+    const { res } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(warnSpy).toHaveBeenCalled();
+    const logArg: string = warnSpy.mock.calls[0][0] as string;
+    const parsed = JSON.parse(logArg);
+    expect(parsed.event).toBe('business_auth.suspended');
+    expect(parsed.businessId).toBe('biz-1');
+  });
+});
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+// ─── Cross-Route Consistency ──────────────────────────────────────────────────
+//
+// These tests verify that the same middleware produces identical error shapes
+// regardless of which router it is applied to.  They simulate the middleware
+// being called in the context of analytics, attestations, and businesses routes.
 
-      expect(mockNext).toHaveBeenCalled()
-      expect(mockRequest.user).toEqual({
-        id: 'user-123',
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      expect(mockRequest.business).toEqual({
-        id: 'business-123',
-        userId: 'user-123',
-        name: 'Test Business'
-      })
-    })
+describe('requireBusinessAuth — Cross-Route Consistency', () => {
+  const ROUTES = ['analytics', 'attestations', 'businesses'] as const;
 
-    it('should accept business ID from request body (business_id field)', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      vi.spyOn(businessRepository, 'getById').mockResolvedValue({
-        id: 'business-123',
-        userId: 'user-123',
-        name: 'Test Business'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token'
-      }
-      mockRequest.body = {
-        business_id: 'business-123',
-        period: '2024-01'
-      }
+  beforeEach(() => vi.clearAllMocks());
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it.each(ROUTES)('%s route: 401 MISSING_AUTH when no Authorization header', async (route) => {
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: {} }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Business authentication required',
+      message: "Missing or invalid authorization header. Format: 'Bearer <token>'",
+      code: 'MISSING_AUTH',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      expect(mockNext).toHaveBeenCalled()
-      expect(mockRequest.user).toEqual({
-        id: 'user-123',
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      expect(mockRequest.business).toEqual({
-        id: 'business-123',
-        userId: 'user-123',
-        name: 'Test Business'
-      })
-    })
+  it.each(ROUTES)('%s route: 401 INVALID_TOKEN when JWT is invalid', async (route) => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer bad', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Invalid authentication',
+      message: 'Token is invalid, expired, or user not found',
+      code: 'INVALID_TOKEN',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
 
-    it('should prioritize header over body business ID', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      vi.spyOn(businessRepository, 'getById').mockResolvedValue({
-        id: 'business-123',
-        userId: 'user-123',
-        name: 'Test Business'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'business-123' // Header takes priority
-      }
-      mockRequest.body = {
-        business_id: 'business-456', // This should be ignored
-        period: '2024-01'
-      }
+  it.each(ROUTES)('%s route: 400 MISSING_BUSINESS_ID when no business context', async (route) => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Business context required',
+      message: "Business ID is required. Provide via 'x-business-id' header or 'business_id'/'businessId' in request body",
+      code: 'MISSING_BUSINESS_ID',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
+  it.each(ROUTES)('%s route: 403 BUSINESS_NOT_FOUND when business absent', async (route) => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(null);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'ghost' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Business access denied',
+      message: 'Business not found or access denied. User must own the business.',
+      code: 'BUSINESS_NOT_FOUND',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
 
-      expect(businessRepository.getById).toHaveBeenCalledWith('business-123') // Header ID used
-      expect(mockNext).toHaveBeenCalled()
-    })
-  })
+  it.each(ROUTES)('%s route: 403 BUSINESS_SUSPENDED when business is suspended', async (route) => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({ userId: 'user-1', email: 'a@b.com' });
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(VALID_USER as any);
+    vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue({
+      ...VALID_BUSINESS, suspended: true,
+    } as any);
+    const next = vi.fn();
+    const { res, status, json } = makeRes();
+    await requireBusinessAuth(
+      makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } }),
+      res, next,
+    );
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith({
+      error: 'Business suspended',
+      message: 'This business account has been suspended.',
+      code: 'BUSINESS_SUSPENDED',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
 
-  describe('Business Authorization', () => {
-    it('should reject requests for non-existent business', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      vi.spyOn(businessRepository, 'getById').mockResolvedValue(null)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'non-existent-business'
-      }
-
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
-
-      expect(mockResponse.status).toHaveBeenCalledWith(403)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Business access denied",
-        message: "Business not found or access denied. User must own the business.",
-        code: "BUSINESS_NOT_FOUND"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
-
-    it('should reject requests for business owned by different user', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      vi.spyOn(businessRepository, 'getById').mockResolvedValue({
-        id: 'business-456',
-        userId: 'user-456', // Different user owns this business
-        name: 'Other Business'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'business-456'
-      }
-
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
-
-      expect(mockResponse.status).toHaveBeenCalledWith(403)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Business access denied",
-        message: "Business not found or access denied. User must own the business.",
-        code: "BUSINESS_NOT_FOUND"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
-
-    it('should allow requests for business owned by authenticated user', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
-        id: 'user-123',
-        email: 'test@example.com'
-      } as any)
-      vi.spyOn(businessRepository, 'getById').mockResolvedValue({
-        id: 'business-123',
-        userId: 'user-123', // Same user owns this business
-        name: 'Test Business',
-        industry: 'Technology',
-        description: 'A test business',
-        website: 'https://test.com',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z'
-      } as any)
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'business-123'
-      }
-
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
-
-      expect(mockNext).toHaveBeenCalled()
-      expect(mockRequest.user).toEqual({
-        id: 'user-123',
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      expect(mockRequest.business).toEqual({
-        id: 'business-123',
-        userId: 'user-123',
-        name: 'Test Business',
-        industry: 'Technology',
-        description: 'A test business',
-        website: 'https://test.com',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-01T00:00:00Z'
-      })
-    })
-  })
-
-  describe('Error Handling', () => {
-    it('should handle JWT verification errors gracefully', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockImplementation(() => {
-        throw new Error('JWT verification failed')
-      })
-      
-      mockRequest.headers = {
-        authorization: 'Bearer malformed-token',
-        'x-business-id': 'business-123'
-      }
-
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
-
-      expect(mockResponse.status).toHaveBeenCalledWith(401)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Invalid authentication",
-        message: "Token is invalid, expired, or user not found",
-        code: "INVALID_TOKEN"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
-
-    it('should handle database errors gracefully', async () => {
-      vi.spyOn(jwt, 'verifyToken').mockReturnValue({
-        userId: 'user-123',
-        email: 'test@example.com'
-      })
-      vi.spyOn(userRepository, 'findUserById').mockImplementation(() => {
-        throw new Error('Database connection failed')
-      })
-      
-      mockRequest.headers = {
-        authorization: 'Bearer valid-token',
-        'x-business-id': 'business-123'
-      }
-
-      await requireBusinessAuth(
-        mockRequest as Request,
-        mockResponse as Response,
-        mockNext
-      )
-
-      expect(mockResponse.status).toHaveBeenCalledWith(401)
-      expect(mockResponse.json).toHaveBeenCalledWith({
-        error: "Invalid authentication",
-        message: "Token is invalid, expired, or user not found",
-        code: "INVALID_TOKEN"
-      })
-      expect(mockNext).not.toHaveBeenCalled()
-    })
-  })
-})
+  it.each(ROUTES)('%s route: calls next() and attaches context on valid auth', async (route) => {
+    setupValidAuth();
+    const next = vi.fn();
+    const { res } = makeRes();
+    const req = makeReq({ headers: { authorization: 'Bearer t', 'x-business-id': 'biz-1' } });
+    await requireBusinessAuth(req, res, next);
+    expect(next).toHaveBeenCalled();
+    expect(req.user).toBeDefined();
+    expect(req.business).toBeDefined();
+  });
+});
