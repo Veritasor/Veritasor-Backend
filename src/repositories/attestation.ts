@@ -7,6 +7,7 @@ export type Attestation = {
   attestedAt: string;
   status?: "active" | "revoked";
   revokedAt?: string;
+  revokeReason?: string;
 };
 
 // Temporary in-memory records until DB integration lands.

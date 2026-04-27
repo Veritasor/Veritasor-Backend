@@ -6,6 +6,7 @@ import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
+import { revokeAttestation } from '../services/attestation/revoke.js';
 import { AppError } from '../types/errors.js';
 
 type RouteAttestation = {
@@ -351,15 +352,19 @@ async function handleRevoke(req: Request, res: Response): Promise<void> {
   }
 
   const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
-  const revoked = await revokeAttestation(id, reason);
 
-  if (!revoked) {
+  // Call the revoke service
+  await revokeAttestation(id, req.user!.id, reason);
+
+  // Fetch updated attestation
+  const updatedAttestation = await getById(id, businessId);
+  if (!updatedAttestation) {
     throw createHttpError(500, 'REVOKE_FAILED', 'Failed to revoke attestation');
   }
 
   res.status(200).json({
     status: 'success',
-    data: revoked,
+    data: updatedAttestation,
   });
 }
 

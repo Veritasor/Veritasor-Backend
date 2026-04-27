@@ -22,6 +22,10 @@ export var IntegrationPermission;
     IntegrationPermission["MANAGE_ANY"] = "integrations:manage:any";
     // Admin permissions
     IntegrationPermission["ADMIN"] = "integrations:admin";
+    // Platform Admin permissions
+    IntegrationPermission["ADMIN_READ_STATS"] = "admin:read:stats";
+    IntegrationPermission["ADMIN_MANAGE_USERS"] = "admin:manage:users";
+    IntegrationPermission["ADMIN_READ_AUDIT_LOGS"] = "admin:read:audit_logs";
 })(IntegrationPermission || (IntegrationPermission = {}));
 /**
  * Permission sets by role
@@ -48,7 +52,9 @@ export const ROLE_PERMISSIONS = {
         IntegrationPermission.MANAGE_ANY,
     ],
     // System admin has full control
-    admin: Object.values(IntegrationPermission),
+    admin: [
+        ...Object.values(IntegrationPermission),
+    ],
 };
 /**
  * Permission requirements for specific routes

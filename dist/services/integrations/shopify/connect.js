@@ -7,7 +7,7 @@ import * as store from './store.js';
  * Start Shopify OAuth: generate state, store it, return redirect URL.
  * Caller should redirect the user to redirectUrl.
  */
-export function startConnect(shop, userId) {
+export function startConnect(shop, userId, businessId) {
     const clientId = process.env.SHOPIFY_CLIENT_ID ?? '';
     const scopes = process.env.SHOPIFY_SCOPES ?? 'read_orders';
     const redirectUri = process.env.SHOPIFY_REDIRECT_URI ?? '';
@@ -16,7 +16,8 @@ export function startConnect(shop, userId) {
     if (!clientId || !redirectUri || !store.isValidShopHost(shopHost)) {
         throw new Error('Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop');
     }
-    store.setOAuthState(state, shopHost, userId);
+    const expiresAt = Date.now() + 10 * 60 * 1000; // State expires in 10 minutes
+    store.setOAuthState(state, shopHost, userId, 'shopify', expiresAt);
     const params = new URLSearchParams({
         client_id: clientId,
         scope: scopes,

@@ -64,8 +64,10 @@ npm run test:coverage
 
 - `integration/` - Integration tests that test complete API flows
   - `auth.test.ts` - Authentication API tests (signup, login, refresh, password reset)
+  - `attestations.test.ts` - Attestations API tests (list, submit, revoke)
   - `integrations.test.ts` - Integrations API tests (list, connect, disconnect, OAuth flow)
 - `unit/services/` - Unit tests for service-layer modules
+  - `attestation/revoke.test.ts` - Attestation revoke service unit tests
   - `merkle.test.ts` - Merkle tree construction, proof generation/verification, and performance guardrail tests
 
 ---

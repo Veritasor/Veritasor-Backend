@@ -46,3 +46,13 @@ export class ConflictError extends Error {
 export function createConflictError(type, message, details = {}) {
     return new ConflictError(type, message, details);
 }
+/**
+ * Consistency level for read operations
+ */
+export var ReadConsistency;
+(function (ReadConsistency) {
+    /** Fastest: Read only from local database. */
+    ReadConsistency["LOCAL"] = "local";
+    /** Strongest: Verify local database record against Soroban chain state. */
+    ReadConsistency["STRONG"] = "strong";
+})(ReadConsistency || (ReadConsistency = {}));

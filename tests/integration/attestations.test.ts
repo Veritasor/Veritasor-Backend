@@ -277,6 +277,73 @@ describe('API version negotiation (attestations integration)', () => {
   })
 })
 
+describe('Attestation revoke integration', () => {
+  it('revokes an attestation successfully with reason', async () => {
+    const res = await request(app)
+      .post('/api/attestations/att_1/revoke')
+      .set(authHeader)
+      .send({ reason: 'Test revoke reason' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('success')
+    expect(res.body.data).toMatchObject({
+      id: 'att_1',
+      businessId: 'biz_1',
+      status: 'revoked',
+    })
+    expect(res.body.data.revokedAt).toBeDefined()
+    expect(typeof res.body.data.revokedAt).toBe('string')
+  })
+
+  it('revokes an attestation successfully without reason', async () => {
+    const res = await request(app)
+      .post('/api/attestations/att_2/revoke')
+      .set(authHeader)
+      .send({})
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('success')
+    expect(res.body.data.status).toBe('revoked')
+  })
+
+  it('returns 404 for non-existent attestation', async () => {
+    const res = await request(app)
+      .post('/api/attestations/nonexistent/revoke')
+      .set(authHeader)
+      .send({})
+
+    expect(res.status).toBe(404)
+    expect(res.body.error).toMatch(/not found/i)
+  })
+
+  it('returns 404 for attestation not belonging to user', async () => {
+    // att_3 belongs to biz_2, user_1 owns biz_1
+    const res = await request(app)
+      .post('/api/attestations/att_3/revoke')
+      .set(authHeader)
+      .send({})
+
+    expect(res.status).toBe(404)
+    expect(res.body.error).toMatch(/not found/i)
+  })
+
+  it('returns 401 when unauthenticated', async () => {
+    const res = await request(app)
+      .post('/api/attestations/att_1/revoke')
+      .send({})
+
+    expect(res.status).toBe(401)
+  })
+
+  it('handles DELETE method for revoke', async () => {
+    const res = await request(app)
+      .delete('/api/attestations/att_4/revoke')
+      .set(authHeader)
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('success')
+    expect(res.body.data.status).toBe('revoked')
+  })
 })
 
 // ---------------------------------------------------------------------------

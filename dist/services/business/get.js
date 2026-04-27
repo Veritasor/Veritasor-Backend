@@ -16,3 +16,19 @@ export async function getBusinessById(req, res) {
     const publicBusiness = Object.fromEntries(Object.entries(business).filter(([key]) => PUBLIC_FIELDS.includes(key)));
     return res.status(200).json(publicBusiness);
 }
+export async function listBusinesses(req, res) {
+    const query = req.query;
+    const result = await businessRepository.list({
+        limit: query.limit,
+        cursor: query.cursor,
+        sortBy: query.sortBy,
+        sortOrder: query.sortOrder,
+        industry: query.industry,
+    });
+    // Filter public fields for each business
+    const items = result.items.map(business => Object.fromEntries(Object.entries(business).filter(([key]) => PUBLIC_FIELDS.includes(key))));
+    return res.status(200).json({
+        items,
+        nextCursor: result.nextCursor,
+    });
+}
