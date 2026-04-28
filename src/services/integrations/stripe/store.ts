@@ -33,7 +33,8 @@ interface StateRecord {
   expiresAt: number
 }
 
-const stateStore = new Map<string, StateRecord>()
+let stateStore = new Map<string, StateRecord>()
+
 
 /**
  * In-memory store for Stripe integrations.

@@ -65,20 +65,21 @@ describe('Attestations HTTP integration', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
+ 
+ describe("GET /api/attestations", () => {
 
-describe("GET /api/attestations", () => {
-  it("should return 401 when unauthenticated", async () => {
-    const res = await request(app).get("/api/attestations");
-    expect(res.status).toBe(401);
-    expect(res.body.error).toMatch(/unauthorized/i);
-  });
 
   it('returns 401 when listing attestations without authentication', async () => {
     const res = await request(app).get('/api/attestations')
 
     expect(res.status).toBe(401)
-    expect(res.body).toEqual({ error: 'Unauthorized' })
+    expect(res.body).toMatchObject({
+      status: 'error',
+      code: 'AUTHENTICATION_ERROR',
+      message: 'Authentication required'
+    })
   })
+
 
   it('lists attestations for the authenticated business with pagination metadata', async () => {
     const res = await request(app).get('/api/attestations').set(authHeader)

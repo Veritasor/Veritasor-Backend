@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { logger } from '../../../src/utils/logger.js';
+
 import {
   create,
   getById,
@@ -1103,7 +1105,9 @@ describe('Attestation Repository - High-Volume Query Patterns', () => {
         },
       };
 
+      warnSpy.mockClear();
       await list(bigClient, { businessId: 'biz-big' }, { limit: 600, offset: 0 });
+
 
       expect(warnSpy).toHaveBeenCalled();
       const warnArg: string = warnSpy.mock.calls[0][0] as string;
@@ -1137,8 +1141,10 @@ describe('Attestation Repository - High-Volume Query Patterns', () => {
         },
       };
 
+      warnSpy.mockClear();
       await list(smallClient, { businessId: 'biz-small' }, { limit: 10, offset: 0 });
       expect(warnSpy).not.toHaveBeenCalled();
+
 
       warnSpy.mockRestore();
     });

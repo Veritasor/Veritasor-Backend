@@ -36,7 +36,8 @@ integrationsShopifyRouter.get('/callback', async (req: Request, res: Response) =
   const shop = req.query.shop as string | undefined
   const state = req.query.state as string | undefined
 
-  const result = await handleCallback({ code: code ?? '', shop: shop ?? '', state: state ?? '' })
+  const result = await handleCallback(req.query as any)
+
 
   const successRedirect = process.env.SHOPIFY_SUCCESS_REDIRECT
   if (result.success && successRedirect) {

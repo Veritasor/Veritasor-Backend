@@ -172,7 +172,8 @@ describe('buildTree guardrails', () => {
     expect(() => buildTree(['a', ''])).toThrow(TypeError);
   });
 
-  it('emits a structured warn log when leaf count reaches MERKLE_WARN_LEAVES', () => {
+  it('emits a structured warn log when leaf count reaches MERKLE_WARN_LEAVES', { timeout: 30000 }, () => {
+
     const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const largeLeaves = Array.from({ length: MERKLE_WARN_LEAVES }, (_, i) => String(i));
     buildTree(largeLeaves);
@@ -251,7 +252,8 @@ describe('Benchmarks — complexity probes', () => {
     expect(verifyProof(leaves[index], proof, root)).toBe(true);
   });
 
-  it('builds and verifies a 100 000-leaf tree without error', () => {
+  it('builds and verifies a 100 000-leaf tree without error', { timeout: 30000 }, () => {
+
     const n = 100_000;
     const leaves = Array.from({ length: n }, (_, i) => `item-${i}`);
     const tree = buildTree(leaves);

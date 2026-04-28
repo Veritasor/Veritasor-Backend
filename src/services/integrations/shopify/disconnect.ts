@@ -49,6 +49,8 @@ export default async function disconnectShopify(req: Request, res: Response) {
     return res.status(404).json({ error: 'Shopify integration not found' })
   }
 
+
+
   const shop = normalizeShop(
     typeof rec.externalId === 'string'
       ? rec.externalId

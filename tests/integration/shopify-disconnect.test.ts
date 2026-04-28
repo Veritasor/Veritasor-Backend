@@ -4,6 +4,31 @@ import request from 'supertest'
 import { integrationsShopifyRouter } from '../../src/routes/integrations-shopify.js'
 import * as integrationRepository from '../../src/repositories/integration.js'
 import { clearAll as clearShopifyStore, getToken } from '../../src/services/integrations/shopify/store.js'
+import * as shopifyUtils from '../../src/services/integrations/shopify/utils.js'
+
+vi.mock('../../src/middleware/requireBusinessAuth.js', () => ({
+  requireBusinessAuth: (req: any, res: any, next: any) => {
+    const userId = req.headers['x-user-id']
+    const businessId = req.headers['x-business-id']
+    if (!userId || !businessId) {
+      return res.status(401).json({ error: 'authentication required' })
+    }
+    req.user = { id: userId, userId: userId }
+    req.business = { id: businessId, userId: userId }
+    next()
+  },
+}))
+
+vi.mock('../../src/services/integrations/shopify/utils.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof shopifyUtils>()
+  return {
+    ...actual,
+    computeShopifyHmac: vi.fn().mockReturnValue('dummy'),
+  }
+})
+
+
+
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -47,7 +72,7 @@ describe('Shopify disconnect revocation assurance', () => {
     vi.restoreAllMocks()
   })
 
-  async function connectShopifyInstallation(userId = 'user-123', shop = 'demo-store') {
+  async function connectShopifyInstallation(userId = 'user-123', businessId = 'biz-123', shop = 'demo-store') {
     vi.mocked(global.fetch).mockResolvedValueOnce(
       jsonResponse(200, { access_token: 'shpat_test_token' }),
     )
@@ -55,6 +80,7 @@ describe('Shopify disconnect revocation assurance', () => {
     const connectResponse = await request(app)
       .post('/api/integrations/shopify/connect')
       .set('x-user-id', userId)
+      .set('x-business-id', businessId)
       .send({ shop })
       .expect(302)
 
@@ -68,8 +94,10 @@ describe('Shopify disconnect revocation assurance', () => {
         code: 'oauth-code-123',
         shop: `${shop}.myshopify.com`,
         state,
+        hmac: 'dummy',
       })
       .expect(200)
+
 
     return { shopHost: `${shop}.myshopify.com` }
   }
@@ -80,7 +108,7 @@ describe('Shopify disconnect revocation assurance', () => {
       .send({ shop: 'demo-store' })
       .expect(401)
 
-    expect(response.body.error).toMatch(/unauthorized/i)
+    expect(response.body.error).toMatch(/authentication required/i)
   })
 
   it('revokes the Shopify app remotely before deleting the local integration', async () => {
@@ -96,6 +124,7 @@ describe('Shopify disconnect revocation assurance', () => {
     const response = await request(app)
       .delete('/api/integrations/shopify')
       .set('x-user-id', 'user-123')
+      .set('x-business-id', 'biz-123')
       .expect(200)
 
     expect(global.fetch).toHaveBeenLastCalledWith(
@@ -125,6 +154,7 @@ describe('Shopify disconnect revocation assurance', () => {
     const response = await request(app)
       .delete('/api/integrations/shopify')
       .set('x-user-id', 'user-123')
+      .set('x-business-id', 'biz-123')
       .expect(502)
 
     expect(response.body.error).toMatch(/failed to revoke shopify access/i)
@@ -141,6 +171,7 @@ describe('Shopify disconnect revocation assurance', () => {
     const response = await request(app)
       .delete('/api/integrations/shopify')
       .set('x-user-id', 'user-123')
+      .set('x-business-id', 'biz-123')
       .expect(500)
 
     expect(response.body.error).toBe('Failed to disconnect Shopify integration')
@@ -156,6 +187,7 @@ describe('Shopify disconnect revocation assurance', () => {
     const response = await request(app)
       .delete('/api/integrations/shopify')
       .set('x-user-id', 'user-123')
+      .set('x-business-id', 'biz-123')
       .expect(200)
 
     expect(response.body).toEqual({
@@ -167,3 +199,4 @@ describe('Shopify disconnect revocation assurance', () => {
     expect(getToken(shopHost)).toBeUndefined()
   })
 })
+

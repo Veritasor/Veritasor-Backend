@@ -1,5 +1,7 @@
 /**
+
  * In-memory store for Shopify OAuth state and tokens.
+
  * Replace with DB-backed persistence when Shopify integrations move fully out
  * of memory.
  * Tokens are never logged.
@@ -56,3 +58,5 @@ export function clearAll(): void {
   stateToShop.clear()
   shopTokens.clear()
 }
+
+

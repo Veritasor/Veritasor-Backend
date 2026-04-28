@@ -8,6 +8,9 @@
 import * as integrationRepository from '../../../repositories/integration.js';
 import * as store from './store.js';
 import { logger } from '../../../utils/logger.js';
+import { computeShopifyHmac } from './utils.js';
+import { timingSafeEqual } from 'crypto';
+
 
 export interface CallbackParams {
   code: string
@@ -23,16 +26,7 @@ export interface CallbackResult {
   error?: string
 }
 
-/**
- * Compute Shopify HMAC for request verification.
- * Sorts parameters alphabetically and excludes the 'hmac' key.
- */
-export function computeShopifyHmac(secret: string, params: Record<string, string | undefined>): string {
-  const { hmac: _excluded, ...filtered } = params
-  const sorted = Object.keys(filtered).sort()
-  const message = sorted.map(key => `${key}=${filtered[key]}`).join('&')
-  return createHmac('sha256', secret).update(message).digest('hex')
-}
+
 
 /**
  * Handle OAuth callback: consume state, exchange code for token, persist via integration store.
@@ -40,6 +34,8 @@ export function computeShopifyHmac(secret: string, params: Record<string, string
 
 export async function handleCallback(params: CallbackParams): Promise<CallbackResult> {
   const { code, shop, state, hmac } = params;
+
+
   const clientId = process.env.SHOPIFY_CLIENT_ID ?? '';
   const clientSecret = process.env.SHOPIFY_CLIENT_SECRET ?? '';
 
@@ -78,13 +74,15 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
     logger.warn({ event: 'shopify_callback_invalid_shop', shop, shopHost }, 'Shopify callback invalid shop hostname');
     return { success: false, error: 'Invalid shop hostname' };
   }
-  const shopHost = store.normalizeShop(shop)
 
   const stateRecord = store.consumeOAuthState(state);
+
   if (!stateRecord || stateRecord.shop !== shopHost) {
     logger.warn({ event: 'shopify_callback_invalid_state', shop, state, shopHost }, 'Shopify callback invalid or expired state');
     return { success: false, error: 'Invalid or expired state' };
   }
+
+
 
   const tokenUrl = `https://${shopHost}/admin/oauth/access_token`;
   const body = new URLSearchParams({
@@ -143,7 +141,8 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   if (existingShopifyIntegration && existingShopifyIntegration.externalId !== shopHost) {
     try {
-      await integrationRepository.deleteById(existingShopifyIntegration.id);
+      await integrationRepository.deleteById(stateRecord.businessId, existingShopifyIntegration.id);
+
       store.deleteToken(existingShopifyIntegration.externalId);
     } catch (err) {
       logger.error({ event: 'shopify_callback_integration_delete_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify integration delete failed');
@@ -158,10 +157,12 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   if (reusableIntegration) {
     try {
-      const updated = await integrationRepository.update(reusableIntegration.id, {
-        token: { accessToken: '[REDACTED]' },
+      const updated = await integrationRepository.update(stateRecord.businessId, reusableIntegration.id, {
+
+        token: { accessToken },
         metadata: { shop: shopHost },
       });
+
       if (!updated) {
         logger.error({ event: 'shopify_callback_integration_update_error', shop, state }, 'Failed to persist Shopify integration');
         return { success: false, error: 'Failed to persist Shopify integration' };
@@ -174,11 +175,14 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
     try {
       await integrationRepository.create({
         userId: stateRecord.userId,
+        businessId: stateRecord.businessId,
         provider: 'shopify',
         externalId: shopHost,
-        token: { accessToken: '[REDACTED]' },
+        token: { accessToken },
         metadata: { shop: shopHost },
       });
+
+
     } catch (err) {
       logger.error({ event: 'shopify_callback_integration_create_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify integration create failed');
       return { success: false, error: 'Failed to persist Shopify integration' };
