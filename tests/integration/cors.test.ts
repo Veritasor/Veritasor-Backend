@@ -21,7 +21,12 @@ import request from "supertest";
 // Helpers – build a tiny Express app with the CORS middleware under test
 // ---------------------------------------------------------------------------
 
+process.env.DATABASE_URL = 'postgresql://localhost/test'
+process.env.JWT_SECRET = 'a'.repeat(32)
+
+
 async function buildApp() {
+
   // Dynamic import *after* env vars are set — config reads process.env at
   // import time, and vi.resetModules() clears the module cache each test.
   const { createCorsMiddleware } = await import(

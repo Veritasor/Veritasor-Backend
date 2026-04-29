@@ -44,6 +44,8 @@ try {
 } catch (error) {
   if (error instanceof z.ZodError) {
     logger.error("Configuration validation failed", JSON.stringify(error.format()));
+
+
     // Avoid silent failures and exit fast
     throw new ConfigValidationError("Invalid environment configuration. Check logs for details.");
   }

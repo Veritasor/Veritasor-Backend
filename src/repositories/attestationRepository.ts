@@ -45,10 +45,46 @@ import {
 import { getAttestation } from '../services/soroban/getAttestation.js';
 import { logger } from '../utils/logger.js';
 
+const STATEMENT_TIMEOUT_MS = Number(process.env.ATTESTATION_QUERY_TIMEOUT_MS) || 5000;
+const SLOW_QUERY_WARN_MS = 1000;
+const SLOW_QUERY_ROW_THRESHOLD = 500;
+
+
+/**
+ * Applies a per-query statement timeout to the current client session.
+ */
+async function applyStatementTimeout(client: DbClient, timeoutMs: number): Promise<void> {
+  // Use SET LOCAL so it only applies to the current transaction/session.
+  await client.query(`SET LOCAL statement_timeout = ${timeoutMs}`);
+}
+
+/**
+ * Logs a warning if a query exceeds time or row thresholds.
+ */
+function warnIfSlow(
+  operation: string,
+  durationMs: number,
+  rowCount: number,
+  context: Record<string, any> = {}
+): void {
+  if (durationMs > SLOW_QUERY_WARN_MS || rowCount > SLOW_QUERY_ROW_THRESHOLD) {
+    // Tests expect a JSON string with specific fields
+    logger.warn(JSON.stringify({
+      event: 'attestation_repo_slow_query',
+      op: operation,
+      durationMs,
+      rowCount,
+      ...context
+    }));
+  }
+}
+
+
 /**
  * Database row type with snake_case column names
  */
 interface AttestationRow {
+
   id: string;
   business_id: string;
   period: string;

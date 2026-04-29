@@ -147,16 +147,15 @@ export function getTokenFamily(familyId: string): TokenRotationFamily | undefine
   return tokenFamilies.get(familyId)
 }
 
-/**
- * @notice Intended recipient audience for long-lived refresh tokens.
- *         Intentionally distinct from JWT_AUDIENCE to prevent cross-token
- *         substitution attacks.
- *         Override via the JWT_REFRESH_AUDIENCE environment variable.
- */
+const JWT_ISSUER = process.env.JWT_ISSUER ?? 'veritasor-api'
+const JWT_AUDIENCE = process.env.JWT_AUDIENCE ?? 'veritasor-client'
+
+
 const JWT_REFRESH_AUDIENCE =
   process.env.JWT_REFRESH_AUDIENCE ?? 'veritasor-refresh'
 
 export { JWT_ISSUER, JWT_AUDIENCE, JWT_REFRESH_AUDIENCE }
+
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -215,12 +214,19 @@ export interface TokenPayload {
  * const token = generateToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateToken(payload: TokenPayload): string {
-  return jwt.sign(payload, config.jwtSecret, {
-    expiresIn: '1h',
-    issuer: JWT_ISSUER,
-    audience: JWT_AUDIENCE,
-  } as SignOptions)
+  const secret = getSecret()
+  return jwt.sign(
+    { ...payload, jti: randomUUID() },
+    secret,
+    {
+      expiresIn: '1h',
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    } as SignOptions
+  )
 }
+
+
 
 /**
  * @notice Generates a long-lived JWT refresh token for session rotation.
@@ -235,13 +241,19 @@ export function generateToken(payload: TokenPayload): string {
  * const refreshToken = generateRefreshToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateRefreshToken(payload: TokenPayload): string {
-  const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
-  return jwt.sign(payload, secret, {
-    expiresIn: '7d',
-    issuer: JWT_ISSUER,
-    audience: JWT_REFRESH_AUDIENCE,
-  } as SignOptions)
+  const secret = process.env.JWT_REFRESH_SECRET || getSecret()
+  return jwt.sign(
+    { ...payload, jti: randomUUID() },
+    secret,
+    {
+      expiresIn: '7d',
+      issuer: JWT_ISSUER,
+      audience: JWT_REFRESH_AUDIENCE,
+    } as SignOptions
+  )
 }
+
+
 
 /**
  * @notice Verifies an access token and returns its payload if valid.
@@ -260,7 +272,8 @@ export function generateRefreshToken(payload: TokenPayload): string {
  */
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    const decoded = jwt.verify(token, config.jwtSecret, {
+    const secret = getSecret()
+    const decoded = jwt.verify(token, secret, {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
     } as VerifyOptions)
@@ -269,6 +282,7 @@ export function verifyToken(token: string): TokenPayload | null {
     return null
   }
 }
+
 
 /**
  * @notice Verifies a refresh token and returns its payload if valid.
@@ -285,7 +299,7 @@ export function verifyToken(token: string): TokenPayload | null {
  */
 export function verifyRefreshToken(token: string): TokenPayload | null {
   try {
-    const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
+    const secret = process.env.JWT_REFRESH_SECRET || getSecret()
     const decoded = jwt.verify(token, secret, {
       issuer: JWT_ISSUER,
       audience: JWT_REFRESH_AUDIENCE,
@@ -295,6 +309,7 @@ export function verifyRefreshToken(token: string): TokenPayload | null {
     return null
   }
 }
+
 
 // ---------------------------------------------------------------------------
 // Low-level primitives (flexible, caller-controlled)

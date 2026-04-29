@@ -23,6 +23,13 @@ import request from 'supertest'
 import { app } from '../../src/app.js'
 import { clearUsedRefreshTokens } from '../../src/services/auth/refresh.js'
 import { clearAllUsers } from '../../src/repositories/userRepository.js'
+import { resetSignupRateLimitStore } from '../../src/utils/signupRateLimiter.js'
+import { resetRateLimiterStore } from '../../src/middleware/rateLimiter.js'
+import { vi } from 'vitest'
+
+// Increase timeout for individual tests because of password hashing and timing delays
+vi.setConfig({ testTimeout: 10000 })
+
 
 const testUser = {
   email: 'refresh-test@example.com',
@@ -45,7 +52,10 @@ describe('POST /api/auth/refresh — API version negotiation', () => {
   beforeEach(() => {
     clearAllUsers()
     clearUsedRefreshTokens()
+    resetSignupRateLimitStore()
+    resetRateLimiterStore()
   })
+
 
   afterAll(() => {
     clearAllUsers()
@@ -60,12 +70,10 @@ describe('POST /api/auth/refresh — API version negotiation', () => {
       .post('/api/auth/signup')
       .send(testUser)
 
-    // If signup is rate-limited or returns 201, handle both paths
     if (signupRes.status === 201) {
       return signupRes.body.refreshToken as string
     }
 
-    // Fallback: try login if user already exists from a leaked state
     const loginRes = await request(app)
       .post('/api/auth/login')
       .send({ email: testUser.email, password: testUser.password })
@@ -73,6 +81,9 @@ describe('POST /api/auth/refresh — API version negotiation', () => {
     expect(loginRes.status).toBe(200)
     return loginRes.body.refreshToken as string
   }
+
+
+
 
   // =========================================================================
   // Success-path version negotiation

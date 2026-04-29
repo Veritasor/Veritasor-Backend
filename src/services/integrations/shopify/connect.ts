@@ -26,7 +26,8 @@ export function startConnect(shop: string, userId: string, businessId: string): 
   }
 
   const expiresAt = Date.now() + 10 * 60 * 1000 // State expires in 10 minutes
-  store.setOAuthState(state, shopHost, userId, 'shopify', expiresAt)
+  store.setOAuthState(state, shopHost, userId, businessId)
+
 
   const params = new URLSearchParams({
     client_id: clientId,

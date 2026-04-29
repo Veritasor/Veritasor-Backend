@@ -85,36 +85,45 @@ export interface StartupReadinessReport {
  * @returns A report indicating overall readiness and per-dependency results.
  */
 export async function runStartupDependencyReadinessChecks(): Promise<StartupReadinessReport> {
-  const checks: DependencyReadinessResult[] = [];
+  const isProduction = process.env.NODE_ENV === "production"
+  const checks: DependencyReadinessResult[] = []
 
-  const configReady = true; // If we reach here, src/config/index.ts validation has already passed.
-  checks.push({
-    dependency: "config",
-    ready: configReady,
-  });
-
-  const dbConnectionString = process.env.DATABASE_URL?.trim();
-  if (dbConnectionString) {
-    const dbReady = await checkDatabaseReadiness(dbConnectionString);
+  // 1. JWT Config check
+  const jwtSecret = process.env.JWT_SECRET?.trim() ?? ""
+  const minLength = isProduction ? JWT_SECRET_MIN_LENGTH_PROD : JWT_SECRET_MIN_LENGTH_DEV
+  
+  if (jwtSecret.length < minLength) {
     checks.push({
-      dependency: "database",
-      ready: dbReady,
-      reason: dbReady ? undefined : "database connection check failed",
-    });
-  }
-
-  if (secret.length < minLength) {
-    return {
       dependency: "config/jwt",
       ready: false,
       reason: isProduction
-        ? `JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH_PROD} characters in production (got ${secret.length})`
-        : `JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH_DEV} characters (got ${secret.length})`,
-    }
+        ? `JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH_PROD} characters in production (got ${jwtSecret.length})`
+        : `JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH_DEV} characters (got ${jwtSecret.length})`,
+    })
+  } else {
+    checks.push({ dependency: "config/jwt", ready: true })
   }
 
-  return { dependency: "config/jwt", ready: true }
+  // 2. Soroban Config check
+  checks.push(checkSorobanConfig(isProduction))
+
+  // 3. Stripe Config check
+  checks.push(checkStripeConfig(isProduction))
+
+  // 4. Database check
+  const dbConnectionString = process.env.DATABASE_URL?.trim()
+  if (dbConnectionString) {
+    checks.push(await checkDatabaseConnectivity(dbConnectionString))
+  }
+
+  const allReady = checks.every((c) => c.ready)
+
+  return {
+    ready: allReady,
+    checks,
+  }
 }
+
 
 /**
  * Validate Soroban contract configuration.

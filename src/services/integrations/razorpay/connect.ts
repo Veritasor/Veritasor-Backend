@@ -28,14 +28,15 @@ const STATE_MAX_LENGTH = 512
  * Example env var:
  *   RAZORPAY_ALLOWED_REDIRECT_ORIGINS=https://app.veritasor.com,https://staging.veritasor.com
  */
-const ALLOWED_REDIRECT_ORIGINS: ReadonlySet<string> = (() => {
+function getAllowedOrigins(): ReadonlySet<string> {
   const raw = process.env.RAZORPAY_ALLOWED_REDIRECT_ORIGINS ?? ''
   const origins = raw
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
   return new Set(origins)
-})()
+}
+
 
 // ─── In-memory OAuth state store ─────────────────────────────────────────────
 // Replace with Redis / DB in production for multi-instance deployments.
@@ -133,7 +134,8 @@ function validateRedirectUrl(rawUrl: string): { valid: true; url: URL } | { vali
 
   const origin = parsed.origin // e.g. "https://app.veritasor.com"
 
-  if (!ALLOWED_REDIRECT_ORIGINS.has(origin)) {
+  if (!getAllowedOrigins().has(origin)) {
+
     return {
       valid: false,
       reason: `redirectUrl origin "${origin}" is not in the allowed list`,

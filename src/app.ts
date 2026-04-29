@@ -5,6 +5,7 @@ import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { apiVersionMiddleware, versionResponseMiddleware } from "./middleware/apiVersion.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
 import { authRouter } from "./routes/auth.js";
@@ -78,6 +79,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
 
+  // 3. Body Parsing
   app.use(express.json());
   app.use(createCorsMiddleware());
   app.use(requestLogger);
@@ -94,16 +96,26 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/integrations/stripe", integrationsStripeRouter);
   app.use("/api/users", usersRouter);
 
+  // 5. Error Handling
   app.use(errorHandler);
 
   return app;
 }
 
+/**
+ * Synchronous application instance for test environments.
+ * Uses a default "ready" report to skip async boot complexity in unit tests.
+ */
 export const app = createApp({ ready: true, checks: [] });
 
+/**
+ * Production server entry point.
+ * Runs readiness checks before starting the listener.
+ * 
+ * @param port - Port to listen on.
+ * @returns A promise that resolves to the started HTTP server.
+ */
 export async function startServer(port: number): Promise<Server> {
-  const { runStartupDependencyReadinessChecks } = await import("./startup/readiness.js");
-
   const readinessReport = await runStartupDependencyReadinessChecks();
 
   if (!readinessReport.ready) {
@@ -114,10 +126,11 @@ export async function startServer(port: number): Promise<Server> {
     console.warn(`[Startup] Proceeding with failed readiness checks: ${failedChecks}`);
   }
 
-  const app = createApp(readinessReport);
+  const application = createApp(readinessReport);
 
   return new Promise((resolve) => {
-    const server = app.listen(port, () => {
+    const server = application.listen(port, () => {
+      console.log(`[Server] Veritasor Backend listening on port ${port}`);
       resolve(server);
     });
   });

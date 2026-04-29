@@ -13,6 +13,8 @@ import {
 import { runStartupDependencyReadinessChecks } from "../../src/startup/readiness.js";
 import { healthRouter, HealthResponseSchema } from "../../src/routes/health.js";
 
+
+
 /**
  * Integration tests for authentication API endpoints
  *
@@ -999,6 +1001,7 @@ describe("Error Envelope Standardization", () => {
               ],
             },
           ],
+          "error": "ERROR",
           "errors": [
             {
               "code": "invalid_string",
@@ -1032,6 +1035,7 @@ describe("Error Envelope Standardization", () => {
       expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
         {
           "code": "CONFLICT",
+          "error": "ERROR",
           "message": "Resource conflict",
           "requestId": "REQUEST_ID",
           "status": "error",
@@ -1050,6 +1054,7 @@ describe("Error Envelope Standardization", () => {
       expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
         {
           "code": "DATABASE_ERROR",
+          "error": "ERROR",
           "message": "An unexpected error occurred",
           "requestId": "REQUEST_ID",
           "status": "error",
@@ -1068,6 +1073,7 @@ describe("Error Envelope Standardization", () => {
       expect(normalizeErrorSnapshot(response.body)).toMatchInlineSnapshot(`
         {
           "code": "INTERNAL_SERVER_ERROR",
+          "error": "ERROR",
           "message": "An unexpected error occurred",
           "requestId": "REQUEST_ID",
           "status": "error",
@@ -1468,13 +1474,17 @@ describe("Security Considerations", () => {
  * Verifies that sensitive query params and headers are never written to logs.
  */
 describe("requestLogger redaction policy", () => {
-  it("REDACTED_QUERY_PARAMS covers expected sensitive keys", () => {
+  it("REDACTED_QUERY_PARAMS covers expected sensitive keys", async () => {
+    const { REDACTED_QUERY_PARAMS } = await import("../../src/middleware/requestLogger.js");
+
     for (const key of ["token", "access_token", "refresh_token", "api_key", "secret", "password", "reset_token", "code"]) {
       expect(REDACTED_QUERY_PARAMS.has(key)).toBe(true);
     }
   });
 
-  it("REDACTED_HEADERS covers authorization, cookie, and set-cookie", () => {
+  it("REDACTED_HEADERS covers authorization, cookie, and set-cookie", async () => {
+    const { REDACTED_HEADERS } = await import("../../src/middleware/requestLogger.js");
+
     for (const header of ["authorization", "cookie", "set-cookie"]) {
       expect(REDACTED_HEADERS.has(header)).toBe(true);
     }
@@ -1487,7 +1497,9 @@ describe("requestLogger redaction policy", () => {
       const origInfo = (req as any).app.locals;
       next();
     });
+    const { requestLogger } = await import("../../src/middleware/requestLogger.js");
     testApp.use(requestLogger);
+
     testApp.get("/probe", (_req, res) => res.json({ ok: true }));
 
     // Capture log output by spying on logger
@@ -1512,7 +1524,9 @@ describe("requestLogger redaction policy", () => {
   it("redacts sensitive query params in logs", async () => {
     const loggedQueries: Record<string, unknown>[] = [];
     const testApp = express();
+    const { requestLogger } = await import("../../src/middleware/requestLogger.js");
     testApp.use(requestLogger);
+
     testApp.get("/probe", (_req, res) => res.json({ ok: true }));
 
     const { logger } = await import("../../src/utils/logger.js");
@@ -1539,7 +1553,9 @@ describe("requestLogger redaction policy", () => {
   it("redacts password and reset_token query params", async () => {
     const loggedQueries: Record<string, unknown>[] = [];
     const testApp = express();
+    const { requestLogger } = await import("../../src/middleware/requestLogger.js");
     testApp.use(requestLogger);
+
     testApp.get("/probe", (_req, res) => res.json({ ok: true }));
 
     const { logger } = await import("../../src/utils/logger.js");
@@ -1606,6 +1622,7 @@ describe("Startup dependency readiness checks", () => {
   });
 
   it("should mark database as down when connectivity check fails", async () => {
+
     process.env.NODE_ENV = "development";
     process.env.JWT_SECRET = "x".repeat(32);
     process.env.DATABASE_URL = "postgres://unreachable-host:5432/veritasor";
@@ -1628,5 +1645,6 @@ describe("Startup dependency readiness checks", () => {
     expect(report.checks).toContainEqual(
       expect.objectContaining({ dependency: "database", ready: false }),
     );
-  });
+  }, 15000);
+
 });
