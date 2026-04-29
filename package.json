@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "docs:routes": "tsx scripts/generate-routes.ts"
   },
   "dependencies": {

@@ -452,6 +452,29 @@ const result = detectRevenueAnomaly(series, cal, (record) => {
 });
 ```
 
+---
+
+## Analytics Period Helpers (`src/services/analytics/periods.ts`)
+
+### DST-Safe UTC Boundaries
+
+The analytics service uses UTC-anchored boundaries for all period calculations to ensure correctness across DST transitions (e.g., "spring forward" in March and "fall back" in November).
+
+**Key properties:**
+- Boundaries are always at **UTC midnight** (00:00:00.000Z).
+- `start` is inclusive; `end` is **exclusive**.
+- Period label format is strictly `YYYY-MM`.
+
+**Edge cases covered in tests:**
+- **Leap years**: `2024-02` correctly spans 29 days.
+- **Year rollovers**: `2024-12` rolls over to `2025-01-01` correctly.
+- **DST transitions**: Ensuring no double-counting or skipped hours when viewed from local timezones.
+
+**Threat model notes:**
+- Input strings are validated against a strict regex (`/^\d{4}-(?:0[1-9]|1[0-2])$/`) before parsing to prevent numeric overflow or injection attacks via `Date.UTC`.
+- `listAttestedPeriodsForBusiness` enforces unique, sorted period labels to prevent UI duplication.
+
+---
 ## Merkle Service Tests (`unit/services/merkle.test.ts`)
 
 ### Overview

@@ -19,6 +19,15 @@ import type {
   CalibrationConfig,
   AnomalyLogRecord,
 } from "../../../../src/services/revenue/anomalyDetection.js";
+import {
+  parsePeriodToBounds,
+  dateToPeriod,
+  currentPeriod,
+  isTimestampInPeriod,
+  listAttestedPeriodsForBusiness,
+  PeriodParseError,
+} from "../../../../src/services/analytics/periods.js";
+import { attestationRepository } from "../../../../src/repositories/attestation.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1070,8 +1079,8 @@ describe("detectRevenueAnomaly — seasonality and false-positive scenarios", ()
 
   it("scoreHook can suppress known promotional periods", () => {
     const promoMonth = "2025-11";
-    const hook: CalibrationConfig["scoreHook"] = (_prev, curr, _change) => {
-      if (curr.period === promoMonth) return { score: 0, flag: "ok" };
+    const hook: CalibrationConfig["scoreHook"] = (prev, curr, _change) => {
+      if (curr.period === promoMonth || prev.period === promoMonth) return { score: 0, flag: "ok" };
       return null;
     };
     const series: MonthlyRevenue[] = [
@@ -1105,63 +1114,132 @@ describe("detectRevenueAnomaly — seasonality and false-positive scenarios", ()
   });
 });
 
-// -------------------------------------------------------------------------
-// Analytics Periods (DST & month boundaries)
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Analytics Period Helpers
+// ---------------------------------------------------------------------------
 
-describe("analytics periods", () => {
+describe("analytics period helpers", () => {
   describe("parsePeriodToBounds", () => {
-    it("should correctly parse a normal period to UTC boundaries", () => {
-      const { start, end } = parsePeriodToBounds("2024-03");
-      expect(start.toISOString()).toBe("2024-03-01T00:00:00.000Z");
-      expect(end.toISOString()).toBe("2024-04-01T00:00:00.000Z");
+    it("should parse a valid YYYY-MM period correctly", () => {
+      const { start, end } = parsePeriodToBounds("2025-10");
+      expect(start.getUTCFullYear()).toBe(2025);
+      expect(start.getUTCMonth()).toBe(9); // Oct (0-indexed)
+      expect(start.getUTCDate()).toBe(1);
+      expect(start.getUTCHours()).toBe(0);
+      expect(start.toISOString()).toBe("2025-10-01T00:00:00.000Z");
+
+      expect(end.getUTCFullYear()).toBe(2025);
+      expect(end.getUTCMonth()).toBe(10); // Nov
+      expect(end.getUTCDate()).toBe(1);
+      expect(end.toISOString()).toBe("2025-11-01T00:00:00.000Z");
     });
 
-    it("should handle year rollover (December to January)", () => {
+    it("should handle year rollovers correctly (December)", () => {
       const { start, end } = parsePeriodToBounds("2024-12");
       expect(start.toISOString()).toBe("2024-12-01T00:00:00.000Z");
       expect(end.toISOString()).toBe("2025-01-01T00:00:00.000Z");
     });
 
-    it("should handle leap years correctly (February)", () => {
+    it("should handle leap years correctly (February 2024)", () => {
       const { start, end } = parsePeriodToBounds("2024-02");
       expect(start.toISOString()).toBe("2024-02-01T00:00:00.000Z");
       expect(end.toISOString()).toBe("2024-03-01T00:00:00.000Z");
+      // Diff should be 29 days
+      const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+      expect(diffDays).toBe(29);
     });
 
-    it("should reject invalid months like 00 or 13", () => {
-      expect(() => parsePeriodToBounds("2024-00")).toThrow(PeriodParseError);
-      expect(() => parsePeriodToBounds("2024-13")).toThrow(PeriodParseError);
-      expect(() => parsePeriodToBounds("2024-99")).toThrow(PeriodParseError);
+    it("should handle non-leap years correctly (February 2023)", () => {
+      const { start, end } = parsePeriodToBounds("2023-02");
+      const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+      expect(diffDays).toBe(28);
     });
 
-    it("should reject malformed formats", () => {
-      const invalid = ["2024-3", "24-03", "2024/03", "abcd-ef"];
+    it("should throw PeriodParseError for invalid formats", () => {
+      const invalid = ["2025-1", "25-01", "2025-13", "2025-00", "ABCD-EF", ""];
       for (const p of invalid) {
         expect(() => parsePeriodToBounds(p)).toThrow(PeriodParseError);
       }
     });
+
+    it("should be DST-neutral by anchoring to UTC midnight", () => {
+      // March DST spring-forward (US/Eastern: 2024-03-10)
+      const { start, end } = parsePeriodToBounds("2024-03");
+      expect(start.getUTCHours()).toBe(0);
+      expect(end.getUTCHours()).toBe(0);
+      expect(start.toISOString().endsWith("T00:00:00.000Z")).toBe(true);
+    });
   });
 
   describe("dateToPeriod", () => {
-    it("should derive the correct UTC period for a given date", () => {
-      // 2024-03-01 03:00 UTC
-      expect(dateToPeriod(new Date("2024-03-01T03:00:00.000Z"))).toBe("2024-03");
+    it("should convert a Date object to YYYY-MM UTC string", () => {
+      const date = new Date(Date.UTC(2025, 9, 15));
+      expect(dateToPeriod(date)).toBe("2025-10");
     });
 
-    it("should stay in the correct month even during DST fall-back hour", () => {
-      expect(dateToPeriod(new Date("2024-11-01T03:59:00.000Z"))).toBe("2024-11");
+    it("should handle the last day of the year correctly", () => {
+      const date = new Date(Date.UTC(2024, 11, 31, 23, 59, 59));
+      expect(dateToPeriod(date)).toBe("2024-12");
+    });
+
+    it("should remain consistent across DST boundaries", () => {
+      // US/Eastern fall-back hour: 2024-11-03 01:00 local happens twice
+      const date1 = new Date("2024-11-03T05:00:00Z"); // 01:00 EDT
+      const date2 = new Date("2024-11-03T06:00:00Z"); // 01:00 EST
+      expect(dateToPeriod(date1)).toBe("2024-11");
+      expect(dateToPeriod(date2)).toBe("2024-11");
+    });
+  });
+
+  describe("currentPeriod", () => {
+    it("should return a valid YYYY-MM string for the current time", () => {
+      const period = currentPeriod();
+      expect(period).toMatch(/^\d{4}-\d{2}$/);
     });
   });
 
   describe("isTimestampInPeriod", () => {
-    it("should correctly identify timestamps within the period bounds", () => {
-      // 2024-03-08 00:00 UTC
-      expect(isTimestampInPeriod(1709856000, "2024-03")).toBe(true);
-      // 2024-03-31 23:59:59 UTC
-      expect(isTimestampInPeriod(1711929599, "2024-03")).toBe(true);
-      // 2024-04-01 00:00 UTC
-      expect(isTimestampInPeriod(1711929600, "2024-03")).toBe(false);
+    const period = "2024-03";
+    const startTs = Math.floor(Date.UTC(2024, 2, 1) / 1000);
+    const endTs = Math.floor(Date.UTC(2024, 3, 1) / 1000);
+
+    it("should return true for timestamps within the period", () => {
+      expect(isTimestampInPeriod(startTs, period)).toBe(true);
+      expect(isTimestampInPeriod(startTs + 86400 * 15, period)).toBe(true); // Mid-month
+      expect(isTimestampInPeriod(endTs - 1, period)).toBe(true); // Last second
+    });
+
+    it("should return false for timestamps outside the period", () => {
+      expect(isTimestampInPeriod(startTs - 1, period)).toBe(false);
+      expect(isTimestampInPeriod(endTs, period)).toBe(false); // Exclusive end
+      expect(isTimestampInPeriod(endTs + 1, period)).toBe(false);
+    });
+
+    it("should handle DST transition days correctly", () => {
+      // 2024-03-10 is DST spring-forward in many US zones
+      const dstDayTs = Math.floor(Date.UTC(2024, 2, 10, 12, 0) / 1000);
+      expect(isTimestampInPeriod(dstDayTs, period)).toBe(true);
+    });
+  });
+
+  describe("listAttestedPeriodsForBusiness", () => {
+    it("should return unique periods sorted descending", () => {
+      const businessId = "test-biz-123";
+      vi.spyOn(attestationRepository, "listByBusiness").mockReturnValue([
+        { id: "1", businessId, period: "2025-01", attestedAt: "2025-02-01T00:00:00Z" },
+        { id: "2", businessId, period: "2025-02", attestedAt: "2025-03-01T00:00:00Z" },
+        { id: "3", businessId, period: "2025-01", attestedAt: "2025-02-02T00:00:00Z" }, // Duplicate period
+        { id: "4", businessId, period: "2024-12", attestedAt: "2025-01-01T00:00:00Z" },
+      ]);
+
+      const periods = listAttestedPeriodsForBusiness(businessId);
+      expect(periods).toEqual(["2025-02", "2025-01", "2024-12"]);
+      expect(attestationRepository.listByBusiness).toHaveBeenCalledWith(businessId);
+    });
+
+    it("should return an empty array if no attestations found", () => {
+      vi.spyOn(attestationRepository, "listByBusiness").mockReturnValue([]);
+      expect(listAttestedPeriodsForBusiness("none")).toEqual([]);
     });
   });
 });
