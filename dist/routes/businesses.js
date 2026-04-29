@@ -14,11 +14,12 @@
  */
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { validateBody } from '../middleware/validate.js';
+import { validateBody, validateQuery } from '../middleware/validate.js';
+import { asyncErrorHandler } from '../middleware/errorHandler.js';
 import { createBusiness } from '../services/business/create.js';
 import { updateBusiness } from '../services/business/update.js';
-import { getMyBusiness, getBusinessById } from '../services/business/get.js';
-import { createBusinessInputSchema, updateBusinessInputSchema, } from '../services/business/schemas.js';
+import { getMyBusiness, getBusinessById, listBusinesses } from '../services/business/get.js';
+import { createBusinessInputSchema, updateBusinessInputSchema, businessListQuerySchema, } from '../services/business/schemas.js';
 const router = Router();
 /**
  * POST /
@@ -40,7 +41,7 @@ const router = Router();
  * @returns {error} 409 - Business already exists for user
  * @returns {error} 500 - Server error
  */
-router.post('/', requireAuth, validateBody(createBusinessInputSchema), createBusiness);
+router.post('/', requireAuth, validateBody(createBusinessInputSchema), asyncErrorHandler(createBusiness));
 /**
  * GET /me
  * Get authenticated user's business
@@ -56,7 +57,7 @@ router.post('/', requireAuth, validateBody(createBusinessInputSchema), createBus
  * @returns {error} 404 - Not found
  * @returns {error} 500 - Server error
  */
-router.get('/me', requireAuth, getMyBusiness);
+router.get('/me', requireAuth, asyncErrorHandler(getMyBusiness));
 /**
  * PATCH /me
  * Update authenticated user's business
@@ -77,7 +78,26 @@ router.get('/me', requireAuth, getMyBusiness);
  * @returns {error} 404 - Not found
  * @returns {error} 500 - Server error
  */
-router.patch('/me', requireAuth, validateBody(updateBusinessInputSchema), updateBusiness);
+router.patch('/me', requireAuth, validateBody(updateBusinessInputSchema), asyncErrorHandler(updateBusiness));
+/**
+ * GET /
+ * List businesses
+ *
+ * Public endpoint - no authentication required.
+ * Supports keyset pagination and filtering.
+ *
+ * @route GET /api/businesses
+ * @param {number} [limit] - Number of items to return (default 20, max 100)
+ * @param {string} [cursor] - Keyset pagination cursor
+ * @param {string} [sortBy] - Sort column (createdAt, name)
+ * @param {string} [sortOrder] - Sort order (asc, desc)
+ * @param {string} [industry] - Filter by industry
+ *
+ * @returns {object} 200 - Paginated list of businesses
+ * @returns {error} 400 - Validation error
+ * @returns {error} 500 - Server error
+ */
+router.get('/', validateQuery(businessListQuerySchema), asyncErrorHandler(listBusinesses));
 /**
  * GET /:id
  * Get business by ID
@@ -92,5 +112,5 @@ router.patch('/me', requireAuth, validateBody(updateBusinessInputSchema), update
  * @returns {error} 404 - Not found
  * @returns {error} 500 - Server error
  */
-router.get('/:id', getBusinessById);
+router.get('/:id', asyncErrorHandler(getBusinessById));
 export default router;

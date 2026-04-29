@@ -8,6 +8,7 @@ export default defineConfig({
     env: {
       DATABASE_URL: 'postgres://localhost:5432/test_db',
       NODE_ENV: 'test',
+      SOROBAN_CONTRACT_ID: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
     },
     coverage: {
       provider: 'v8',
@@ -16,5 +17,10 @@ export default defineConfig({
       exclude: ['src/**/*.d.ts', 'src/index.ts'],
       reportsDirectory: 'coverage',
     },
+    server: {
+      deps: {
+        inline: ['C:']
+      }
+    }
   },
 })

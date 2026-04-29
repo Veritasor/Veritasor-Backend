@@ -1,21 +1,95 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config/index.js';
+import { randomUUID } from 'crypto';
+import { logger } from './logger.js';
+// ===========================================================================
+// CONFIGURATION
+// ===========================================================================
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-key';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET ?? 'dev-refresh-secret-key';
-// ---------------------------------------------------------------------------
-// Audience / Issuer constants
-// ---------------------------------------------------------------------------
+// Clock skew tolerance in seconds (default: 10s)
+const JWT_CLOCK_SKEW_SECONDS = parseInt(process.env.JWT_CLOCK_SKEW_SECONDS ?? '10', 10);
+// Token TTLs in seconds
+const JWT_ACCESS_TOKEN_TTL = parseInt(process.env.JWT_ACCESS_TOKEN_TTL ?? '3600', // 1h
+10);
+const JWT_REFRESH_TOKEN_TTL = parseInt(process.env.JWT_REFRESH_TOKEN_TTL ?? '604800', // 7d
+10);
 /**
- * @notice Identity of the party that issued the token.
- *         Override via the JWT_ISSUER environment variable for multi-tenant
- *         or multi-service deployments.
+ * Custom error types for JWT operations
  */
-const JWT_ISSUER = process.env.JWT_ISSUER ?? 'veritasor-api';
+export class JWTError extends Error {
+    code;
+    statusCode;
+    constructor(message, code, statusCode = 401) {
+        super(message);
+        this.code = code;
+        this.statusCode = statusCode;
+        this.name = 'JWTError';
+    }
+}
+export class TokenExpiredError extends JWTError {
+    constructor(message = 'Token has expired') {
+        super(message, 'TOKEN_EXPIRED', 401);
+        this.name = 'TokenExpiredError';
+    }
+}
+export class TokenInvalidError extends JWTError {
+    constructor(message = 'Token is invalid or malformed') {
+        super(message, 'TOKEN_INVALID', 401);
+        this.name = 'TokenInvalidError';
+    }
+}
+export class TokenReusedError extends JWTError {
+    constructor(message = 'Refresh token has been reused - possible theft detected') {
+        super(message, 'TOKEN_REUSED', 401);
+        this.name = 'TokenReusedError';
+    }
+}
+// In-memory token rotation tracking
+const tokenFamilies = new Map();
+const jtiBlacklist = new Set();
 /**
- * @notice Intended recipient audience for short-lived access tokens.
- *         Override via the JWT_AUDIENCE environment variable.
+ * Get or create a token family
  */
-const JWT_AUDIENCE = process.env.JWT_AUDIENCE ?? 'veritasor-client';
+function getOrCreateFamily(familyId, userId) {
+    if (!tokenFamilies.has(familyId)) {
+        tokenFamilies.set(familyId, {
+            familyId,
+            userId,
+            currentJti: null,
+            blacklistedJtis: new Set(),
+            lastRotation: Date.now(),
+            concurrentRefreshDetected: false,
+            createdAt: Date.now(),
+        });
+    }
+    return tokenFamilies.get(familyId);
+}
+/**
+ * Check if a jti is blacklisted
+ */
+export function isTokenBlacklisted(jti) {
+    return jtiBlacklist.has(jti);
+}
+/**
+ * Blacklist a token by jti (for logout/revocation)
+ */
+export function blacklistToken(jti, familyId) {
+    jtiBlacklist.add(jti);
+    if (familyId) {
+        const family = tokenFamilies.get(familyId);
+        if (family) {
+            family.blacklistedJtis.add(jti);
+        }
+    }
+    logger.info('Token blacklisted', { jti, familyId });
+}
+/**
+ * Get token family for rotation tracking
+ */
+export function getTokenFamily(familyId) {
+    return tokenFamilies.get(familyId);
+}
 /**
  * @notice Intended recipient audience for long-lived refresh tokens.
  *         Intentionally distinct from JWT_AUDIENCE to prevent cross-token
@@ -64,7 +138,7 @@ function getSecret() {
  * const token = generateToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateToken(payload) {
-    return jwt.sign(payload, JWT_SECRET, {
+    return jwt.sign(payload, config.jwtSecret, {
         expiresIn: '1h',
         issuer: JWT_ISSUER,
         audience: JWT_AUDIENCE,
@@ -83,7 +157,8 @@ export function generateToken(payload) {
  * const refreshToken = generateRefreshToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateRefreshToken(payload) {
-    return jwt.sign(payload, JWT_REFRESH_SECRET, {
+    const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
+    return jwt.sign(payload, secret, {
         expiresIn: '7d',
         issuer: JWT_ISSUER,
         audience: JWT_REFRESH_AUDIENCE,
@@ -106,7 +181,7 @@ export function generateRefreshToken(payload) {
  */
 export function verifyToken(token) {
     try {
-        const decoded = jwt.verify(token, JWT_SECRET, {
+        const decoded = jwt.verify(token, config.jwtSecret, {
             issuer: JWT_ISSUER,
             audience: JWT_AUDIENCE,
         });
@@ -131,7 +206,8 @@ export function verifyToken(token) {
  */
 export function verifyRefreshToken(token) {
     try {
-        const decoded = jwt.verify(token, JWT_REFRESH_SECRET, {
+        const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
+        const decoded = jwt.verify(token, secret, {
             issuer: JWT_ISSUER,
             audience: JWT_REFRESH_AUDIENCE,
         });
@@ -189,4 +265,205 @@ export function sign(payload, options) {
 export function verify(token, options) {
     const secret = getSecret();
     return jwt.verify(token, secret, options);
+}
+// ===========================================================================
+// ENHANCED ROTATION-AWARE FUNCTIONS
+// ===========================================================================
+/**
+ * Generate an access token with rotation tracking
+ * @param payload - User payload
+ * @param familyId - Token family ID for rotation tracking (generates new if not provided)
+ * @returns Access token with embedded jti and familyId
+ */
+export function generateAccessToken(payload, familyId) {
+    const jti = randomUUID();
+    const family = familyId || randomUUID();
+    const tokenPayload = {
+        ...payload,
+        jti,
+        familyId: family,
+        type: 'access',
+    };
+    return jwt.sign(tokenPayload, JWT_SECRET, {
+        expiresIn: JWT_ACCESS_TOKEN_TTL,
+        algorithm: 'HS256',
+    });
+}
+/**
+ * Generate a refresh token with rotation tracking
+ * @param payload - User payload
+ * @param familyId - Token family ID for rotation tracking (generates new if not provided)
+ * @returns Refresh token with embedded jti and familyId
+ */
+export function generateRefreshTokenWithFamily(payload, familyId) {
+    const jti = randomUUID();
+    const family = familyId || randomUUID();
+    // Initialize or update the family tracking
+    getOrCreateFamily(family, payload.userId);
+    const tokenPayload = {
+        ...payload,
+        jti,
+        familyId: family,
+        type: 'refresh',
+    };
+    return jwt.sign(tokenPayload, JWT_REFRESH_SECRET, {
+        expiresIn: JWT_REFRESH_TOKEN_TTL,
+        algorithm: 'HS256',
+    });
+}
+/**
+ * Generate both access and refresh tokens with family tracking
+ * @param payload - User payload
+ * @param familyId - Token family ID (generates new if not provided)
+ * @returns Token pair with shared familyId
+ */
+export function generateTokenPair(payload, familyId) {
+    const family = familyId || randomUUID();
+    const accessToken = generateAccessToken(payload, family);
+    const refreshToken = generateRefreshTokenWithFamily(payload, family);
+    return { accessToken, refreshToken, familyId: family };
+}
+/**
+ * Verify access token with rotation tracking
+ * @param token - Access token to verify
+ * @throws JWTError variants on failure
+ */
+export function verifyAccessToken(token) {
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET, {
+            clockTimestamp: Math.floor(Date.now() / 1000),
+            clockTolerance: JWT_CLOCK_SKEW_SECONDS,
+        });
+        // Check if token is blacklisted
+        if (decoded.jti && isTokenBlacklisted(decoded.jti)) {
+            throw new JWTError('Token has been revoked', 'TOKEN_REVOKED', 401);
+        }
+        // Validate token type
+        if (decoded.type !== 'access') {
+            throw new JWTError('Token type mismatch', 'TYPE_MISMATCH', 401);
+        }
+        return decoded;
+    }
+    catch (error) {
+        if (error instanceof JWTError)
+            throw error;
+        if (error instanceof jwt.TokenExpiredError) {
+            throw new TokenExpiredError('Access token has expired');
+        }
+        if (error instanceof jwt.JsonWebTokenError) {
+            throw new TokenInvalidError(error.message);
+        }
+        throw new TokenInvalidError();
+    }
+}
+/**
+ * Verify refresh token with rotation and reuse detection
+ * @param token - Refresh token to verify
+ * @throws JWTError variants on failure or detected theft
+ */
+export function verifyRefreshTokenRotationAware(token) {
+    try {
+        const decoded = jwt.verify(token, JWT_REFRESH_SECRET, {
+            clockTimestamp: Math.floor(Date.now() / 1000),
+            clockTolerance: JWT_CLOCK_SKEW_SECONDS,
+        });
+        const { jti, familyId, userId } = decoded;
+        // Validate token type
+        if (decoded.type !== 'refresh') {
+            throw new JWTError('Token type mismatch', 'TYPE_MISMATCH', 401);
+        }
+        // Check blacklist
+        if (jti && isTokenBlacklisted(jti)) {
+            throw new JWTError('Token has been revoked', 'TOKEN_REVOKED', 401);
+        }
+        // Get family and check for reuse/theft
+        const family = getOrCreateFamily(familyId, userId);
+        if (family.concurrentRefreshDetected) {
+            logger.warn('Concurrent refresh detected on compromised family', {
+                familyId,
+                userId,
+                jti,
+            });
+            throw new JWTError('Family marked as compromised due to concurrent refresh', 'FAMILY_COMPROMISED', 401);
+        }
+        // Check if this jti was already used (token reuse = theft signal)
+        if (family.blacklistedJtis.has(jti)) {
+            logger.error('Token reuse detected - possible theft!', {
+                familyId,
+                userId,
+                jti,
+            });
+            family.concurrentRefreshDetected = true;
+            throw new TokenReusedError();
+        }
+        return decoded;
+    }
+    catch (error) {
+        if (error instanceof JWTError)
+            throw error;
+        if (error instanceof jwt.TokenExpiredError) {
+            throw new TokenExpiredError('Refresh token has expired');
+        }
+        if (error instanceof jwt.JsonWebTokenError) {
+            throw new TokenInvalidError(error.message);
+        }
+        throw new TokenInvalidError();
+    }
+}
+/**
+ * Perform refresh with rotation and theft detection
+ * @param refreshToken - Current refresh token
+ * @returns New token pair with advanced family tracking
+ * @throws JWTError variants on failure, including theft detection
+ */
+export function refreshTokenPair(refreshToken) {
+    // Verify and extract claims
+    const decoded = verifyRefreshTokenRotationAware(refreshToken);
+    const { jti: oldJti, familyId, userId, email } = decoded;
+    // Get family
+    const family = getOrCreateFamily(familyId, userId);
+    // Mark old token as used (consumed)
+    family.blacklistedJtis.add(oldJti);
+    family.lastRotation = Date.now();
+    // Generate new token pair with same family
+    const { accessToken, refreshToken: newRefreshToken } = generateTokenPair({ userId, email }, familyId);
+    // Update family's current jti
+    const newDecoded = jwt.decode(newRefreshToken);
+    family.currentJti = newDecoded.jti;
+    logger.info('Token pair refreshed', {
+        userId,
+        familyId,
+        oldJti,
+        newJti: newDecoded.jti,
+    });
+    return { accessToken, refreshToken: newRefreshToken, familyId };
+}
+/**
+ * Revoke a token family (logout all devices)
+ */
+export function revokeTokenFamily(familyId) {
+    const family = tokenFamilies.get(familyId);
+    if (family) {
+        family.blacklistedJtis.forEach((jti) => jtiBlacklist.add(jti));
+        tokenFamilies.delete(familyId);
+        logger.info('Token family revoked', { familyId });
+    }
+}
+/**
+ * Clear old families (cleanup, can be called periodically)
+ * @param maxAgeMs - Maximum age in milliseconds (default: 30 days)
+ */
+export function clearExpiredFamilies(maxAgeMs = 30 * 24 * 60 * 60 * 1000) {
+    const now = Date.now();
+    let cleared = 0;
+    for (const [familyId, family] of tokenFamilies.entries()) {
+        if (now - family.createdAt > maxAgeMs) {
+            tokenFamilies.delete(familyId);
+            cleared++;
+        }
+    }
+    if (cleared > 0) {
+        logger.info('Expired token families cleared', { count: cleared });
+    }
+    return cleared;
 }

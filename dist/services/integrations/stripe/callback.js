@@ -23,7 +23,7 @@ export function isValidStripeOAuthState(state) {
  * Handle Stripe OAuth callback
  * Validates state, exchanges authorization code for tokens, and creates integration record
  */
-export async function handleCallback(params, userId) {
+export async function handleCallback(params, userId, businessId) {
     // Validate required parameters
     const code = params.code?.trim();
     const state = params.state?.trim();
@@ -103,6 +103,7 @@ export async function handleCallback(params, userId) {
     }
     const integrationData = {
         userId,
+        businessId,
         provider: 'stripe',
         externalId: stripeUserId,
         token: {
@@ -113,10 +114,10 @@ export async function handleCallback(params, userId) {
         },
         metadata: {}
     };
-    const existingIntegrations = await IntegrationRepository.listByUserId(userId);
+    const existingIntegrations = await IntegrationRepository.listByBusinessId(businessId);
     const existingStripeIntegration = existingIntegrations.find((integration) => integration.provider === 'stripe' && integration.externalId === stripeUserId);
     if (existingStripeIntegration) {
-        await IntegrationRepository.update(existingStripeIntegration.id, {
+        await IntegrationRepository.update(businessId, existingStripeIntegration.id, {
             token: integrationData.token,
             metadata: integrationData.metadata
         });

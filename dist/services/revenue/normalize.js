@@ -134,3 +134,54 @@ function buildDriftCheck(metric, expected, observed, threshold, driftFlag) {
                 `(expected ${expected.toFixed(4)}, observed ${observed.toFixed(4)}).`,
     };
 }
+// ---------------------------------------------------------------------------
+// Deterministic rounding for reporting endpoints
+// ---------------------------------------------------------------------------
+/**
+ * Round a monetary amount to a fixed number of decimal places using
+ * symmetric half-up rounding (the standard for financial reporting).
+ *
+ * Using string-based rounding avoids IEEE-754 drift that accumulates when
+ * summing many floating-point values (e.g. 0.1 + 0.2 ≠ 0.3 in JS).
+ *
+ * @param value   The raw amount (may be negative for refunds).
+ * @param decimals Number of decimal places. Default: 2.
+ */
+export function roundAmount(value, decimals = 2) {
+    if (!Number.isFinite(value))
+        return 0;
+    const factor = Math.pow(10, decimals);
+    return Math.round((value + Number.EPSILON) * factor) / factor;
+}
+/**
+ * Aggregate a batch of normalized revenue entries by currency.
+ *
+ * Totals are computed with deterministic rounding so that the same input
+ * always produces the same output regardless of floating-point evaluation
+ * order. Each per-currency bucket is rounded independently after summing.
+ *
+ * @param entries  Already-normalized revenue entries.
+ * @param decimals Decimal places for rounding. Default: 2.
+ */
+export function aggregateRevenue(entries, decimals = 2) {
+    const buckets = new Map();
+    for (const entry of entries) {
+        const key = entry.currency;
+        if (!buckets.has(key))
+            buckets.set(key, { payments: 0, refunds: 0, count: 0 });
+        const b = buckets.get(key);
+        if (entry.type === "refund") {
+            b.refunds += entry.amount;
+        }
+        else {
+            b.payments += entry.amount;
+        }
+        b.count += 1;
+    }
+    return Array.from(buckets.entries()).map(([currency, b]) => {
+        const payments = roundAmount(b.payments, decimals);
+        const refunds = roundAmount(b.refunds, decimals);
+        const total = roundAmount(payments + refunds, decimals);
+        return { currency, total, payments, refunds, count: b.count };
+    });
+}

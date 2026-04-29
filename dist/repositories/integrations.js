@@ -12,7 +12,9 @@ export const integrationRepository = {
     },
     findById: (id) => store.find((s) => s.id === id) ?? null,
     findByUserAndProvider: (userId, provider) => store.find((s) => s.userId === userId && s.provider === provider) ?? null,
+    findByBusinessAndProvider: (businessId, provider) => store.find((s) => s.businessId === businessId && s.provider === provider) ?? null,
     listByUser: (userId) => store.filter((s) => s.userId === userId),
+    listByBusiness: (businessId) => store.filter((s) => s.businessId === businessId),
     deleteById: (id) => {
         const idx = store.findIndex((s) => s.id === id);
         if (idx === -1)
