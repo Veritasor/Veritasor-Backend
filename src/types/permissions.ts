@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * Granular permission types for integration operations
  * 
@@ -31,6 +33,31 @@ export enum IntegrationPermission {
   ADMIN_MANAGE_USERS = 'admin:manage:users',
   ADMIN_READ_AUDIT_LOGS = 'admin:read:audit_logs',
 }
+
+/**
+ * Zod schema for runtime validation of IntegrationPermission
+ */
+export const IntegrationPermissionSchema = z.nativeEnum(IntegrationPermission);
+
+/**
+ * Exhaustive metadata for all permissions.
+ * The use of Record<IntegrationPermission, ...> ensures that any new permission added
+ * to the enum must be documented here or the code will fail to compile.
+ */
+export const PERMISSION_METADATA: Record<IntegrationPermission, { description: string }> = {
+  [IntegrationPermission.READ_AVAILABLE]: { description: 'View available integration providers' },
+  [IntegrationPermission.READ_CONNECTED]: { description: 'View currently connected integrations' },
+  [IntegrationPermission.READ_OWN]: { description: 'View details of own integrations' },
+  [IntegrationPermission.CONNECT]: { description: 'Connect a new integration provider' },
+  [IntegrationPermission.DISCONNECT_OWN]: { description: 'Disconnect own integrations' },
+  [IntegrationPermission.DISCONNECT_ANY]: { description: 'Disconnect any integration (admin)' },
+  [IntegrationPermission.MANAGE_OWN]: { description: 'Manage settings for own integrations' },
+  [IntegrationPermission.MANAGE_ANY]: { description: 'Manage settings for any integration (admin)' },
+  [IntegrationPermission.ADMIN]: { description: 'Full administrative access to integrations' },
+  [IntegrationPermission.ADMIN_READ_STATS]: { description: 'Read platform-wide integration statistics' },
+  [IntegrationPermission.ADMIN_MANAGE_USERS]: { description: 'Manage platform users and their roles' },
+  [IntegrationPermission.ADMIN_READ_AUDIT_LOGS]: { description: 'Read platform security and audit logs' },
+};
 
 /**
  * Permission sets by role
