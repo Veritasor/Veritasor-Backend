@@ -101,6 +101,55 @@ npm run test:coverage
   - `integrations.test.ts` - Integrations API tests (list, connect, disconnect, OAuth flow)
 - `unit/services/` - Unit tests for service-layer modules
   - `merkle.test.ts` - Merkle tree construction, proof generation/verification, and performance guardrail tests
+  - `soroban/client.test.ts` - Soroban RPC client retry/timeout/circuit-breaker policy, and `getAttestation` staleness contract
+
+---
+
+## `getAttestation` — Staleness Contract and Cache-Busting
+
+Tests in `tests/unit/services/soroban/client.test.ts` under the
+`"getAttestation staleness contract"` suite verify the documented caching
+behaviour of `src/services/soroban/getAttestation.ts`.
+
+### What is tested
+
+| Test | Scenario | Expected behaviour |
+|------|----------|--------------------|
+| No in-process caching | Two successive calls | Each call hits `simulateTransaction` independently; second call returns updated data |
+| Revocation lag | Attestation exists, then revoked | Second call returns `null` — no stale cache hit |
+| Read-your-writes | No attestation, then written | Second call returns the new record without cache invalidation |
+| Transport error propagation | RPC throws `ECONNRESET` | Error is re-thrown; not swallowed |
+| Contract simulation error | Contract panics | Returns `null` |
+| Missing contract ID | `SOROBAN_CONTRACT_ID` unset | Throws with a clear configuration error |
+
+### Staleness windows (informational)
+
+These are **not enforced by the function** — they are documented for callers
+that implement their own cache layer:
+
+| Event | Safe re-query window |
+|-------|----------------------|
+| Ledger close (Testnet / Mainnet) | ~5–6 s |
+| Write visibility after `submitAttestation` | ≤ 10–15 s |
+| Revocation visibility | ≤ one ledger close (~5 s) |
+| Recommended client-cache TTL | ≤ 10 s |
+
+### Threat model notes
+
+- **Stale data must never gate authorization.** A cached attestation that has
+  since been revoked would allow a revoked business to pass checks. Always
+  re-query at the point of enforcement.
+- **Read-your-writes is not guaranteed by the RPC layer.** If the RPC node is
+  lagging, a write may not be visible immediately. Poll with backoff or wait
+  for `latestLedger >= ledgerSequence` before treating a missing result as
+  authoritative.
+- **No server-side cache exists.** The function is stateless; there is nothing
+  to bust. Client-side caches must be invalidated after every write or
+  revocation event.
+- **Webhook and integration consumers** that cache attestation results must
+  subscribe to revocation events (or use a short TTL) to avoid acting on
+  stale data. See `docs/threat-model-idempotency.md` and
+  `docs/integrations-permissions.md`.
 
 ---
 
