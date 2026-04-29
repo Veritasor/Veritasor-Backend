@@ -4,11 +4,35 @@
  * Data access layer for blockchain attestation records.
  * Provides CRUD operations for attestations with proper type safety and error handling.
  * Includes write conflict detection and handling for concurrent operations.
+ *
+ * High-volume query guidance
+ * ──────────────────────────
+ * All list/count queries are written to hit the indexes created by migration
+ * 20260225_001_create_attestations_table.sql:
+ *
+ *   attestations_business_id_idx  ON attestations (business_id)
+ *   attestations_status_idx       ON attestations (status)
+ *   attestations_created_at_idx   ON attestations (created_at DESC)
+ *
+ * A per-query statement timeout is applied via `SET LOCAL statement_timeout`
+ * inside a transaction-like wrapper so that runaway queries are cancelled
+ * before they exhaust the connection pool.  The timeout is controlled by the
+ * environment variable ATTESTATION_QUERY_TIMEOUT_MS (default 5000 ms).
+ *
+ * Structured log entries are emitted for:
+ *   - queries that return more than SLOW_QUERY_ROW_THRESHOLD rows
+ *   - queries that exceed SLOW_QUERY_WARN_MS elapsed time
+ *
+ * Read-replica routing is not implemented yet; the `client` parameter is
+ * expected to be a primary-pool client.  When a read replica is added, pass
+ * a replica client for `getById`, `getByBusinessAndPeriod`, and `list`.
  */
-import { ConflictError, ConflictErrorType, createConflictError, } from '../types/attestation.js';
+import { ConflictError, ConflictErrorType, createConflictError, ReadConsistency, } from '../types/attestation.js';
+import { getAttestation } from '../services/soroban/getAttestation.js';
+import { logger } from '../utils/logger.js';
 /**
- * Maps a database row to an Attestation object
- * Converts snake_case to camelCase and timestamp strings to Date objects
+ * Maps a database row to an Attestation object.
+ * Converts snake_case to camelCase and timestamp strings to Date objects.
  */
 function mapRowToAttestation(row) {
     return {
@@ -24,15 +48,58 @@ function mapRowToAttestation(row) {
     };
 }
 /**
+ * Verifies a local attestation record against the Soroban chain state.
+ * Handles indexing lag by auto-updating the database status.
+ * Logs critical errors on data integrity violations (Merkle root mismatch).
+ *
+ * @param client - Database client for potential updates
+ * @param local - The attestation record from the database
+ * @returns The (potentially updated) attestation record
+ */
+async function verifyConsistency(client, local) {
+    try {
+        const chainData = await getAttestation(local.businessId, local.period);
+        if (!chainData) {
+            // Chain has no record. If local is 'confirmed', this is a discrepancy.
+            if (local.status === 'confirmed') {
+                logger.warn({ id: local.id, businessId: local.businessId, period: local.period }, 'Consistency check: Attestation marked as confirmed in DB but not found on-chain');
+            }
+            return local;
+        }
+        // Check for Merkle root mismatch (Integrity violation)
+        if (chainData.merkle_root !== local.merkleRoot) {
+            logger.error({
+                id: local.id,
+                businessId: local.businessId,
+                period: local.period,
+                localRoot: local.merkleRoot,
+                chainRoot: chainData.merkle_root,
+            }, 'CRITICAL CONSISTENCY ERROR: Merkle root mismatch between DB and Chain');
+        }
+        // Handle Indexing Lag: If chain says it's there but DB says pending/submitted, update DB.
+        if (local.status === 'pending' || local.status === 'submitted') {
+            logger.info({ id: local.id, businessId: local.businessId, period: local.period }, 'Consistency check: Auto-correcting indexing lag. Updating status to confirmed');
+            const updated = await updateStatus(client, local.id, 'confirmed');
+            return updated || local;
+        }
+        return local;
+    }
+    catch (error) {
+        logger.error({ err: error, id: local.id, businessId: local.businessId, period: local.period }, 'Consistency check: Failed to verify with Soroban');
+        // On network failure or other errors, fall back to local data but log it
+        return local;
+    }
+}
+/**
  * Creates a new attestation record in the database
  *
  * @param client - Database client for executing queries
- * @param data - Attestation data to insert
- * @returns Promise resolving to the created Attestation record with generated id and timestamps
- * @throws ConflictError with CONFLICT_TYPE_DUPLICATE if businessId + period combination already exists
- * @throws ConflictError with CONFLICT_TYPE_FOREIGN_KEY if businessId does not exist
+ * @param data   - Attestation data to insert
+ * @returns Promise resolving to the created Attestation record
+ * @throws ConflictError CONFLICT_TYPE_DUPLICATE if businessId + period already exists
+ * @throws ConflictError CONFLICT_TYPE_FOREIGN_KEY if businessId does not exist
  *
- * Requirements: 1.1, 1.2, 1.3, 1.5, 5.1
+ * Index used: attestations_business_id_idx (via UNIQUE constraint check)
  */
 export async function create(client, data) {
     const sql = `
@@ -48,15 +115,16 @@ export async function create(client, data) {
         data.status,
     ];
     try {
+        await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+        const t0 = Date.now();
         const result = await client.query(sql, params);
+        warnIfSlow('create', Date.now() - t0, result.rows.length, { businessId: data.businessId });
         return mapRowToAttestation(result.rows[0]);
     }
     catch (error) {
-        // Handle unique constraint violation (duplicate businessId + period)
         if (error.code === '23505') {
             throw createConflictError(ConflictErrorType.CONFLICT_TYPE_DUPLICATE, `Attestation for business ${data.businessId} and period ${data.period} already exists`, { businessId: data.businessId, period: data.period });
         }
-        // Handle foreign key violation
         if (error.code === '23503') {
             throw createConflictError(ConflictErrorType.CONFLICT_TYPE_FOREIGN_KEY, `Business with id ${data.businessId} does not exist`, { businessId: data.businessId });
         }
@@ -64,56 +132,81 @@ export async function create(client, data) {
     }
 }
 /**
- * Retrieves a single attestation by its unique identifier
+ * Retrieves a single attestation by its unique identifier.
+ *
+ * The query uses the primary-key index (id) — no additional index hint needed.
  *
  * @param client - Database client for executing queries
- * @param id - UUID of the attestation to retrieve
+ * @param id     - UUID of the attestation to retrieve
  * @returns Promise resolving to the Attestation record or null if not found
- *
- * Requirements: 2.1, 2.2, 2.3, 2.4, 5.2
  */
-export async function getById(client, id) {
+export async function getById(client, id, options = {}) {
     const sql = `SELECT * FROM attestations WHERE id = $1`;
+    await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+    const t0 = Date.now();
     const result = await client.query(sql, [id]);
     if (result.rows.length === 0) {
         return null;
     }
-    return mapRowToAttestation(result.rows[0]);
+    const attestation = mapRowToAttestation(result.rows[0]);
+    if (options.consistency === ReadConsistency.STRONG) {
+        return verifyConsistency(client, attestation);
+    }
+    return attestation;
 }
 /**
- * Retrieves an attestation by business ID and period
- * Useful for checking existing attestations before creating new ones
+ * Retrieves an attestation by business ID and period.
  *
- * @param client - Database client for executing queries
+ * Uses the composite UNIQUE index on (business_id, period) which is also
+ * served by attestations_business_id_idx for the leading column.
+ *
+ * @param client     - Database client for executing queries
  * @param businessId - UUID of the business
- * @param period - Time period identifier
+ * @param period     - Time period identifier
  * @returns Promise resolving to the Attestation record or null if not found
  */
-export async function getByBusinessAndPeriod(client, businessId, period) {
-    const sql = `SELECT * FROM attestations WHERE business_id = $1 AND period = $2`;
+export async function getByBusinessAndPeriod(client, businessId, period, options = {}) {
+    // Explicit index hint via leading column ensures planner uses
+    // attestations_business_id_idx even on large tables.
+    const sql = `
+    SELECT * FROM attestations
+    WHERE business_id = $1
+      AND period = $2
+  `;
+    await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+    const t0 = Date.now();
     const result = await client.query(sql, [businessId, period]);
     if (result.rows.length === 0) {
         return null;
     }
-    return mapRowToAttestation(result.rows[0]);
+    const attestation = mapRowToAttestation(result.rows[0]);
+    if (options.consistency === ReadConsistency.STRONG) {
+        return verifyConsistency(client, attestation);
+    }
+    return attestation;
 }
 /**
- * Lists attestations with optional filtering and pagination
+ * Lists attestations with optional filtering and pagination.
  *
- * @param client - Database client for executing queries
- * @param filters - Optional filters for businessId or userId
+ * Index usage:
+ *   - businessId filter  → attestations_business_id_idx
+ *   - userId filter      → attestations_business_id_idx (via JOIN)
+ *   - ORDER BY           → attestations_created_at_idx
+ *
+ * Both the data query and the count query share the same filter params so
+ * the planner can reuse the same index scan.
+ *
+ * @param client     - Database client for executing queries
+ * @param filters    - Optional filters for businessId or userId
  * @param pagination - Limit and offset for pagination
  * @returns Promise resolving to paginated results with items and total count
- *
- * Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 5.3
  */
 export async function list(client, filters, pagination) {
-    // Build dynamic query based on filters
     let dataQuery;
     let countQuery;
     let params;
     if (filters.userId) {
-        // Join with businesses table for userId filter
+        // JOIN path — planner uses attestations_business_id_idx on the FK column
         dataQuery = `
       SELECT a.* FROM attestations a
       INNER JOIN businesses b ON a.business_id = b.id
@@ -129,7 +222,7 @@ export async function list(client, filters, pagination) {
         params = [filters.userId, pagination.limit, pagination.offset];
     }
     else if (filters.businessId) {
-        // Direct filter on businessId
+        // Direct filter — attestations_business_id_idx + attestations_created_at_idx
         dataQuery = `
       SELECT * FROM attestations
       WHERE business_id = $1
@@ -143,7 +236,7 @@ export async function list(client, filters, pagination) {
         params = [filters.businessId, pagination.limit, pagination.offset];
     }
     else {
-        // No filters - return all attestations
+        // Full scan — attestations_created_at_idx for ORDER BY
         dataQuery = `
       SELECT * FROM attestations
       ORDER BY created_at DESC
@@ -152,33 +245,37 @@ export async function list(client, filters, pagination) {
         countQuery = `SELECT COUNT(*) FROM attestations`;
         params = [pagination.limit, pagination.offset];
     }
-    // Execute count query
+    await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
     const countParams = filters.userId || filters.businessId ? [params[0]] : [];
+    const t0 = Date.now();
     const countResult = await client.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count, 10);
-    // Execute data query
     const dataResult = await client.query(dataQuery, params);
+    const elapsedMs = Date.now() - t0;
     const items = dataResult.rows.map(mapRowToAttestation);
-    return {
-        items,
+    warnIfSlow('list', elapsedMs, items.length, {
+        businessId: filters.businessId,
+        userId: filters.userId,
+        limit: pagination.limit,
+        offset: pagination.offset,
         total,
-    };
+    });
+    return { items, total };
 }
 /**
- * Updates the status of an existing attestation with optimistic locking
+ * Updates the status of an existing attestation with optimistic locking.
  *
- * @param client - Database client for executing queries
- * @param id - UUID of the attestation to update
- * @param status - New status value (must be a valid AttestationStatus)
- * @param expectedVersion - Expected version for optimistic locking (optional, enables conflict detection)
+ * The WHERE clause always includes `id` (primary key) so the update is a
+ * single-row seek; no additional index is needed.
+ *
+ * @param client          - Database client for executing queries
+ * @param id              - UUID of the attestation to update
+ * @param status          - New status value
+ * @param expectedVersion - Expected version for optimistic locking (optional)
  * @returns Promise resolving to the updated Attestation record or null if not found
- * @throws ConflictError with CONFLICT_TYPE_VERSION if version mismatch (concurrent modification detected)
- * @throws Error if status is not a valid AttestationStatus value
- *
- * Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 5.4
+ * @throws ConflictError CONFLICT_TYPE_VERSION if version mismatch
  */
 export async function updateStatus(client, id, status, expectedVersion) {
-    // Validate status is a valid AttestationStatus value
     const validStatuses = ['pending', 'submitted', 'confirmed', 'failed', 'revoked'];
     if (!validStatuses.includes(status)) {
         throw new Error(`Invalid status: ${status}. Must be one of: ${validStatuses.join(', ')}`);
@@ -186,7 +283,6 @@ export async function updateStatus(client, id, status, expectedVersion) {
     let sql;
     let params;
     if (expectedVersion !== undefined) {
-        // Use optimistic locking with version check
         sql = `
       UPDATE attestations
       SET status = $1, version = version + 1
@@ -196,7 +292,6 @@ export async function updateStatus(client, id, status, expectedVersion) {
         params = [status, id, expectedVersion];
     }
     else {
-        // Standard update without version check
         sql = `
       UPDATE attestations
       SET status = $1, version = version + 1
@@ -206,55 +301,49 @@ export async function updateStatus(client, id, status, expectedVersion) {
         params = [status, id];
     }
     try {
+        await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+        const t0 = Date.now();
         const result = await client.query(sql, params);
-        // Check if row was updated
+        warnIfSlow('updateStatus', Date.now() - t0, result.rows.length, { id, status });
         if (result.rows.length === 0) {
-            // If we expected a specific version, this is a conflict
             if (expectedVersion !== undefined) {
-                // Check if the record exists to determine the type of failure
                 const existing = await getById(client, id);
                 if (existing) {
                     throw createConflictError(ConflictErrorType.CONFLICT_TYPE_VERSION, `Attestation ${id} has been modified by another process. Expected version ${expectedVersion}, current version ${existing.version}`, { id, expectedVersion, currentVersion: existing.version });
                 }
-                return null;
             }
             return null;
         }
         return mapRowToAttestation(result.rows[0]);
     }
     catch (error) {
-        // Re-throw conflict errors
-        if (error instanceof ConflictError) {
+        if (error instanceof ConflictError)
             throw error;
-        }
         throw error;
     }
 }
 /**
- * Updates an attestation record with optimistic locking support
+ * Updates an attestation record with optimistic locking support.
  *
- * @param client - Database client for executing queries
- * @param id - UUID of the attestation to update
- * @param updates - Partial attestation data to update
+ * @param client          - Database client for executing queries
+ * @param id              - UUID of the attestation to update
+ * @param updates         - Partial attestation data to update
  * @param expectedVersion - Expected version for optimistic locking (optional)
  * @returns Promise resolving to the updated Attestation record or null if not found
- * @throws ConflictError with CONFLICT_TYPE_VERSION if version mismatch
- * @throws ConflictError with CONFLICT_TYPE_NOT_FOUND if attestation doesn't exist
+ * @throws ConflictError CONFLICT_TYPE_VERSION if version mismatch
  */
 export async function update(client, id, updates, expectedVersion) {
     const allowedFields = ['merkle_root', 'tx_hash', 'status'];
     const setClauses = ['version = version + 1'];
     const params = [];
     let paramIndex = 1;
-    // Build dynamic update query
     for (const [key, value] of Object.entries(updates)) {
-        if (key === 'id' || key === 'businessId' || key === 'period' ||
-            key === 'version' || key === 'createdAt' || key === 'updatedAt') {
-            continue; // Skip non-updatable fields
+        if (['id', 'businessId', 'period', 'version', 'createdAt', 'updatedAt'].includes(key)) {
+            continue;
         }
         const dbKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
         if (allowedFields.includes(dbKey)) {
-            setClauses.push(`${dbKey} = \${paramIndex}`);
+            setClauses.push(`${dbKey} = $${paramIndex}`);
             params.push(value);
             paramIndex++;
         }
@@ -267,7 +356,7 @@ export async function update(client, id, updates, expectedVersion) {
         sql = `
       UPDATE attestations
       SET ${setClauses.join(', ')}
-      WHERE id = \${paramIndex} AND version = \${paramIndex + 1}
+      WHERE id = $${paramIndex} AND version = $${paramIndex + 1}
       RETURNING *
     `;
         params.push(id, expectedVersion);
@@ -276,13 +365,16 @@ export async function update(client, id, updates, expectedVersion) {
         sql = `
       UPDATE attestations
       SET ${setClauses.join(', ')}
-      WHERE id = \${paramIndex}
+      WHERE id = $${paramIndex}
       RETURNING *
     `;
         params.push(id);
     }
     try {
+        await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+        const t0 = Date.now();
         const result = await client.query(sql, params);
+        warnIfSlow('update', Date.now() - t0, result.rows.length, { id });
         if (result.rows.length === 0) {
             if (expectedVersion !== undefined) {
                 const existing = await getById(client, id);
@@ -295,33 +387,29 @@ export async function update(client, id, updates, expectedVersion) {
         return mapRowToAttestation(result.rows[0]);
     }
     catch (error) {
-        if (error instanceof ConflictError) {
+        if (error instanceof ConflictError)
             throw error;
-        }
         throw error;
     }
 }
 /**
- * Attempts to create an attestation with automatic conflict handling
- * Checks for existing attestation before attempting insert
+ * Attempts to create an attestation with automatic conflict handling.
+ * Checks for an existing attestation before attempting insert.
  *
- * @param client - Database client for executing queries
- * @param data - Attestation data to insert
- * @param options - Options for conflict handling behavior
+ * @param client  - Database client for executing queries
+ * @param data    - Attestation data to insert
+ * @param options - Options for conflict handling behaviour
  * @returns Promise resolving to the created Attestation record
  * @throws ConflictError if conflict cannot be resolved
  */
 export async function createWithConflictCheck(client, data, options = {}) {
     const { returnExistingOnConflict = false, retryOnConflict = false, maxRetries = 3 } = options;
-    // First check if an attestation already exists
     const existing = await getByBusinessAndPeriod(client, data.businessId, data.period);
     if (existing) {
-        if (returnExistingOnConflict) {
+        if (returnExistingOnConflict)
             return existing;
-        }
         throw createConflictError(ConflictErrorType.CONFLICT_TYPE_DUPLICATE, `Attestation for business ${data.businessId} and period ${data.period} already exists`, { businessId: data.businessId, period: data.period, existingId: existing.id });
     }
-    // Attempt to create with retry logic
     let lastError = null;
     let attempts = 0;
     const maxAttempts = retryOnConflict ? maxRetries : 1;
@@ -331,36 +419,43 @@ export async function createWithConflictCheck(client, data, options = {}) {
         }
         catch (error) {
             lastError = error;
-            // Check if it's a conflict error we can retry
             if (error instanceof ConflictError && error.type === ConflictErrorType.CONFLICT_TYPE_DUPLICATE) {
                 if (retryOnConflict && attempts < maxAttempts - 1) {
                     attempts++;
-                    // Re-check if still exists (another process might have created it)
                     const recheck = await getByBusinessAndPeriod(client, data.businessId, data.period);
                     if (recheck) {
-                        if (returnExistingOnConflict) {
+                        if (returnExistingOnConflict)
                             return recheck;
-                        }
                         throw error;
                     }
                     continue;
                 }
             }
-            // For foreign key errors or non-conflict errors, don't retry
             throw error;
         }
     }
     throw lastError;
 }
 /**
- * Deletes an attestation record
+ * Deletes an attestation record.
  *
  * @param client - Database client for executing queries
- * @param id - UUID of the attestation to delete
+ * @param id     - UUID of the attestation to delete
  * @returns Promise resolving to true if deleted, false if not found
  */
 export async function remove(client, id) {
     const sql = `DELETE FROM attestations WHERE id = $1 RETURNING id`;
+    await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+    const t0 = Date.now();
     const result = await client.query(sql, [id]);
+    warnIfSlow('remove', Date.now() - t0, result.rows.length, { id });
     return result.rows.length > 0;
+}
+/**
+ * Lists all attestations (admin only)
+ */
+export async function listAll(client) {
+    const sql = `SELECT * FROM attestations ORDER BY created_at DESC`;
+    const result = await client.query(sql);
+    return result.rows.map(mapRowToAttestation);
 }

@@ -3,8 +3,13 @@ import {
   PermissionService,
   requirePermissions
 } from "../../src/middleware/permissions.js";
-import { IntegrationPermission } from "../../src/types/permissions.js";
+import {
+  IntegrationPermission,
+  IntegrationPermissionSchema,
+  PERMISSION_METADATA
+} from "../../src/types/permissions.js";
 import { Request, Response, NextFunction } from "express";
+import "../../src/middleware/requireBusinessAuth.js";
 
 describe("PermissionService", () => {
   describe("getUserPermissions", () => {
@@ -138,6 +143,61 @@ describe("PermissionService", () => {
   });
 });
 
+describe("IntegrationPermission Exhaustive Checks", () => {
+  const allPermissions = Object.values(IntegrationPermission);
+
+  it("should have metadata for every permission", () => {
+    allPermissions.forEach((permission) => {
+      expect(PERMISSION_METADATA[permission]).toBeDefined();
+      expect(typeof PERMISSION_METADATA[permission].description).toBe("string");
+      expect(PERMISSION_METADATA[permission].description.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("should include every permission in the admin role", () => {
+    const adminPermissions = PermissionService.getUserPermissions("admin");
+    allPermissions.forEach((permission) => {
+      expect(adminPermissions).toContain(permission);
+    });
+  });
+
+  it("should validate all valid permissions using IntegrationPermissionSchema", () => {
+    allPermissions.forEach((permission) => {
+      const result = IntegrationPermissionSchema.safeParse(permission);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data).toBe(permission);
+      }
+    });
+  });
+
+  it("should reject invalid permission strings", () => {
+    const invalidInputs = [
+      "",
+      "invalid:permission",
+      "integrations:read", // partial
+      "ADMIN", // wrong case
+      123,
+      null,
+      {},
+    ];
+
+    invalidInputs.forEach((input) => {
+      const result = IntegrationPermissionSchema.safeParse(input);
+      expect(result.success).toBe(false);
+    });
+  });
+
+  it("should catch unhandled permissions (compile-time check simulation)", () => {
+    // This test ensures that the Record type in PERMISSION_METADATA is working.
+    // While we can't easily test compile-time failure at runtime,
+    // the very existence of PERMISSION_METADATA as a Record<IntegrationPermission, ...>
+    // in the source code is the primary guard.
+    const metadataKeys = Object.keys(PERMISSION_METADATA);
+    expect(metadataKeys.length).toBe(allPermissions.length);
+  });
+});
+
 describe("requirePermissions middleware", () => {
   let mockReq: Partial<Request>;
   let mockRes: Partial<Response>;
@@ -145,14 +205,15 @@ describe("requirePermissions middleware", () => {
 
   beforeEach(() => {
     mockReq = {
-      user: { userId: "user_123", email: "test@example.com" },
+      user: { id: "user_123", userId: "user_123", email: "test@example.com" },
       headers: {},
+      params: {},
     };
     mockRes = {
       status: vi.fn().mockReturnThis(),
       json: vi.fn().mockReturnThis(),
     };
-    mockNext = vi.fn();
+    mockNext = vi.fn() as unknown as NextFunction;
   });
 
   it("should call next when user has required permissions", async () => {
@@ -240,7 +301,8 @@ describe("requirePermissions middleware", () => {
       customCheck,
     });
 
-    mockReq.params = { id: "integration_123" };
+    mockReq.params = { id: "biz_123_int" };
+    mockReq.headers = { "x-business-id": "biz_123" };
 
     await middleware(mockReq as Request, mockRes as Response, mockNext);
 
@@ -255,7 +317,8 @@ describe("requirePermissions middleware", () => {
       customCheck,
     });
 
-    mockReq.params = { id: "integration_123" };
+    mockReq.params = { id: "biz_123_int" };
+    mockReq.headers = { "x-business-id": "biz_123" };
 
     await middleware(mockReq as Request, mockRes as Response, mockNext);
 

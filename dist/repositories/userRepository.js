@@ -38,12 +38,17 @@ export async function createUser(email, passwordHash) {
         passwordHash,
         createdAt: now,
         updatedAt: now,
+        role: 'user', // Default role
     };
     const stored = saveUser(user);
     return cloneUser(stored);
 }
 /**
  * Find user by email
+ *
+ * @expectedIndex `email` (Unique)
+ * @migrationNote Ensure a unique B-tree index exists on the `email` column
+ * to prevent duplicate signups and allow fast exact-match lookups during login.
  */
 export async function findUserByEmail(email) {
     const userId = emailIndex.get(email);
@@ -54,6 +59,10 @@ export async function findUserByEmail(email) {
 }
 /**
  * Find user by ID
+ *
+ * @expectedIndex `id` (Primary Key)
+ * @migrationNote The `id` column should be the primary key of the users table
+ * with an implicit unique index for O(1) or O(log N) lookups.
  */
 export async function findUserById(id) {
     const user = users.get(id);
@@ -81,6 +90,7 @@ export async function updateUser(userId, updates) {
             : updates.resetTokenExpiry !== undefined
                 ? updates.resetTokenExpiry
                 : current.resetTokenExpiry,
+        role: updates.role ?? current.role,
         updatedAt: new Date(),
     };
     if (current.email !== next.email) {
@@ -110,6 +120,12 @@ export async function setResetToken(userId, token, expiryMinutes = 30) {
 }
 /**
  * Find user by reset token
+ *
+ * @expectedIndex `resetToken` (or composite `(resetToken, resetTokenExpiry)`)
+ * @migrationNote A standard index on `resetToken` is required. For high-volume
+ * systems, a composite index on `(resetToken, resetTokenExpiry)` can optimize
+ * queries that filter out expired tokens. Also, consider partial indexes if
+ * the database supports them (e.g. `WHERE resetToken IS NOT NULL`).
  */
 export async function findUserByResetToken(token) {
     for (const user of users.values()) {
@@ -131,6 +147,12 @@ export async function deleteUser(userId) {
     emailIndex.delete(user.email);
     users.delete(userId);
     return true;
+}
+/**
+ * Get all users (admin only)
+ */
+export async function getAllUsers() {
+    return Array.from(users.values()).map(cloneUser);
 }
 /**
  * Clear all users (testing/cleanup only)

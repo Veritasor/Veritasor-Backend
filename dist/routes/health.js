@@ -16,6 +16,22 @@
  * @rate_limit - Not subject to rate limiting (health checks should be lightweight)
  */
 import { Router } from "express";
+import { z } from "zod";
+/**
+ * Stable JSON schema for health check response.
+ * Used for validation and documentation of the load balancer probe contract.
+ */
+export const HealthDependencyStatusSchema = z.enum(["ok", "down"]);
+export const HealthResponseSchema = z.object({
+    status: z.enum(["ok", "degraded", "unhealthy"]),
+    service: z.literal("veritasor-backend"),
+    timestamp: z.string().datetime(),
+    mode: z.enum(["shallow", "deep"]),
+    db: HealthDependencyStatusSchema.optional(),
+    redis: HealthDependencyStatusSchema.optional(),
+    soroban: HealthDependencyStatusSchema.optional(),
+    email: HealthDependencyStatusSchema.optional(),
+});
 const PING_TIMEOUT_MS = 2000;
 /**
  * Utility to wrap a promise with a timeout.

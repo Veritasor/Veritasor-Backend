@@ -1,98 +1,113 @@
-const dbClient = {
-    async query() {
-        throw new Error('DB client is not configured');
-    },
-};
-function toBusiness(row) {
-    return {
-        id: row.id,
-        userId: row.user_id,
-        name: row.name,
-        email: row.email,
-        industry: row.industry,
-        description: row.description,
-        website: row.website,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-    };
-}
+import crypto from 'crypto';
+// In-memory storage for businesses
+const businesses = new Map();
 export async function create(data) {
-    const result = await dbClient.query(`
-      INSERT INTO businesses (user_id, name, email, industry, description, website)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id, user_id, name, email, industry, description, website, created_at, updated_at
-    `, [
-        data.userId,
-        data.name,
-        data.email,
-        data.industry ?? null,
-        data.description ?? null,
-        data.website ?? null,
-    ]);
-    return toBusiness(result.rows[0]);
+    const now = new Date().toISOString();
+    const business = {
+        id: crypto.randomUUID(),
+        userId: data.userId,
+        name: data.name,
+        email: data.email,
+        industry: data.industry ?? null,
+        description: data.description ?? null,
+        website: data.website ?? null,
+        createdAt: now,
+        updatedAt: now,
+    };
+    businesses.set(business.id, business);
+    return { ...business };
 }
 export async function getById(id) {
-    const result = await dbClient.query(`
-      SELECT id, user_id, name, email, industry, description, website, created_at, updated_at
-      FROM businesses
-      WHERE id = $1
-      LIMIT 1
-    `, [id]);
-    return result.rows[0] ? toBusiness(result.rows[0]) : null;
+    const business = businesses.get(id);
+    return business ? { ...business } : null;
 }
 export async function getByUserId(userId) {
-    const result = await dbClient.query(`
-      SELECT id, user_id, name, email, industry, description, website, created_at, updated_at
-      FROM businesses
-      WHERE user_id = $1
-      LIMIT 1
-    `, [userId]);
-    return result.rows[0] ? toBusiness(result.rows[0]) : null;
+    for (const business of businesses.values()) {
+        if (business.userId === userId) {
+            return { ...business };
+        }
+    }
+    return null;
 }
 export async function getAll() {
+    return Array.from(businesses.values()).map(b => ({ ...b }));
+}
+export async function list(options) {
+    const { limit, cursor, sortBy, sortOrder, industry } = options;
+    const sortColumn = sortBy === 'createdAt' ? 'created_at' : 'name';
+    const op = sortOrder === 'asc' ? '>' : '<';
+    const values = [];
+    const conditions = [];
+    if (industry !== undefined) {
+        values.push(industry);
+        conditions.push(`industry = $${values.length}`);
+    }
+    if (cursor) {
+        try {
+            const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
+            if (decoded.value !== undefined && decoded.id !== undefined) {
+                values.push(decoded.value);
+                values.push(decoded.id);
+                const valIdx = values.length - 1;
+                const idIdx = values.length;
+                conditions.push(`(${sortColumn}, id) ${op} ($${valIdx}, $${idIdx})`);
+            }
+        }
+        catch (e) {
+            // Ignore invalid cursor
+        }
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const orderClause = `ORDER BY ${sortColumn} ${sortOrder === 'asc' ? 'ASC' : 'DESC'}, id ${sortOrder === 'asc' ? 'ASC' : 'DESC'}`;
+    values.push(limit + 1);
+    const limitIdx = values.length;
     const result = await dbClient.query(`
       SELECT id, user_id, name, email, industry, description, website, created_at, updated_at
       FROM businesses
-    `);
-    return result.rows.map(toBusiness);
+      ${whereClause}
+      ${orderClause}
+      LIMIT $${limitIdx}
+    `, values);
+    const hasMore = result.rows.length > limit;
+    const rowsToReturn = hasMore ? result.rows.slice(0, limit) : result.rows;
+    const items = rowsToReturn.map(toBusiness);
+    let nextCursor;
+    if (hasMore) {
+        const lastItem = items[items.length - 1];
+        const sortValue = sortBy === 'createdAt' ? lastItem.createdAt : lastItem.name;
+        nextCursor = Buffer.from(JSON.stringify({ value: sortValue, id: lastItem.id })).toString('base64');
+    }
+    return { items, nextCursor };
 }
 export async function update(id, data) {
-    const updates = [];
-    const values = [];
-    if (data.name !== undefined) {
-        values.push(data.name);
-        updates.push(`name = $${values.length}`);
-    }
-    if (data.industry !== undefined) {
-        values.push(data.industry);
-        updates.push(`industry = $${values.length}`);
-    }
-    if (data.description !== undefined) {
-        values.push(data.description);
-        updates.push(`description = $${values.length}`);
-    }
-    if (data.website !== undefined) {
-        values.push(data.website);
-        updates.push(`website = $${values.length}`);
-    }
-    if (updates.length === 0) {
-        return getById(id);
-    }
-    values.push(id);
-    const result = await dbClient.query(`
-      UPDATE businesses
-      SET ${updates.join(", ")}, updated_at = NOW()
-      WHERE id = $${values.length}
-      RETURNING id, user_id, name, email, industry, description, website, created_at, updated_at
-    `, values);
-    return result.rows[0] ? toBusiness(result.rows[0]) : null;
+    const business = businesses.get(id);
+    if (!business)
+        return null;
+    if (data.name !== undefined)
+        business.name = data.name;
+    if (data.industry !== undefined)
+        business.industry = data.industry;
+    if (data.description !== undefined)
+        business.description = data.description;
+    if (data.website !== undefined)
+        business.website = data.website;
+    business.updatedAt = new Date().toISOString();
+    return { ...business };
+}
+/**
+ * Clear all businesses from storage (for testing purposes)
+ */
+export function clearAll() {
+    businesses.clear();
 }
 export const businessRepository = {
     create,
     getById,
     getByUserId,
     getAll,
+    list,
     update,
     findById: getById,
     findByUserId: getByUserId,
+    clearAll,
 };

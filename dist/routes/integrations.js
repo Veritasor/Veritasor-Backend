@@ -1,7 +1,8 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
-import { requirePermissions, IntegrationPermission } from '../middleware/permissions.js';
-import { listByUserId, deleteById } from '../repositories/integration.js';
+import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
+import { requirePermissions } from '../middleware/permissions.js';
+import { IntegrationPermission } from '../types/permissions.js';
+import { listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
 const router = Router();
 const AVAILABLE_INTEGRATIONS = [
@@ -83,13 +84,13 @@ router.get('/', async (req, res) => {
 });
 /**
  * @route GET /api/integrations/connected
- * @desc List connected integrations for authenticated user
- * @access Private - requires authentication and read permissions
+ * @desc List connected integrations for authenticated business
+ * @access Private - requires business authentication and read permissions
  */
-router.get('/connected', requireAuth, requirePermissions(IntegrationPermission.READ_CONNECTED), async (req, res) => {
+router.get('/connected', requireBusinessAuth, requirePermissions(IntegrationPermission.READ_CONNECTED), async (req, res) => {
     try {
-        const userId = req.user.userId;
-        const connected = await listByUserId(userId);
+        const businessId = req.business.id;
+        const connected = await listByBusinessId(businessId);
         const connectedSafe = connected.map((i) => ({
             id: i.id,
             type: i.provider,
@@ -117,9 +118,9 @@ router.get('/connected', requireAuth, requirePermissions(IntegrationPermission.R
 /**
  * @route POST /api/integrations/connect
  * @desc Initiate connection process for an integration provider
- * @access Private - requires authentication and connect permissions
+ * @access Private - requires business authentication and connect permissions
  */
-router.post('/connect', requireAuth, requirePermissions(IntegrationPermission.CONNECT), async (req, res) => {
+router.post('/connect', requireBusinessAuth, requirePermissions(IntegrationPermission.CONNECT), async (req, res) => {
     try {
         const { provider, redirectUri } = connectIntegrationSchema.parse(req.body);
         // Check if integration is available
@@ -137,7 +138,7 @@ router.post('/connect', requireAuth, requirePermissions(IntegrationPermission.CO
             });
         }
         // Check if user already has this integration connected
-        const existingIntegrations = await listByUserId(req.user.userId);
+        const existingIntegrations = await listByBusinessId(req.business.id);
         const existingConnection = existingIntegrations.find(i => i.provider === provider);
         if (existingConnection) {
             return res.status(409).json({
@@ -178,9 +179,9 @@ router.post('/connect', requireAuth, requirePermissions(IntegrationPermission.CO
 /**
  * @route DELETE /api/integrations/:integrationId
  * @desc Disconnect a specific integration
- * @access Private - requires authentication and disconnect permissions with ownership check
+ * @access Private - requires business authentication and disconnect permissions with ownership check
  */
-router.delete('/:integrationId', requireAuth, requirePermissions(IntegrationPermission.DISCONNECT_OWN, { checkOwnership: true }), async (req, res) => {
+router.delete('/:integrationId', requireBusinessAuth, requirePermissions(IntegrationPermission.DISCONNECT_OWN, { checkOwnership: true }), async (req, res) => {
     try {
         const { integrationId } = req.params;
         if (!integrationId) {
@@ -190,8 +191,8 @@ router.delete('/:integrationId', requireAuth, requirePermissions(IntegrationPerm
             });
         }
         // Verify ownership before deletion
-        const userIntegrations = await listByUserId(req.user.userId);
-        const integration = userIntegrations.find(i => i.id === integrationId);
+        const businessIntegrations = await listByBusinessId(req.business.id);
+        const integration = businessIntegrations.find(i => i.id === integrationId);
         if (!integration) {
             return res.status(404).json({
                 error: 'Not Found',
@@ -199,7 +200,7 @@ router.delete('/:integrationId', requireAuth, requirePermissions(IntegrationPerm
             });
         }
         // Delete the integration
-        const deleted = await deleteById(integrationId);
+        const deleted = await deleteById(req.business.id, integrationId);
         if (!deleted) {
             return res.status(500).json({
                 error: 'Internal Server Error',
@@ -224,9 +225,9 @@ router.delete('/:integrationId', requireAuth, requirePermissions(IntegrationPerm
 /**
  * @route GET /api/integrations/:integrationId
  * @desc Get details of a specific integration
- * @access Private - requires authentication and read permissions with ownership check
+ * @access Private - requires business authentication and read permissions with ownership check
  */
-router.get('/:integrationId', requireAuth, requirePermissions(IntegrationPermission.READ_OWN, { checkOwnership: true }), async (req, res) => {
+router.get('/:integrationId', requireBusinessAuth, requirePermissions(IntegrationPermission.READ_OWN, { checkOwnership: true }), async (req, res) => {
     try {
         const { integrationId } = req.params;
         if (!integrationId) {
@@ -235,8 +236,8 @@ router.get('/:integrationId', requireAuth, requirePermissions(IntegrationPermiss
                 message: 'Integration ID is required',
             });
         }
-        const userIntegrations = await listByUserId(req.user.userId);
-        const integration = userIntegrations.find(i => i.id === integrationId);
+        const businessIntegrations = await listByBusinessId(req.business.id);
+        const integration = businessIntegrations.find(i => i.id === integrationId);
         if (!integration) {
             return res.status(404).json({
                 error: 'Not Found',

@@ -6,9 +6,9 @@
  *
  * Features:
  * - Input validation using Zod schemas
- * - Automatic string normalization
+ * - Automatic string normalization (name, URL, country code)
  * - Partial update support (only provided fields are updated)
- * - Comprehensive error handling
+ * - Structured error logging for observability
  * - User ownership verification
  * - NatSpec-style documentation
  *
@@ -18,10 +18,18 @@
  * - Normalizes inputs to prevent injection attacks
  * - Enforces maximum field lengths
  * - Validates URL and pattern formats
+ * - Validates ISO 3166-1 alpha-2 country codes
  * - Prevents unauthorized access to businesses
+ *
+ * Error Codes (stable, machine-readable):
+ * - VALIDATION_ERROR – 400, input failed schema validation
+ * - UNAUTHORIZED     – 401, no authenticated user in request
+ * - NOT_FOUND        – 404, no business for this user
+ * - INTERNAL_ERROR   – 500, unexpected server failure
  *
  * @module services/business/update
  */
+import { z } from 'zod';
 import { businessRepository } from '../../repositories/business.js';
 import { parseUpdateBusinessInput, } from './schemas.js';
 import { formatForStorage } from './normalize.js';
@@ -84,7 +92,7 @@ export async function updateBusiness(req, res) {
         const userId = req.user?.id;
         if (!userId) {
             return res.status(401).json({
-                error: 'Unauthorized',
+                error: 'UNAUTHORIZED',
                 message: 'User authentication required',
             });
         }
@@ -93,7 +101,7 @@ export async function updateBusiness(req, res) {
         if (!business) {
             // @dev Return 404 instead of revealing whether business exists
             return res.status(404).json({
-                error: 'Not Found',
+                error: 'NOT_FOUND',
                 message: 'Business not found',
             });
         }
@@ -103,11 +111,16 @@ export async function updateBusiness(req, res) {
             validatedInput = await parseUpdateBusinessInput(req.body);
         }
         catch (validationError) {
-            // @dev Return detailed validation errors to client
+            // @dev Return structured Zod issues so callers know exactly which fields failed
+            const details = validationError instanceof z.ZodError
+                ? validationError.issues
+                : validationError instanceof Error
+                    ? validationError.message
+                    : 'Unknown validation error';
             return res.status(400).json({
-                error: 'Validation Error',
+                error: 'VALIDATION_ERROR',
                 message: 'Invalid input provided',
-                details: validationError instanceof Error ? validationError.message : 'Unknown validation error',
+                details,
             });
         }
         // @dev Format input for storage (additional normalization)
@@ -116,6 +129,7 @@ export async function updateBusiness(req, res) {
             industry: validatedInput.industry,
             description: validatedInput.description,
             website: validatedInput.website,
+            countryCode: validatedInput.countryCode,
         });
         // @dev Update business in repository with only provided fields
         const updated = await businessRepository.update(business.id, {
@@ -135,11 +149,16 @@ export async function updateBusiness(req, res) {
         return res.status(200).json(updated);
     }
     catch (error) {
-        // @dev Log unexpected errors for debugging
-        console.error('Error updating business:', error);
-        // @dev Return generic server error to client
+        // @dev Structured log: emit a JSON-serialisable object so log aggregators
+        //      (e.g. Datadog, Cloud Logging) can index fields individually.
+        console.error(JSON.stringify({
+            event: 'business.update.error',
+            userId: req.user?.id ?? null,
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+        }));
         return res.status(500).json({
-            error: 'Internal Server Error',
+            error: 'INTERNAL_ERROR',
             message: 'Failed to update business',
         });
     }

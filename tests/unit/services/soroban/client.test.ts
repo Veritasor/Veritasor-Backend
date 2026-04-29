@@ -395,6 +395,7 @@ describe('Soroban client retry and timeout policy', () => {
         },
         sleep,
         circuitBreaker,
+      })
       expect(result).toBe('success')
     })
   })
@@ -477,7 +478,9 @@ describe('Soroban client retry and timeout policy', () => {
       expect(onRequestStart).toHaveBeenCalledTimes(2)
       expect(onRequestStart).toHaveBeenNthCalledWith(1, 'getAccount', 1)
       expect(onRequestStart).toHaveBeenNthCalledWith(2, 'getAccount', 2)
-      expect(onRequestFailure).toHaveBeenCalledWith('getAccount', 1, expect.any(Number), expect.any(Error))
+      // onRequestFailure is only called for non-retryable failures; retryable
+      // errors go through onRetry instead.
+      expect(onRequestFailure).not.toHaveBeenCalled()
       expect(onRetry).toHaveBeenCalledWith('getAccount', 1, 1, expect.any(Error))
       expect(onRequestSuccess).toHaveBeenCalledWith('getAccount', 2, expect.any(Number))
     })
