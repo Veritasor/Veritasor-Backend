@@ -6,6 +6,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../utils/logger.js';
 import {
   IntegrationPermission,
   PermissionCheck,
@@ -122,6 +123,15 @@ export function requirePermissions(
       );
 
       if (!permissionCheck.allowed) {
+        logger.warn(JSON.stringify({
+          event: 'permissions.denied',
+          userId: context.userId,
+          businessId: context.businessId,
+          role: context.role,
+          required: permissions,
+          missing: permissionCheck.reason,
+        }));
+
         res.status(403).json({
           error: 'Forbidden',
           message: 'Insufficient permissions',

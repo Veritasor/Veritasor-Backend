@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import type { Server } from "node:http";
+import type { Request, Response, NextFunction } from "express";
 import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -16,40 +17,72 @@ import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { StartupReadinessReport } from "./startup/readiness.js";
-import type { Server } from "http";
+
+const apiVersionMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const requestedVersion = req.headers['x-api-version'];
+  const supportedVersions = ['1', 'v1'];
+
+  if (!requestedVersion) {
+    res.setHeader('api-version', 'v1');
+    next();
+    return;
+  }
+
+  const versionStr = String(requestedVersion);
+  const isSupported = supportedVersions.some(v => v === versionStr);
+
+  if (!isSupported) {
+    res.setHeader('api-version', 'v1');
+    res.setHeader('api-version-fallback', 'true');
+  } else {
+    res.setHeader('api-version', 'v1');
+  }
+
+  next();
+};
+
+const versionResponseMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('Vary', 'Accept, X-API-Version');
+  next();
+};
+
+// Security middleware to reject prototype pollution attempts
+const securityHeadersMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  if (req.query && Object.keys(req.query).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
+    res.status(400).json({
+      status: 'error',
+      code: 'VALIDATION_ERROR',
+      message: 'Invalid query parameters'
+    });
+    return;
+  }
+
+  if (req.body && typeof req.body === 'object') {
+    if (Object.keys(req.body).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
+      res.status(400).json({
+        status: 'error',
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid body fields'
+      });
+      return;
+    }
+  }
+
+  next();
+};
 
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
 
-
-
-import { runStartupDependencyReadinessChecks } from "./startup/readiness.js";
-
-export async function startServer(port: number): Promise<Server> {
-  // Run startup dependency checks
-  const readinessReport = await runStartupDependencyReadinessChecks();
-  if (!readinessReport.ready) {
-    const failedChecks = readinessReport.checks
-      .filter((check) => !check.ready)
-      .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
-      .join("; ");
-    console.warn(`Warning: Startup dependency checks failed: ${failedChecks}`);
-  }
-
-    // Log failed checks but continue with app creation
-    console.error(`Startup readiness checks failed: ${failedChecks}`);
-  }
-
+  app.use(securityHeadersMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
-  app.use(cors(config.cors));
-  app.use(requestLogger);
-
-  // Webhook signature verification depends on the exact raw bytes.
-  app.use("/api/webhooks/razorpay", razorpayWebhookRouter);
 
   app.use(express.json());
+  app.use(createCorsMiddleware());
+  app.use(requestLogger);
 
+  app.use("/api/webhooks/razorpay", razorpayWebhookRouter);
   app.use("/api/analytics", analyticsRouter);
   app.use("/api/attestations", attestationsRouter);
   app.use("/api/auth", authRouter);
@@ -72,7 +105,7 @@ export async function startServer(port: number): Promise<Server> {
   const { runStartupDependencyReadinessChecks } = await import("./startup/readiness.js");
 
   const readinessReport = await runStartupDependencyReadinessChecks();
-  
+
   if (!readinessReport.ready) {
     const failedChecks = readinessReport.checks
       .filter((check) => !check.ready)
@@ -89,4 +122,3 @@ export async function startServer(port: number): Promise<Server> {
     });
   });
 }
-     
