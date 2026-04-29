@@ -5,14 +5,128 @@
  * Calibration hooks allow callers to override thresholds or inject a custom
  * scoring function per consecutive pair, making it easy to swap in a real
  * model (z-score, IQR, Prophet) without touching the public API.
+ *
+ * ---------------------------------------------------------------------------
+ * Operator Tuning — Environment Variables
+ * ---------------------------------------------------------------------------
+ *
+ * All threshold defaults can be overridden at process start via environment
+ * variables. Set them in your `.env` (or deployment config) before the
+ * service boots; changes take effect on the next process restart.
+ *
+ * | Variable                          | Type   | Default | Description                                                    |
+ * |-----------------------------------|--------|---------|----------------------------------------------------------------|
+ * | ANOMALY_DROP_THRESHOLD            | float  | 0.4     | MoM fractional drop that triggers `unusual_drop` (e.g. 0.3 = 30%). |
+ * | ANOMALY_SPIKE_THRESHOLD           | float  | 3.0     | MoM fractional rise that triggers `unusual_spike` (e.g. 2.0 = 200%). |
+ * | ANOMALY_MIN_DATA_POINTS           | int    | 2       | Minimum series length required for detection.                  |
+ * | ANOMALY_CALIBRATION_SIGMA         | float  | 2.0     | Std-dev multiplier used by `calibrateFromSeries`.              |
+ *
+ * Validation rules
+ * - DROP_THRESHOLD  must be in (0, 1].  Values outside this range are ignored and the
+ *   hard-coded default is used, with a warning logged to stderr.
+ * - SPIKE_THRESHOLD must be > 0.        Same fallback behaviour.
+ * - MIN_DATA_POINTS must be an integer ≥ 2.
+ * - CALIBRATION_SIGMA must be > 0.
+ *
+ * Example `.env` entry:
+ * ```
+ * ANOMALY_DROP_THRESHOLD=0.30
+ * ANOMALY_SPIKE_THRESHOLD=2.00
+ * ANOMALY_MIN_DATA_POINTS=3
+ * ANOMALY_CALIBRATION_SIGMA=2.5
+ * ```
+ *
+ * ---------------------------------------------------------------------------
+ * Failure Modes
+ * ---------------------------------------------------------------------------
+ *
+ * | Condition                          | Behaviour                                                   |
+ * |------------------------------------|-------------------------------------------------------------|
+ * | Series length < minDataPoints      | Returns `{ flag: "insufficient_data", score: 0 }`. Never throws. |
+ * | All previous-period amounts are 0  | Pairs with prev.amount === 0 are skipped silently.          |
+ * | scoreHook throws                   | Exception propagates to the caller — wrap externally if needed. |
+ * | Invalid env-var values             | Hard-coded defaults are used; warning emitted to stderr.    |
+ *
+ * ---------------------------------------------------------------------------
+ * Seasonality & False-Positive Guidance
+ * ---------------------------------------------------------------------------
+ *
+ * Month-over-month thresholds can fire spuriously for businesses with strong
+ * seasonal patterns (e.g. e-commerce spikes in Q4, SaaS annual renewals).
+ *
+ * Mitigation strategies:
+ * 1. **Use `calibrateFromSeries`** on ≥12 months of historical data so that
+ *    thresholds are derived from your actual distribution (mean ± N·σ).
+ * 2. **Raise `sigmaMultiplier`** (via `ANOMALY_CALIBRATION_SIGMA`) to widen
+ *    the acceptable band — 2 is conservative; 3 reduces false positives at the
+ *    cost of missing smaller anomalies.
+ * 3. **Inject a `scoreHook`** that encodes business rules, e.g. suppress the
+ *    spike flag during a known promotional period.
+ * 4. **Missing baselines** (fewer than 2 training points): `calibrateFromSeries`
+ *    falls back to module defaults automatically.
+ *
+ * ---------------------------------------------------------------------------
+ * Security / Threat-Model Notes
+ * ---------------------------------------------------------------------------
+ *
+ * • **Spike attacks** — an adversary submitting artificially inflated revenue
+ *   figures to obscure a later drop will surface as `unusual_spike` first.
+ *   Pair anomaly detection with source-level webhook signature verification so
+ *   that only authenticated payloads reach this function.
+ *
+ * • **Replay attacks on baselines** — `calibrateFromSeries` is a pure function;
+ *   it does not persist state. Callers are responsible for persisting and
+ *   versioning `CalibrationResult` objects so that an attacker cannot force a
+ *   recalibration with manipulated historical data.
+ *
+ * • **Env-var injection** — threshold env vars are read once at module load and
+ *   validated strictly. An attacker who can write to the process environment
+ *   before boot could widen thresholds; treat your deployment secrets accordingly.
+ *
+ * • **Log-injection** — the `detail` string in `AnomalyResult` and structured
+ *   log payloads embed `period` and `amount` values from the input series. Ensure
+ *   your log aggregator escapes or sanitises these fields before display.
+ *
+ * ---------------------------------------------------------------------------
+ * Idempotency
+ * ---------------------------------------------------------------------------
+ *
+ * Both `detectRevenueAnomaly` and `calibrateFromSeries` are **pure functions**:
+ * same inputs always produce the same outputs, no side effects, no I/O. Safe to
+ * call multiple times with the same series.
  */
 // ---------------------------------------------------------------------------
-// Defaults
+// Env-var resolved defaults
 // ---------------------------------------------------------------------------
-const DROP_THRESHOLD = 0.4;
-const SPIKE_THRESHOLD = 3.0;
-const MIN_DATA_POINTS = 2;
-const DEFAULT_SIGMA_MULTIPLIER = 2;
+const _RAW_DROP = process.env["ANOMALY_DROP_THRESHOLD"];
+const _RAW_SPIKE = process.env["ANOMALY_SPIKE_THRESHOLD"];
+const _RAW_MIN = process.env["ANOMALY_MIN_DATA_POINTS"];
+const _RAW_SIGMA = process.env["ANOMALY_CALIBRATION_SIGMA"];
+/** Parse and validate a float env var; fall back to `fallback` with a warning. */
+function resolveFloatEnv(raw, name, fallback, validate) {
+    if (raw === undefined || raw.trim() === "")
+        return fallback;
+    const parsed = parseFloat(raw);
+    if (isNaN(parsed) || !validate(parsed)) {
+        process.stderr.write(`[anomalyDetection] WARNING: ${name}="${raw}" is invalid — using default ${fallback}\n`);
+        return fallback;
+    }
+    return parsed;
+}
+function resolveIntEnv(raw, name, fallback, validate) {
+    if (raw === undefined || raw.trim() === "")
+        return fallback;
+    const parsed = parseInt(raw, 10);
+    if (isNaN(parsed) || !validate(parsed)) {
+        process.stderr.write(`[anomalyDetection] WARNING: ${name}="${raw}" is invalid — using default ${fallback}\n`);
+        return fallback;
+    }
+    return parsed;
+}
+const DROP_THRESHOLD = resolveFloatEnv(_RAW_DROP, "ANOMALY_DROP_THRESHOLD", 0.4, (v) => v > 0 && v <= 1);
+const SPIKE_THRESHOLD = resolveFloatEnv(_RAW_SPIKE, "ANOMALY_SPIKE_THRESHOLD", 3.0, (v) => v > 0);
+const MIN_DATA_POINTS = resolveIntEnv(_RAW_MIN, "ANOMALY_MIN_DATA_POINTS", 2, (v) => Number.isInteger(v) && v >= 2);
+const DEFAULT_SIGMA_MULTIPLIER = resolveFloatEnv(_RAW_SIGMA, "ANOMALY_CALIBRATION_SIGMA", 2, (v) => v > 0);
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -27,6 +141,10 @@ const DEFAULT_SIGMA_MULTIPLIER = 2;
  * @param series       Array of `{ period, amount }` data points.
  * @param calibration  Optional calibration config to override defaults or
  *                     inject a custom score hook.
+ * @param logger       Optional structured-log callback. Receives an
+ *                     `AnomalyLogRecord` for every invocation. Wire this to
+ *                     your application logger (e.g. `pino`, `winston`) to get
+ *                     observable, queryable anomaly events.
  * @returns            `AnomalyResult` with `score`, `flag`, and `detail`.
  *
  * @example
@@ -42,19 +160,45 @@ const DEFAULT_SIGMA_MULTIPLIER = 2;
  * // With calibrated thresholds from historical data
  * const cal = calibrateFromSeries(historicalSeries);
  * const result = detectRevenueAnomaly(currentSeries, cal);
+ *
+ * @example
+ * // With structured logging (e.g. pino)
+ * const result = detectRevenueAnomaly(series, {}, (record) => {
+ *   logger.info(record);
+ * });
  */
-export function detectRevenueAnomaly(series, calibration = {}) {
+export function detectRevenueAnomaly(series, calibration = {}, logger) {
     const minDataPoints = calibration.minDataPoints ?? MIN_DATA_POINTS;
+    const activeDropThreshold = calibration.dropThreshold ?? DROP_THRESHOLD;
+    const activeSpikeThreshold = calibration.spikeThreshold ?? SPIKE_THRESHOLD;
     if (!series || series.length < minDataPoints) {
-        return {
+        const result = {
             score: 0,
             flag: "insufficient_data",
             detail: `Need at least ${minDataPoints} data points; received ${series?.length ?? 0}.`,
         };
+        logger?.({
+            event: "anomaly_insufficient_data",
+            flag: result.flag,
+            score: result.score,
+            detail: result.detail,
+            thresholds: { drop: activeDropThreshold, spike: activeSpikeThreshold, minDataPoints },
+            detectedAt: new Date().toISOString(),
+        });
+        return result;
     }
     // Sort ascending by period string (works for "YYYY-MM" and "YYYY-QN").
     const sorted = [...series].sort((a, b) => a.period.localeCompare(b.period));
-    return scoreSeriesAnomaly(sorted, calibration);
+    const result = scoreSeriesAnomaly(sorted, calibration);
+    logger?.({
+        event: result.flag === "ok" ? "anomaly_check_ok" : "anomaly_detected",
+        flag: result.flag,
+        score: result.score,
+        detail: result.detail,
+        thresholds: { drop: activeDropThreshold, spike: activeSpikeThreshold, minDataPoints },
+        detectedAt: new Date().toISOString(),
+    });
+    return result;
 }
 /**
  * Derive calibration thresholds from a historical revenue series using
@@ -73,7 +217,8 @@ export function detectRevenueAnomaly(series, calibration = {}) {
  *
  * @param series           Training series — the more months the better.
  * @param options.sigmaMultiplier  Number of standard deviations from the mean
- *                                 used to set the thresholds. Default: 2.
+ *                                 used to set the thresholds.
+ *                                 Default: ANOMALY_CALIBRATION_SIGMA env var, or 2.
  */
 export function calibrateFromSeries(series, options = {}) {
     const sigma = options.sigmaMultiplier ?? DEFAULT_SIGMA_MULTIPLIER;

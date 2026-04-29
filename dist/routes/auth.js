@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { AppError } from "../types/errors.js";
 import { login } from "../services/auth/login.js";
 import { refresh } from "../services/auth/refresh.js";
 import { signup, SignupError, getSignupRateLimitHeaders, checkSignupAvailability, } from "../services/auth/signup.js";

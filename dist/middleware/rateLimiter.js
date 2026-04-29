@@ -1,3 +1,4 @@
+import { logger } from "../utils/logger.js";
 const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_MAX = 100;
 const store = new Map();
@@ -54,6 +55,9 @@ setInterval(() => {
  *
  * Bucketed limits isolate sensitive routes from one another so abuse against
  * one endpoint does not consume the request budget for a different endpoint.
+ *
+ * Note: This implementation uses a fixed window algorithm, which allows for bursts
+ * of up to `max` requests per window per bucket.
  */
 export const rateLimiter = (options = {}) => {
     const windowMs = options.windowMs ?? parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, DEFAULT_WINDOW_MS);
@@ -71,6 +75,14 @@ export const rateLimiter = (options = {}) => {
         record.count += 1;
         applyRateLimitHeaders(res, bucket, max, record, now);
         if (record.count > max) {
+            logger.warn(`Rate limit exceeded for bucket "${bucket}" and identifier "${identifier}".`, JSON.stringify({
+                bucket,
+                identifier,
+                count: record.count,
+                max,
+                windowMs,
+                timestamp: new Date(now).toISOString(),
+            }));
             res.status(429).json({ error: "Too many requests, please try again later." });
             return;
         }

@@ -1,5 +1,33 @@
 import { logger } from "../utils/logger.js";
 import { randomUUID } from "crypto";
+const REDACTED = "[REDACTED]";
+/** Headers whose values must never appear in logs. */
+export const REDACTED_HEADERS = new Set([
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+]);
+/** Query parameter names whose values must never appear in logs. */
+export const REDACTED_QUERY_PARAMS = new Set([
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "reset_token",
+    "code",
+]);
+function redactQuery(query) {
+    const result = {};
+    for (const [key, value] of Object.entries(query)) {
+        result[key] = REDACTED_QUERY_PARAMS.has(key.toLowerCase()) ? REDACTED : value;
+    }
+    return result;
+}
 /**
  * Structured request logging middleware with correlation ID support.
  *
@@ -34,7 +62,7 @@ export function requestLogger(req, res, next) {
         correlationId,
         method: req.method,
         path: req.path,
-        query: req.query,
+        query: redactQuery(req.query),
         ip: req.ip,
         userAgent: req.headers["user-agent"],
         timestamp: new Date().toISOString(),

@@ -17,8 +17,8 @@ export function normalizeShop(shop) {
 export function isValidShopHost(shop) {
     return SHOP_HOST_REGEX.test(shop);
 }
-export function setOAuthState(state, shop, userId) {
-    stateToShop.set(state, { shop: normalizeShop(shop), userId });
+export function setOAuthState(state, shop, userId, businessId) {
+    stateToShop.set(state, { shop: normalizeShop(shop), userId, businessId });
 }
 export function consumeOAuthState(state) {
     const shop = stateToShop.get(state);

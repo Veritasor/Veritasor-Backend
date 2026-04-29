@@ -421,8 +421,33 @@ export const DEFAULT_ABUSE_PREVENTION_CONFIG = {
  * @param email - The email address to normalize
  * @returns Normalized email address
  */
-export function normalizeEmail(email) {
-    return email.trim().toLowerCase();
+/**
+ * Normalize an email address for consistent comparison and storage.
+ * - Trims whitespace
+ * - Converts to lowercase
+ * - Removes plus-addressing (e.g., user+tag@gmail.com → user@gmail.com)
+ * - (Optionally) removes dots from Gmail addresses (not enabled by default)
+ *
+ * @param email - The email address to normalize
+ * @param options - Optional normalization options
+ * @returns Normalized email address
+ */
+export function normalizeEmail(email, options) {
+    let normalized = email.trim().toLowerCase();
+    // Remove plus-addressing (e.g., user+tag@gmail.com → user@gmail.com)
+    const atIdx = normalized.indexOf('@');
+    if (atIdx !== -1) {
+        const local = normalized.slice(0, atIdx).split('+')[0];
+        let domain = normalized.slice(atIdx + 1);
+        // Optionally remove dots for Gmail addresses
+        if (options?.removeGmailDots && (domain === 'gmail.com' || domain === 'googlemail.com')) {
+            normalized = local.replace(/\./g, '') + '@' + domain;
+        }
+        else {
+            normalized = local + '@' + domain;
+        }
+    }
+    return normalized;
 }
 /**
  * Extract the domain from an email address.

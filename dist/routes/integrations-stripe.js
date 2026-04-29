@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { startConnect } from '../services/integrations/stripe/connect.js';
 import { handleCallback } from '../services/integrations/stripe/callback.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
 export const integrationsStripeRouter = Router();
 export const path = '/integrations/stripe';
 /**
@@ -9,7 +9,7 @@ export const path = '/integrations/stripe';
  * Initiates Stripe OAuth flow by redirecting to Stripe authorization screen.
  * Requires authentication.
  */
-integrationsStripeRouter.post('/connect', requireAuth, (req, res) => {
+integrationsStripeRouter.post('/connect', requireBusinessAuth, (req, res) => {
     // Validate environment configuration
     const clientId = process.env.STRIPE_CLIENT_ID;
     const redirectUri = process.env.STRIPE_REDIRECT_URI;
@@ -31,11 +31,12 @@ integrationsStripeRouter.post('/connect', requireAuth, (req, res) => {
  * Exchanges code for access token and stores it; redirects to success URL or returns JSON.
  * Requires authentication.
  */
-integrationsStripeRouter.get('/callback', requireAuth, async (req, res) => {
+integrationsStripeRouter.get('/callback', requireBusinessAuth, async (req, res) => {
     const code = req.query.code;
     const state = req.query.state;
     const userId = req.user.userId;
-    const result = await handleCallback({ code: code ?? '', state: state ?? '' }, userId);
+    const businessId = req.business.id;
+    const result = await handleCallback({ code: code ?? '', state: state ?? '' }, userId, businessId);
     // Handle network errors (502)
     if (!result.success && result.error === 'Failed to reach Stripe API') {
         res.status(502).json({ success: false, error: result.error });

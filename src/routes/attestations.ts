@@ -6,6 +6,7 @@ import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
+import { revokeAttestation } from '../services/attestation/revoke.js';
 import { AppError } from '../types/errors.js';
 
 type RouteAttestation = {
