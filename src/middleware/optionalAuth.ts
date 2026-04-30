@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../utils/jwt.js";
 import { findUserById } from "../repositories/userRepository.js";
+import { logger } from "../utils/logger.js";
 
 // Auth event types for structured logging
 export enum AuthEventType {

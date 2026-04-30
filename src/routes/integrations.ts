@@ -1,12 +1,71 @@
 import { Router, Request, Response } from 'express';
+import { randomBytes } from 'node:crypto';
 import { requireAuth } from '../middleware/auth.js';
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
 import { requirePermissions } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
 import { listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// Callback URL allowlist
+// ---------------------------------------------------------------------------
+
+/**
+ * Permitted redirect URI origins for OAuth connect initiation.
+ * Override via ALLOWED_REDIRECT_ORIGINS (comma-separated) in env.
+ * Only exact origin matches are accepted — no path wildcards.
+ */
+const ALLOWED_REDIRECT_ORIGINS: ReadonlySet<string> = new Set(
+  (process.env.ALLOWED_REDIRECT_ORIGINS ?? 'http://localhost:3000')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+function isAllowedRedirectUri(uri: string): boolean {
+  try {
+    const { origin } = new URL(uri);
+    return ALLOWED_REDIRECT_ORIGINS.has(origin);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CSRF state store (in-memory; replace with Redis/DB for multi-instance)
+// ---------------------------------------------------------------------------
+
+type StateEntry = { userId: string; expiresAt: number };
+const pendingStates = new Map<string, StateEntry>();
+const STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Generate a cryptographically random, userId-bound CSRF state token. */
+function createState(userId: string): string {
+  const token = randomBytes(32).toString('hex');
+  pendingStates.set(token, { userId, expiresAt: Date.now() + STATE_TTL_MS });
+  return token;
+}
+
+/**
+ * Consume a state token exactly once.
+ * Returns the bound userId on success, null on missing/expired/replayed.
+ */
+export function consumeState(token: string): string | null {
+  const entry = pendingStates.get(token);
+  if (!entry) return null;
+  pendingStates.delete(token); // single-use
+  if (Date.now() > entry.expiresAt) return null;
+  return entry.userId;
+}
+
+/** Exposed for tests only — clears all pending states. */
+export function _clearPendingStates(): void {
+  pendingStates.clear();
+}
 
 interface IntegrationType {
   name: string;
@@ -155,6 +214,21 @@ router.post('/connect',
     try {
       const { provider, redirectUri } = connectIntegrationSchema.parse(req.body);
 
+      // Validate callback URL against allowlist to prevent open-redirect attacks
+      const callbackBase = redirectUri ?? 'http://localhost:3000/integrations/callback';
+      if (!isAllowedRedirectUri(callbackBase)) {
+        logger.warn(JSON.stringify({
+          event: 'integrations.connect.blockedRedirect',
+          provider,
+          redirectUri: callbackBase,
+          userId: req.user!.userId,
+        }));
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: 'redirectUri origin is not in the allowed list',
+        });
+      }
+
       // Check if integration is available
       const integration = AVAILABLE_INTEGRATIONS.find(i => i.slug === provider);
       if (!integration) {
@@ -186,16 +260,16 @@ router.post('/connect',
         });
       }
 
-      // Generate OAuth state or API key connection details
-      const state = `${provider}_${req.user!.userId}_${Date.now()}`;
-      const authUrl = generateAuthUrl(provider, state, redirectUri);
+      // Generate cryptographically random, userId-bound, single-use CSRF state
+      const state = createState(req.user!.userId);
+      const authUrl = generateAuthUrl(provider, state, callbackBase);
 
       res.json({
         provider,
         authType: integration.authType,
         authUrl,
         state,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 minutes
+        expiresAt: new Date(Date.now() + STATE_TTL_MS).toISOString(),
       });
     } catch (error) {
       if (error instanceof z.ZodError) {

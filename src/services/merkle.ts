@@ -71,6 +71,16 @@ export class MerkleTree {
       this.levels.unshift(next); // root ends up at levels[0]
       level = next;
     }
+
+    const durationMs = performance.now() - t0;
+    logger.info(
+      JSON.stringify({
+        event: 'merkle.buildTree',
+        leafCount: leaves.length,
+        levels: this.levels.length,
+        durationMs: Math.round(durationMs * 100) / 100,
+      })
+    );
   }
 
   getRoot(): string {
