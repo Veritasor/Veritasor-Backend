@@ -1,6 +1,285 @@
-# Integration Tests
+# Tests — Veritasor Backend
 
-This directory contains integration tests for the Veritasor Backend API.
+This directory contains unit and integration tests for the Veritasor Backend API.
+
+---
+
+## Enhanced Optional Auth Middleware Tests
+
+**Location**: `tests/unit/middleware/optionalAuth.test.ts`
+
+### Overview
+
+The enhanced `optionalAuth` middleware provides clear distinction between absent vs malformed tokens, comprehensive error classification, and structured logging for observability. The test suite covers:
+
+- **Token Classification**: Clear differentiation between NO_TOKEN vs MALFORMED_HEADER events
+- **Error Taxonomy**: 10 specific auth event types with proper classification
+- **Structured Logging**: JSON-formatted logs with correlation fields
+- **Edge Cases**: Expired tokens, wrong issuer, wrong audience, database errors
+
+### Auth Event Taxonomy
+
+The service defines 10 specific auth event types categorized as:
+
+| Event Type | Description | Log Level |
+|------------|-------------|-----------|
+| NO_TOKEN | No Authorization header present | warn |
+| MALFORMED_HEADER | Header present but malformed | warn |
+| INVALID_TOKEN | Token cryptographically invalid | warn |
+| EXPIRED_TOKEN | Token expired | warn |
+| WRONG_ISSUER | Token from wrong issuer | warn |
+| WRONG_AUDIENCE | Token for wrong audience | warn |
+| USER_NOT_FOUND | Token valid but user not found | warn |
+| AUTH_SUCCESS | Token valid and user found | info |
+| DATABASE_ERROR | Database lookup failed | warn |
+| UNEXPECTED_ERROR | Unexpected system error | warn |
+
+### Structured Logging
+
+All auth events include these fields for observability:
+```json
+{
+  "timestamp": "2024-03-15T12:00:00.000Z",
+  "level": "info|warn",
+  "service": "optional-auth",
+  "event": "AUTH_EVENT_TYPE",
+  "userId": "user_123",
+  "userAgent": "Mozilla/5.0...",
+  "ip": "192.168.1.100",
+  "requestId": "req_1234567890_abc",
+  "error": "Error message (if applicable)",
+  "tokenLength": 256,
+  "hasBearerPrefix": true,
+  "headerPresent": true,
+  "duration": 15
+}
+```
+
+### Test Coverage
+
+| Test Type | Coverage | Focus Areas |
+|-----------|----------|------------|
+| Unit Tests | 95%+ | Token classification, error mapping, log structure |
+| Edge Cases | All events | Each auth event type tested with appropriate response |
+| Performance | Timing | Auth processing duration tracking |
+| Security | Input validation | Malformed headers, injection attempts |
+
+### Running Optional Auth Tests
+
+```bash
+# Run only optional auth tests
+npx vitest run tests/unit/middleware/optionalAuth.test.ts
+
+# Run with coverage
+npx vitest run --coverage tests/unit/middleware/optionalAuth.test.ts
+
+# Run all middleware tests
+npx vitest run tests/unit/middleware/
+```
+
+### Threat Model Notes
+
+| Vector | Mitigation |
+|--------|------------|
+| **Token Enumeration** | Structured logs don't expose token content |
+| **Header Injection** | Malformed headers classified and logged safely |
+| **Database DoS** | Database errors logged but don't block requests |
+| **Timing Attacks** | Consistent processing time regardless of auth status |
+| **Log Injection** | Structured JSON logging prevents injection |
+
+### Operational Guidance
+
+#### Monitoring
+- Monitor `AUTH_SUCCESS` rate for service health
+- Alert on high `MALFORMED_HEADER` rates (potential attacks)
+- Track `DATABASE_ERROR` events for infrastructure issues
+- Monitor `EXPIRED_TOKEN` patterns for token refresh issues
+
+#### Log Analysis
+```bash
+# Find failed authentication attempts
+grep '"event":"MALFORMED_HEADER"' auth.log | wc -l
+
+# Track authentication success rate
+grep '"event":"AUTH_SUCCESS"' auth.log | wc -l
+
+# Monitor database issues
+grep '"event":"DATABASE_ERROR"' auth.log
+
+# Find expired tokens by hour
+grep '"event":"EXPIRED_TOKEN"' auth.log | cut -d',' -f1 | sort | uniq -c
+```
+
+---
+
+## Enhanced Attestation Submit Service Tests
+
+**Location**: `tests/unit/attestation-submit.test.ts` and `tests/integration/attestations.test.ts`
+
+### Overview
+
+The enhanced `submitAttestation` service includes hardened retry logic, comprehensive error taxonomy, and structured logging for Soroban blockchain submissions. The test suite covers:
+
+- **Retry Logic**: Exponential backoff with jitter for transient failures
+- **Error Taxonomy**: Clear categorization of retryable vs non-retryable errors
+- **Structured Logging**: JSON-formatted logs with correlation fields
+- **Edge Cases**: Network timeouts, nonce conflicts, insufficient balance, etc.
+
+### Error Taxonomy
+
+The service defines 13 specific Soroban error codes categorized as:
+
+| Retryable (9) | Non-Retryable (4) |
+|---------------|------------------|
+| NETWORK_TIMEOUT | INVALID_SIGNATURE |
+| NETWORK_ERROR | INVALID_ACCOUNT |
+| RPC_UNAVAILABLE | INSUFFICIENT_BALANCE |
+| NONCE_CONFLICT | CONTRACT_ERROR |
+| FEE_BUMP_REQUIRED | |
+| TRANSACTION_PENDING | |
+| RATE_LIMITED | |
+| SERVICE_UNAVAILABLE | |
+| INTERNAL_ERROR | |
+
+### Retry Configuration
+
+Default retry behavior (configurable via environment):
+- **Max Attempts**: 3
+- **Base Delay**: 1000ms
+- **Max Delay**: 30000ms
+- **Backoff Multiplier**: 2
+- **Jitter**: ±25% randomization
+
+### Structured Logging
+
+All logs include these fields for observability:
+```json
+{
+  "timestamp": "2024-03-15T12:00:00.000Z",
+  "level": "info|warn|error",
+  "service": "attestation-submit",
+  "message": "Human-readable description",
+  "userId": "user_123",
+  "businessId": "biz_456",
+  "period": "2024-03",
+  "attempt": 1,
+  "maxAttempts": 3,
+  "error": "Error message (if applicable)",
+  "errorCode": "ERROR_CODE (if applicable)",
+  "duration": 1500
+}
+```
+
+### Test Coverage
+
+| Test Type | Coverage | Focus Areas |
+|-----------|----------|------------|
+| Unit Tests | 95%+ | Retry logic, error mapping, log structure |
+| Integration Tests | End-to-end | Service behavior with mocked dependencies |
+| Error Scenarios | All codes | Each error code tested with appropriate response |
+| Performance | Timing | Exponential backoff verification |
+
+### Running Attestation Tests
+
+```bash
+# Run only attestation submit tests
+npx vitest run tests/unit/attestation-submit.test.ts
+
+# Run with coverage
+npx vitest run --coverage tests/unit/attestation-submit.test.ts
+
+# Run integration tests
+npx vitest run tests/integration/attestations.test.ts
+```
+
+### Threat Model Notes
+
+| Vector | Mitigation |
+|--------|------------|
+| **Timeout Loops** | Max retry attempts (3) prevent infinite loops |
+| **Nonce Conflicts** | Retryable with exponential backoff |
+| **Fee Bumps** | Automatic retry for fee-related failures |
+| **Insufficient Balance** | Immediate failure (400) - no retries |
+| **Network DoS** | Jitter prevents thundering herd attacks |
+| **Log Injection** | Structured JSON logging prevents injection |
+| **Error Leakage** | Client-safe messages, internal details logged only |
+
+---
+
+## Validate Middleware Tests
+
+Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and `validateQuery`.
+
+**Error mapping:** `ZodError.issues` are mapped to `{ path: (string|number)[], message: string }` before being stored in `ValidationError.details`. The error envelope exposes both `details` and `errors` (same array) so existing callers using `details` are unaffected.
+
+**Edge cases covered:**
+
+| Case                 | Description                                                   |
+| -------------------- | ------------------------------------------------------------- |
+| Extra keys (default) | Stripped silently — Zod strips unknown keys by default        |
+| Extra keys (strict)  | Rejected with `VALIDATION_ERROR` when schema uses `.strict()` |
+| Coercion             | `z.coerce.number()` converts query string `"42"` → `42`       |
+| Coercion failure     | Non-numeric string produces a `count` path error              |
+| Union types          | First matching branch accepted; no error                      |
+| Nested path shape    | Each error has `path: string[]` and `message: string`         |
+
+**Threat model notes:**
+
+- Validation errors never expose internal schema structure beyond field paths and human-readable messages.
+- Extra keys are stripped before the request body reaches route handlers, preventing prototype pollution via unexpected fields.
+- Coercion is explicit (`z.coerce.*`) — implicit coercion is not used, avoiding silent type confusion.
++
++## Permission Exhaustiveness
++
++The permission system in `src/types/permissions.ts` is designed to be exhaustive. This means that every permission defined in the `IntegrationPermission` enum must be:
++1.  **Documented**: Every permission must have an entry in `PERMISSION_METADATA`.
++2.  **Validated**: Every permission string from external sources (tokens, headers) must be validated via `IntegrationPermissionSchema` (Zod).
++3.  **Accounted for in Roles**: Every permission is automatically included in the `admin` role via `Object.values(IntegrationPermission)`.
++
++Unit tests in `tests/unit/permissions.test.ts` verify these invariants. Adding a new permission without updating the metadata or tests will result in a build/test failure.
++
++**Threat model notes:**
++- **Unknown Permissions**: The strict Zod schema prevents attackers from injecting custom permission strings into the authorization context.
++- **Exhaustive Gating**: By forcing developers to document new permissions in `PERMISSION_METADATA`, we increase visibility of new security boundaries during code reviews.
++
++### Permission-Role Matrix
++
++| Permission | User | Business Admin | System Admin |
++|:---|:---:|:---:|:---:|
++| `READ_AVAILABLE` | ✅ | ✅ | ✅ |
++| `READ_CONNECTED` | ✅ | ✅ | ✅ |
++| `READ_OWN` | ✅ | ✅ | ✅ |
++| `CONNECT` | ✅ | ✅ | ✅ |
++| `DISCONNECT_OWN` | ✅ | ✅ | ✅ |
++| `DISCONNECT_ANY` | ❌ | ✅ | ✅ |
++| `MANAGE_OWN` | ✅ | ✅ | ✅ |
++| `MANAGE_ANY` | ❌ | ✅ | ✅ |
++| `ADMIN` | ❌ | ❌ | ✅ |
++| `ADMIN_READ_STATS` | ❌ | ❌ | ✅ |
++| `ADMIN_MANAGE_USERS` | ❌ | ❌ | ✅ |
++| `ADMIN_READ_AUDIT_LOGS` | ❌ | ❌ | ✅ |
++
++*Matrix is automatically enforced for System Admin via `Object.values(IntegrationPermission)`.*
+
+## Redaction Policy
+
+`requestLogger` never writes sensitive values to logs. The policy is enforced via two exported sets in `src/middleware/requestLogger.ts`:
+
+| Set                     | Members                                                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `REDACTED_HEADERS`      | `authorization`, `cookie`, `set-cookie`, `x-api-key`, `x-auth-token`                                       |
+| `REDACTED_QUERY_PARAMS` | `token`, `access_token`, `refresh_token`, `api_key`, `apikey`, `secret`, `password`, `reset_token`, `code` |
+
+Matched values are replaced with the literal string `[REDACTED]` before the log entry is written. Non-sensitive fields pass through unchanged.
+
+**Threat model notes:**
+
+- Bearer tokens in `Authorization` headers are excluded from logs entirely (headers are not logged).
+- Cookies and `Set-Cookie` are in `REDACTED_HEADERS` for future-proofing if header logging is added.
+- OAuth `code` and `state` query params are redacted to prevent authorization-code interception via log aggregators.
+- Webhook payloads and request bodies are never logged (existing policy).
+
+To extend the policy, add entries to `REDACTED_HEADERS` or `REDACTED_QUERY_PARAMS` in `src/middleware/requestLogger.ts`. Tests in `tests/integration/auth.test.ts` under `"requestLogger redaction policy"` verify coverage.
 
 ## Running Tests
 
@@ -15,357 +294,812 @@ npm run test:watch
 npm run test:coverage
 ```
 
+---
+
 ## Test Structure
 
 - `integration/` - Integration tests that test complete API flows
   - `auth.test.ts` - Authentication API tests (signup, login, refresh, password reset)
+  - `attestations.test.ts` - Attestations API tests (list, submit, revoke)
   - `integrations.test.ts` - Integrations API tests (list, connect, disconnect, OAuth flow)
-- `unit/` - Unit tests for individual modules and services
-  - `services/revenue/` - Revenue service tests
-    - `normalize.test.ts` - Revenue data normalization tests
-    - `revenueReportSchema.test.ts` - Revenue report schema validation and security tests
+- `unit/services/` - Unit tests for service-layer modules
+  - `attestation/revoke.test.ts` - Attestation revoke service unit tests
+  - `merkle.test.ts` - Merkle tree construction, proof generation/verification, and performance guardrail tests
+  - `soroban/client.test.ts` - Soroban RPC client retry/timeout/circuit-breaker policy, and `getAttestation` staleness contract
 
-## Test Setup
+---
+
+## `getAttestation` — Staleness Contract and Cache-Busting
+
+Tests in `tests/unit/services/soroban/client.test.ts` under the
+`"getAttestation staleness contract"` suite verify the documented caching
+behaviour of `src/services/soroban/getAttestation.ts`.
+
+### What is tested
+
+| Test | Scenario | Expected behaviour |
+|------|----------|--------------------|
+| No in-process caching | Two successive calls | Each call hits `simulateTransaction` independently; second call returns updated data |
+| Revocation lag | Attestation exists, then revoked | Second call returns `null` — no stale cache hit |
+| Read-your-writes | No attestation, then written | Second call returns the new record without cache invalidation |
+| Transport error propagation | RPC throws `ECONNRESET` | Error is re-thrown; not swallowed |
+| Contract simulation error | Contract panics | Returns `null` |
+| Missing contract ID | `SOROBAN_CONTRACT_ID` unset | Throws with a clear configuration error |
+
+### Staleness windows (informational)
+
+These are **not enforced by the function** — they are documented for callers
+that implement their own cache layer:
+
+| Event | Safe re-query window |
+|-------|----------------------|
+| Ledger close (Testnet / Mainnet) | ~5–6 s |
+| Write visibility after `submitAttestation` | ≤ 10–15 s |
+| Revocation visibility | ≤ one ledger close (~5 s) |
+| Recommended client-cache TTL | ≤ 10 s |
+
+### Threat model notes
+
+- **Stale data must never gate authorization.** A cached attestation that has
+  since been revoked would allow a revoked business to pass checks. Always
+  re-query at the point of enforcement.
+- **Read-your-writes is not guaranteed by the RPC layer.** If the RPC node is
+  lagging, a write may not be visible immediately. Poll with backoff or wait
+  for `latestLedger >= ledgerSequence` before treating a missing result as
+  authoritative.
+- **No server-side cache exists.** The function is stateless; there is nothing
+  to bust. Client-side caches must be invalidated after every write or
+  revocation event.
+- **Webhook and integration consumers** that cache attestation results must
+  subscribe to revocation events (or use a short TTL) to avoid acting on
+  stale data. See `docs/threat-model-idempotency.md` and
+  `docs/integrations-permissions.md`.
+
+---
 
 Tests use:
-- **Jest** - Test framework
+
+- **Jest** - Test framework (integration tests)
+- **Vitest** - Unit test framework (`unit/`)
 - **Supertest** - HTTP assertion library for testing Express apps
 - **ts-jest** - TypeScript support for Jest
 
-## Auth Tests
+### `normalize.test.ts`
 
-The auth integration tests cover:
+Covers two source files:
 
-1. **User Signup** - Creating new user accounts
-2. **User Login** - Authentication with credentials
-3. **Token Refresh** - Refreshing access tokens
-4. **Get Current User** - Fetching authenticated user info
-5. **Forgot Password** - Initiating password reset flow
-6. **Reset Password** - Completing password reset with token
+| Module                | Function                   | Description                                          |
+| --------------------- | -------------------------- | ---------------------------------------------------- |
+| `normalize.ts`        | `normalizeRevenueEntry`    | Canonical shape, currency/date/amount edge cases     |
+| `normalize.ts`        | `detectNormalizationDrift` | Batch drift detection against a statistical baseline |
+| `anomalyDetection.ts` | `detectRevenueAnomaly`     | MoM anomaly scoring with configurable thresholds     |
+| `anomalyDetection.ts` | `calibrateFromSeries`      | Derive thresholds from historical training data      |
 
-## Integrations Tests
+#### Coverage target
 
-The integrations integration tests cover:
+≥ 95% line and branch coverage on all touched modules where practical.
+Run `npm run test:coverage` to verify; the coverage report is emitted to `coverage/`.
 
-1. **List Available Integrations** - Get all available integrations (public endpoint)
-2. **List Connected Integrations** - Get connected integrations for authenticated business
-3. **Stripe OAuth Connect** - Initiate and complete OAuth flow
-4. **Disconnect Integration** - Remove integration connection
-5. **Authentication** - Protected routes return 401 when unauthenticated
-6. **Security** - Sensitive tokens not exposed in responses
+---
 
-### Mock Implementation
-
-Currently, the tests include a mock auth router since the actual auth routes are not yet implemented. The mock:
-- Uses in-memory stores for users, tokens, and reset tokens
-- Simulates password hashing (prefixes with "hashed_")
-- Implements proper token validation
-- Follows security best practices (e.g., no email enumeration)
-
-The integrations tests include a mock integrations router. The mock:
-- Uses in-memory stores for connections and OAuth state
-- Simulates OAuth flow with state generation and validation
-- Implements proper authentication checks
-- Follows security best practices (no token exposure, state validation)
-
-### When Auth Routes Are Implemented
-
-Replace the mock router in `auth.test.ts` with the actual auth router:
-
-```typescript
-// Remove createMockAuthRouter() function
-// Import actual auth router
-import { authRouter } from '../../src/routes/auth.js'
-
-// In beforeAll:
-app.use('/api/auth', authRouter)
-```
-
-### When Integrations Routes Are Implemented
-
-Replace the mock router in `integrations.test.ts` with the actual integrations router:
-
-```typescript
-// Remove createMockIntegrationsRouter() function
-// Import actual integrations router
-import { integrationsRouter } from '../../src/routes/integrations.js'
-
-// In beforeAll:
-app.use('/api/integrations', integrationsRouter)
-```
-
-## Soroban RPC Client Configuration
-
-The Soroban RPC client includes comprehensive timeout, retry, and resilience configuration for production deployments.
+## Anomaly Detection — Operator Tuning
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint URL |
-| `SOROBAN_CONTRACT_ID` | Required | Deployed attestation contract address (C...) |
-| `SOROBAN_NETWORK_PASSPHRASE` | `Test SDF Network ; September 2015` | Stellar network passphrase |
-| `SOROBAN_RPC_TIMEOUT_MS` | `5000` | Timeout for individual RPC requests (100-60000ms) |
-| `SOROBAN_RPC_MAX_RETRIES` | `2` | Maximum retry attempts after initial failure (0-5) |
-| `SOROBAN_RPC_RETRY_BASE_DELAY_MS` | `200` | Base delay for exponential backoff (1-30000ms) |
-| `SOROBAN_RPC_RETRY_MAX_DELAY_MS` | `1500` | Maximum delay for exponential backoff (1-30000ms) |
-| `SOROBAN_RPC_RETRY_JITTER_RATIO` | `0.2` | Jitter ratio to reduce synchronized retries (0-1) |
-| `SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD` | `5` | Consecutive failures before opening circuit breaker (1-20) |
-| `SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS` | `30000` | Time before attempting to close circuit breaker (1000-300000ms) |
+All threshold defaults for `detectRevenueAnomaly` and `calibrateFromSeries` can be
+overridden at process start via environment variables. Set them in `.env` (copy from
+`.env.example`) before the service boots; changes take effect on the next restart.
 
-### Resilience Features
+| Variable                    | Type  | Default | Description                                                                                                        |
+| --------------------------- | ----- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ANOMALY_DROP_THRESHOLD`    | float | `0.4`   | MoM fractional drop that triggers `unusual_drop`. E.g. `0.3` = flag when revenue falls ≥ 30%. Must be in `(0, 1]`. |
+| `ANOMALY_SPIKE_THRESHOLD`   | float | `3.0`   | MoM fractional rise that triggers `unusual_spike`. E.g. `2.0` = flag when revenue rises ≥ 200%. Must be `> 0`.     |
+| `ANOMALY_MIN_DATA_POINTS`   | int   | `2`     | Minimum series length required for detection. Must be an integer `≥ 2`.                                            |
+| `ANOMALY_CALIBRATION_SIGMA` | float | `2.0`   | Std-dev multiplier used by `calibrateFromSeries`. Must be `> 0`.                                                   |
 
-- **Timeout Protection**: Individual requests timeout to prevent hanging
-- **Exponential Backoff**: Delays increase exponentially with jitter to reduce thundering herd
-- **Circuit Breaker**: Prevents cascading failures by temporarily rejecting requests when service is unhealthy
-- **Enhanced Error Classification**: Retries DNS failures, stale connections, and rate limits
-- **Observability Hooks**: Structured logging and metrics collection for monitoring
+**Validation behaviour** — if an env-var value fails validation (wrong type, out of
+range, empty string), the module falls back silently to the hard-coded default and
+emits a warning to `stderr`. No exception is thrown.
 
-### Security Considerations
+Example `.env` entries:
 
-- No sensitive data (keys, tokens) is logged
-- Circuit breaker prevents resource exhaustion attacks
-- Rate limit awareness prevents 429 response cascades
-- Request IDs enable distributed tracing
+```dotenv
+ANOMALY_DROP_THRESHOLD=0.30
+ANOMALY_SPIKE_THRESHOLD=2.00
+ANOMALY_MIN_DATA_POINTS=3
+ANOMALY_CALIBRATION_SIGMA=2.5
+```
 
-### Monitoring
+---
 
-The client emits structured logs for:
-- Request start/completion with timing
-- Retry attempts with delay information
-- Circuit breaker state changes
-- Transport failures with error classification
+### Calibration API
 
-Use observability hooks for custom metrics collection:
+Use `calibrateFromSeries` to derive statistically-grounded thresholds from at least
+12 months of historical revenue data and then pass the result into
+`detectRevenueAnomaly`:
 
-```typescript
-const hooks: SorobanObservabilityHooks = {
-  onRequestSuccess: (op, attempt, duration) => {
-    metrics.record(`soroban.${op}.success`, duration)
-  },
-  onRequestFailure: (op, attempt, duration, error) => {
-    metrics.record(`soroban.${op}.failure`, { duration, error: error.message })
-  },
-  onCircuitBreakerStateChange: (oldState, newState) => {
-    logger.info('Circuit breaker state changed', { oldState, newState })
-  }
+```ts
+import {
+  calibrateFromSeries,
+  detectRevenueAnomaly,
+} from "./src/services/revenue/anomalyDetection.js";
+
+const cal = calibrateFromSeries(historicalSeries, { sigmaMultiplier: 2 });
+const result = detectRevenueAnomaly(currentSeries, cal);
+```
+
+The returned `CalibrationResult` can be persisted (e.g. in Redis or Postgres) and
+reloaded on service start to avoid recomputing thresholds on every request.
+
+**Missing baseline fallback** — if the training series has fewer than 2 points, or if
+all prior-period amounts are zero, `calibrateFromSeries` returns the module defaults
+(`dropThreshold: 0.4`, `spikeThreshold: 3.0`) so the pipeline never hard-fails.
+
+---
+
+### Structured Logging
+
+Pass a logger callback to `detectRevenueAnomaly` to receive a typed `AnomalyLogRecord`
+on every invocation. Wire it to your application logger (e.g. `pino`, `winston`) for
+queryable, alertable anomaly events in your log aggregator (Datadog, Loki, etc.):
+
+```ts
+import pino from "pino";
+const log = pino();
+
+const result = detectRevenueAnomaly(series, cal, (record) => {
+  log.info(record, "revenue_anomaly");
+});
+```
+
+---
+
+## Analytics Period Helpers (`src/services/analytics/periods.ts`)
+
+### DST-Safe UTC Boundaries
+
+The analytics service uses UTC-anchored boundaries for all period calculations to ensure correctness across DST transitions (e.g., "spring forward" in March and "fall back" in November).
+
+**Key properties:**
+- Boundaries are always at **UTC midnight** (00:00:00.000Z).
+- `start` is inclusive; `end` is **exclusive**.
+- Period label format is strictly `YYYY-MM`.
+
+**Edge cases covered in tests:**
+- **Leap years**: `2024-02` correctly spans 29 days.
+- **Year rollovers**: `2024-12` rolls over to `2025-01-01` correctly.
+- **DST transitions**: Ensuring no double-counting or skipped hours when viewed from local timezones.
+
+**Threat model notes:**
+- Input strings are validated against a strict regex (`/^\d{4}-(?:0[1-9]|1[0-2])$/`) before parsing to prevent numeric overflow or injection attacks via `Date.UTC`.
+- `listAttestedPeriodsForBusiness` enforces unique, sorted period labels to prevent UI duplication.
+
+---
+## Merkle Service Tests (`unit/services/merkle.test.ts`)
+
+### Overview
+
+Unit tests covering the Merkle tree service split across three suites:
+
+| Suite                            | Focus                                                         |
+| -------------------------------- | ------------------------------------------------------------- |
+| `MerkleTree`                     | Legacy Buffer-based class — construction, proof, verification |
+| `MerkleProofGuards`              | Modular API input validation and tamper resistance            |
+| `buildTree guardrails`           | Size caps, structured warning logs, determinism               |
+| `Benchmarks — complexity probes` | Logarithmic depth checks, large-tree smoke tests              |
+
+### Performance Guardrails
+
+The Merkle service enforces size guardrails to prevent memory spikes and request timeouts on large attestation datasets.
+
+#### `MERKLE_MAX_LEAVES` (hard cap)
+
+| Property     | Value                       |
+| ------------ | --------------------------- |
+| Default      | `1 048 576` (2²⁰)           |
+| Override     | `MERKLE_MAX_LEAVES` env var |
+| Max override | `16 777 216` (2²⁴)          |
+| Error type   | `RangeError`                |
+
+Calls to `buildTree()` or `new MerkleTree()` with more leaves than this cap throw immediately — no partial work is done.
+
+```bash
+# Example: raise the cap for a bulk attestation job
+MERKLE_MAX_LEAVES=4194304 npm run start
+```
+
+#### `MERKLE_WARN_LEAVES` (soft threshold)
+
+When leaf count reaches 10 % of `MERKLE_MAX_LEAVES`, the service emits a structured `console.warn` entry:
+
+```json
+{
+  "level": "warn",
+  "service": "merkle",
+  "event": "large_tree",
+  "leafCount": 104857,
+  "warnThreshold": 104857,
+  "maxAllowed": 1048576,
+  "message": "Building Merkle tree with 104857 leaves — approaching size guardrail"
 }
 ```
 
-Example setup:
+Pipe this to your log aggregator (Datadog, CloudWatch, etc.) and alert on `event: large_tree`.
+
+#### `MERKLE_PROOF_MAX_STEPS` (verification guard)
+
+`verifyProof()` rejects proof arrays longer than `256` steps. A valid proof for a 2²⁰-leaf tree is only 20 steps; a 256-step proof is either malformed or adversarial. The guard bounds worst-case CPU in the verification loop.
+
+### Complexity Notes
+
+Proof depth and hashing work scale as follows (empirical, Node 20, Apple M2):
+
+| Leaves    | Proof depth | Approx build time |
+| --------- | ----------- | ----------------- |
+| 1 024     | 10 steps    | < 1 ms            |
+| 65 536    | 16 steps    | ~90 ms            |
+| 1 048 576 | 20 steps    | ~950 ms           |
+
+Rule of thumb: `depth = ⌈log₂(n)⌉`, hashing work = `O(n)`.
+
+The 100 000-leaf smoke test in the benchmark suite runs on every `npm test` pass to catch regressions.
+
+### Threat Model Notes
+
+| Vector                                       | Mitigation                                                                                                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| **Oversized request body** driving OOM       | `MERKLE_MAX_LEAVES` hard cap throws before any heap allocation on the tree                                              |
+| **Slow hash DoS** via crafted long proof     | `MERKLE_PROOF_MAX_STEPS = 256` bounds loop iterations in `verifyProof`                                                  |
+| **Tampered proof siblings**                  | Normalised hex validation in `normalizeHashHex` rejects malformed values; final root comparison catches modified hashes |
+| **Invalid proof position field**             | `isProofStep` type guard rejects anything other than `'left'` or `'right'`                                              |
+| **0x-prefixed inputs** from on-chain callers | `stripHexPrefix` normalises before validation — no silent mismatch                                                      |
+| **Non-integer leaf index**                   | `generateProof` throws on fractional indices to surface off-by-one bugs early                                           |
+
+### Running Only Merkle Tests
+
+```bash
+npx vitest run tests/unit/services/merkle.test.ts
+```
+
+With coverage:
+
+```bash
+npx vitest run --coverage tests/unit/services/merkle.test.ts
+```
+
+## Database Strategy
+
+For integration tests with a real database:
 
 ```typescript
 beforeAll(async () => {
-  await db.migrate.latest()
-})
+  await db.migrate.latest();
+});
 
 beforeEach(async () => {
-  await db.raw('BEGIN')
-})
+  await db.raw("BEGIN");
+});
 
 afterEach(async () => {
-  await db.raw('ROLLBACK')
-})
+  await db.raw("ROLLBACK");
+});
 
 afterAll(async () => {
-  await db.destroy()
-})
+  await db.destroy();
+});
 ```
 
-## Revenue Report Schema Tests
+**`ForgotPasswordAuditRecord` events:**
 
-The revenue report schema tests (`revenueReportSchema.test.ts`) cover comprehensive validation and security hardening for the `/api/analytics/revenue` endpoint query parameters.
+| Event                                     | When emitted                                  |
+| ----------------------------------------- | --------------------------------------------- |
+| `forgot_password_requested`               | Every call, before any DB lookup              |
+| `forgot_password_user_not_found`          | Email not in the database                     |
+| `forgot_password_token_issued`            | Token written to DB successfully              |
+| `forgot_password_email_sent`              | Email delivery succeeded                      |
+| `forgot_password_email_retryable_failure` | Email provider returned a retryable error     |
+| `forgot_password_email_permanent_failure` | Email provider returned a non-retryable error |
 
-### Security Validation Coverage
+**`ResetPasswordAuditRecord` events:**
 
-1. **Input Format Validation**
-   - Strict YYYY-MM format enforcement
-   - Year boundary validation (2020-2105)
-   - Month range validation (01-12)
-   - Length limits to prevent DoS attacks
+| Event                          | When emitted                        |
+| ------------------------------ | ----------------------------------- |
+| `reset_password_attempted`     | Every call, before token lookup     |
+| `reset_password_invalid_token` | Token not found or expired          |
+| `reset_password_success`       | Password updated and token consumed |
 
-2. **Injection Prevention**
-   - HTML/Script injection attempts
-   - SQL injection patterns
-   - Command injection attempts
-   - Path traversal attacks
-   - XSS attempts with various encodings
+### Error Codes
 
-3. **Parameter Combination Validation**
-   - Period vs range parameter conflicts
-   - Required parameter combinations
-   - Mutual exclusivity enforcement
+| Code                            | HTTP | Meaning                                                |
+| ------------------------------- | ---- | ------------------------------------------------------ |
+| `VALIDATION_ERROR`              | 400  | Missing or invalid input fields                        |
+| `INVALID_RESET_TOKEN`           | 400  | Token not found, expired, or already consumed          |
+| `RESET_EMAIL_RETRYABLE_FAILURE` | 503  | Email delivery failed transiently; client should retry |
+| `RESET_EMAIL_UNAVAILABLE`       | 500  | Email delivery failed permanently                      |
 
-4. **Edge Case Testing**
-   - Boundary conditions (min/max years)
-   - Malformed date strings
-   - Unicode and null byte attacks
-   - Extremely long strings
+### Failure Modes
 
-### Test Categories
+| Condition                           | Behaviour                                                         |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| Email not in DB                     | Generic 200 response; no token stored; no email sent              |
+| Email delivery — retryable          | Token cleared from DB; throws `503 RESET_EMAIL_RETRYABLE_FAILURE` |
+| Email delivery — permanent          | Token cleared from DB; throws `500 RESET_EMAIL_UNAVAILABLE`       |
+| Invalid / expired token at reset    | Throws `400 INVALID_RESET_TOKEN`; no DB write                     |
+| Password too short                  | Throws `400 VALIDATION_ERROR` before token lookup                 |
+| Invalid `RESET_TOKEN_TTL_MINUTES`   | Falls back to `15`; warning to `stderr`                           |
+| Invalid `RESET_MIN_PASSWORD_LENGTH` | Falls back to `8`; warning to `stderr`                            |
 
-- **Valid Inputs**: Ensure legitimate requests pass validation
-- **Invalid Format**: Reject malformed date strings
-- **Year Boundaries**: Enforce reasonable year limits
-- **Month Validation**: Proper month format and range
-- **Injection Prevention**: Block various attack vectors
-- **Parameter Combinations**: Validate parameter relationships
-- **DoS Prevention**: Prevent resource exhaustion attacks
-- **Error Types**: Verify structured error constants
+### Idempotency
 
-## Best Practices
+`forgotPassword` is **not** idempotent by design — each call that finds a valid user
+generates and stores a new token, invalidating the previous one (because
+`setResetToken` overwrites the stored token). Operators should rely on rate limiting
+to prevent excessive token churn.
 
-- Test complete user flows, not just individual endpoints
-- Use descriptive test names that explain the scenario
-- Clean up test data between tests
-- Don't expose sensitive information in error messages
-- Test both success and failure cases
-- Verify security requirements (401, 403, etc.)
-- Test OAuth state validation and expiration
-- Ensure tokens and credentials are not leaked in responses
-- Include comprehensive negative testing for security-critical endpoints
-- Test boundary conditions and edge cases thoroughly
-- Validate input sanitization and injection prevention
+`resetPassword` is idempotent in its rejection behaviour — calling it twice with the
+same token will return `INVALID_RESET_TOKEN` on the second call because the token is
+consumed on first use.
 
-## Error Envelope Snapshot Coverage
+- Test complete user flows, not just individual endpoints.
+- Use descriptive test names that document the expected scenario.
+- Clean up test data between tests; never rely on test ordering.
+- Do not expose sensitive information (tokens, keys, passwords) in error messages
+  or test assertions.
+- Test both success and failure cases, including boundary conditions.
+- Verify security requirements (401, 403, rate-limit headers, etc.).
+- Test OAuth state validation and expiration.
+- Ensure tokens and credentials are not leaked in responses.
 
-`integration/auth.test.ts` includes snapshot tests for the global error handler
-client shape. These tests pin the stable envelope fields:
+---
 
-- `status: "error"`
-- `code` from `src/types/errors.ts`
-- client-safe `message`
-- optional `details` for validation failures, plus legacy `errors` alias for
-  existing validation clients
-- `timestamp` and `requestId`
+## JWT Rotation Notes
 
-The snapshots cover direct Zod errors, PostgreSQL constraint and operational
-errors, and non-`Error` throwables. Timestamps and request IDs are normalized in
-the snapshot helper so the tests assert contract shape rather than runtime
-entropy.
+- Refresh tokens are treated as single-use in rotation flows.
+- Reuse of a consumed refresh token must be handled as a theft signal and rejected.
+- Clock skew is tolerated by verifier configuration; tests should use expirations beyond skew tolerance.
+
+Environment variables used by JWT tests and auth flows:
+
+- `JWT_SECRET` (access token secret)
+- `JWT_REFRESH_SECRET` (refresh token secret)
+- `JWT_CLOCK_SKEW_SECONDS` (default `10`)
+- `JWT_ACCESS_TOKEN_TTL` (default `3600`)
+- `JWT_REFRESH_TOKEN_TTL` (default `604800`)
 
 ## Threat Model Notes
 
-- **Auth**: login, refresh, password reset, and current-user failures must keep
-  credential, token, and user-enumeration details out of responses. Server-side
-  logs should include request method, path, request ID, status code, and typed
-  error metadata for triage without recording request bodies or secrets.
-- **Webhooks**: malformed payloads, signature failures, replay attempts, and
-  provider downtime should return typed, generic envelopes. Logs may include
-  provider name, request ID, and verification outcome, but never webhook secrets,
-  raw signatures, payment tokens, or full provider payloads.
-- **Integrations**: OAuth state mismatches, token exchange failures, and provider
-  API errors should preserve stable client codes while redacting access tokens,
-  refresh tokens, API keys, merchant credentials, and database connection
-  details from both API responses and routine structured logs.
+- Auth: stale or replayed refresh tokens are denied; rotation requires explicit reuse handling and logging.
+- Webhooks: verify provider signatures and reject replays using idempotency keys or event IDs.
+- Integrations: protect OAuth state, never log raw provider tokens, and enforce least-privilege scopes.
 
 ## End-to-End (E2E) Testing Plan
 
-The E2E tests verify the complete system flow, including the API, backend services, database, and Soroban contract interactions.
-
-### Testing Philosophy
-E2E tests should focus on the "Happy Path" user journeys and critical failure points that integration tests might miss due to mocks.
-
-### E2E Scenarios
+### Scenarios
 
 #### 1. Complete Attestation Lifecycle
-- **Goal**: Verify a merchant can fetch revenue and submit a verified attestation on-chain.
-- **Steps**:
-    1. Merchant logs into the dashboard.
-    2. Merchant initiates a sync for a specific period (e.g., "2025-Q1").
-    3. Backend fetches data from connected integrations (Shopify/Razorpay).
-    4. Backend generates a Merkle root.
-    5. Backend submits the root to the Soroban contract.
-    6. Verify the transaction hash is recorded and the root is queryable on the Stellar network.
+
+1. Merchant logs in and initiates a sync for a specific period.
+2. Backend fetches data from connected integrations (Shopify / Razorpay).
+3. Backend generates a Merkle root.
+4. Backend submits the root to the Soroban contract.
+5. Verify the transaction hash is recorded and the root is queryable on Stellar.
 
 #### 2. Multi-Source Integration Sync
-- **Goal**: Ensure revenue data from multiple sources is correctly aggregated.
-- **Steps**:
-    1. User connects both Stripe and Shopify.
-    2. Initiate a consolidated sync.
-    3. Verify that the Merkle tree leaves contain data from both sources accurately.
 
-### Security & Resilience Testing
-- **Rate Limiting**: Verify that excessive requests from a single IP/User are throttled.
-- **Idempotency**: Ensure that re-submitting an attestation with the same `Idempotency-Key` does not create duplicate on-chain transactions.
-- **Auth Resilience**: Test deep-link authentication and token rotation flows.
+1. User connects both Stripe and Shopify.
+2. Initiate a consolidated sync.
+3. Verify Merkle tree leaves contain data from both sources accurately.
+
+### Security & Resilience
+
+- **Rate Limiting** — verify excessive requests from a single IP/user are throttled.
+- **Idempotency** — re-submitting an attestation with the same `Idempotency-Key`
+  must not create duplicate on-chain transactions.
+- **Auth Resilience** — test deep-link auth and token rotation flows.
 
 ### Performance & Scaling
-- **Load Testing**: Simulate 100+ concurrent attestation submissions to ensure the Soroban RPC and DB pool can handle the load.
-- **Large Dataset Aggregation**: Test sync operations with 10,000+ line items.
 
-## Security Assumptions & Validations
+- **Load Testing** — 100+ concurrent attestation submissions.
+- **Large Dataset Aggregation** — sync with 10 000+ line items.
 
-The following security assumptions are baked into the system and must be validated by the E2E suite:
+### Security Assumptions
 
-1. **Isolation of Business Data**:
-    - *Assumption*: A user cannot sync or view revenue for a business they do not own.
-    - *Validation*: E2E tests must attempt unauthorized sync requests and verify `403 Forbidden` responses.
+Rejection reasons returned by `validateRazorpayState`:
 
-2. **Tamper-Proof Merkle Proofs**:
-    - *Assumption*: The Merkle root submitted on-chain accurately represents the source data.
-    - *Validation*: Verify that changing a single revenue entry locally results in a Merkle proof mismatch against the on-chain root.
+| Condition                                | Reason string              |
+| ---------------------------------------- | -------------------------- |
+| Not a string / empty                     | `Missing state parameter`  |
+| Exceeds 512 chars                        | `Invalid or expired state` |
+| Contains control chars / null bytes      | `Invalid or expired state` |
+| Not in store (forged / already consumed) | `Invalid or expired state` |
+| Expired (past TTL)                       | `Invalid or expired state` |
 
-3. **Key Management**:
-    - *Assumption*: Private keys are never exposed in logs or API responses.
-    - *Validation*: Audit log assertions in E2E tests must scan for sensitive strings (G... or S... keys).
+---
+
+## Security — Threat Model Notes
+
+### Auth Routes — Password Reset
+
+#### User Enumeration
+
+`forgotPassword` returns the identical response message and waits a constant ~200 ms
+regardless of whether the supplied email exists. An observer who times the HTTP
+response cannot distinguish "user found" from "user not found" beyond normal network
+jitter.
+
+#### Token Forgery
+
+Reset tokens are 32 random bytes (256-bit entropy) from `crypto.randomBytes`. The
+probability of guessing a valid token is negligible. Tokens are stored server-side and
+compared at the repository layer (timing-safe comparison recommended).
+
+#### Token Replay
+
+`updateUserPassword` atomically clears `resetToken` and `resetTokenExpiry` in the
+same DB transaction as the password update. A second call with the same token returns
+`INVALID_RESET_TOKEN` because the repository lookup finds nothing.
+
+#### Brute Force / Rate Limiting
+
+Both routes must be protected by the named-bucket rate limiter (see Rate Limiting
+above). Without rate limiting, an attacker could brute-force the 64-hex token space —
+though 256-bit entropy makes this computationally infeasible, rate limiting provides
+defence in depth and prevents denial-of-service via token generation storms.
+
+#### Email Interception
+
+Reset links are transmitted over email, which may be less secure than HTTPS. Operators
+should:
+
+1. Use short TTLs (`RESET_TOKEN_TTL_MINUTES ≤ 15`).
+2. Ensure the frontend resets URL accepts tokens only over HTTPS.
+3. Rotate email provider credentials if a breach is suspected.
+
+#### Token Leakage via Logs
+
+Structured log records include only the first 8 hex chars of the token
+(`tokenPrefix`). The full 64-char token is never written to any log record. Do not
+log the raw request body on forgot/reset routes.
+
+#### dangling Tokens on Email Failure
+
+If email delivery fails (retryable or permanent), the token is cleared from the DB
+before the error is propagated. The user is never left with a stored, unsendable token
+that could be leaked via a subsequent DB exposure.
+
+### Razorpay OAuth Initiation
+
+#### Open-Redirect Prevention
+
+The `redirectUrl` origin is validated against an explicit server-side allowlist
+(`RAZORPAY_ALLOWED_REDIRECT_ORIGINS`) before any state is generated. No
+client-supplied URL can bypass this check: even if an attacker crafts a
+`redirectUrl` that looks legitimate, the WHATWG URL parser normalises and compares
+only the origin, closing protocol-relative and scheme-confusion vectors.
+
+#### CSRF / State Forgery
+
+State tokens are 32 random bytes (256-bit entropy) generated by Node's
+`crypto.randomBytes`. They are stored server-side with a 10-minute TTL and
+deleted on first use. An attacker who cannot read the token from the server
+cannot forge or predict a valid state. Cross-user theft is mitigated because
+`validateRazorpayState` returns the `userId` bound to the token — the callback
+handler must verify this matches the authenticated session.
+
+#### Replay Attacks
+
+Tokens are deleted from the store on the first validation call, regardless of
+outcome (success, expiry, or store-miss). This makes it impossible to reuse a
+token even if intercepted after the legitimate callback completes.
+
+#### Mixed-Environment Leakage
+
+Each deployment must set `RAZORPAY_ALLOWED_REDIRECT_ORIGINS` to origins specific
+to that environment. A production token cannot be redirected to a staging origin
+unless the staging origin is explicitly allow-listed in production — an intentional
+deployment decision, not a default.
+
+#### State Enumeration
+
+Response bodies never reflect the stored state back to the caller beyond the
+token itself. Structured logs record only the first 8 hex characters of the token
+(sufficient for correlation, insufficient for forgery).
+
+### Anomaly Detection
+
+#### Spike Attacks
+
+An adversary submitting artificially inflated revenue figures (to obscure a real
+drop later) will surface as `unusual_spike` first. Pair anomaly detection with
+source-level webhook signature verification so that only authenticated payloads
+reach `detectRevenueAnomaly`.
+
+#### Replay Attacks on Baselines
+
+`calibrateFromSeries` is a pure function — it does not persist state. Callers are
+responsible for persisting and versioning `CalibrationResult` objects. An attacker
+who can force a recalibration using manipulated historical data could widen
+thresholds and suppress future anomaly flags. Store calibration results under
+authenticated access control and avoid accepting untrusted series as training data.
+
+#### Env-Var Injection
+
+Threshold env vars are read once at module load and validated strictly. An attacker
+who can modify process environment variables before boot could widen thresholds.
+Treat your deployment secrets and runtime environment accordingly.
+
+#### Log Injection
+
+The `detail` string in `AnomalyResult` and the `AnomalyLogRecord` payload embed
+`period` and `amount` values from the caller-supplied input series. Ensure your log
+aggregator escapes or sanitises these fields before rendering them in dashboards
+or alert messages.
+
+### Webhooks & Integrations — Threat Model Notes
+
+- **CSRF / State Forgery**: OAuth state parameters must be validated and be single-use to prevent cross-site request forgery.
+- **Credential Leakage**: Integration tokens and credentials must never appear in API responses or logs; the E2E suite includes sensitive-string assertions to enforce this.
+- **Replay Attacks**: Webhooks must verify provider signatures and use idempotency keys (or event IDs) to prevent replayed payloads from being processed multiple times.
+- **Provider Spoofing**: IP allowlisting for webhook endpoints (where supported by the provider) should be used in production to ensure payloads originate from the legitimate service.
+- **Least-Privilege Scopes**: OAuth flows must request only the minimum scopes necessary for the integration to function, limiting the blast radius of a credential compromise.
+
+---
+
+## Integration Tests
+
+### Auth Tests (`integration/auth.test.ts`)
+
+| Scenario         | Description                          |
+| ---------------- | ------------------------------------ |
+| User Signup      | Creating new user accounts           |
+| User Login       | Authentication with credentials      |
+| Token Refresh    | Refreshing access tokens             |
+| Get Current User | Fetching authenticated user info     |
+| Forgot Password  | Initiating password reset flow       |
+| Reset Password   | Completing password reset with token |
+
+### Integrations Tests (`integration/integrations.test.ts`)
+
+| Scenario                    | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| List Available Integrations | Get all available integrations (public endpoint)      |
+| List Connected Integrations | Get connected integrations for authenticated business |
+| Stripe OAuth Connect        | Initiate and complete OAuth flow                      |
+| Disconnect Integration      | Remove integration connection                         |
+| Authentication              | Protected routes return 401 when unauthenticated      |
+| Security                    | Sensitive tokens not exposed in responses             |
+
+### Razorpay Connect State Tests (`integration/razorpay-connect-state.test.ts`)
+
+| Suite                   | Scenarios                                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Authentication guard    | 401 when unauthenticated                                                                                                            |
+| Redirect URL validation | Allowlisted origin accepted; non-allowlisted, javascript:, data:, protocol-relative, missing field all rejected (400)               |
+| State token generation  | 64-hex format; uniqueness across calls and users; embedded in authUrl; correct TTL; 503 when client ID absent                       |
+| Structural rejection    | undefined, null, empty string, number, oversized, null byte, control char, SQL injection, XSS                                       |
+| Store-level checks      | Valid token accepted; forged token rejected; expired token rejected and deleted; single-use (replay rejected); cross-user isolation |
+| End-to-end round-trip   | Token from initiation accepted by validate; consumed after first use                                                                |
+
+### Mock Implementation
+
+Auth and integrations tests use in-memory mock routers until the real routes are
+implemented. To switch to real routes, see the comments at the top of each test file.
+
+---
+
+## Database Strategy
+
+For integration tests with a real database:
+
+```typescript
+beforeAll(async () => {
+  await db.migrate.latest();
+});
+
+beforeEach(async () => {
+  await db.raw("BEGIN");
+});
+
+afterEach(async () => {
+  await db.raw("ROLLBACK");
+});
+
+afterAll(async () => {
+  await db.destroy();
+});
+```
+
+---
+
+## Best Practices
+
+- Test complete user flows, not just individual endpoints.
+- Use descriptive test names that document the expected scenario.
+- Clean up test data between tests; never rely on test ordering.
+- Do not expose sensitive information (tokens, keys, passwords) in error messages
+  or test assertions.
+- Test both success and failure cases, including boundary conditions.
+- Verify security requirements (401, 403, rate-limit headers, etc.).
+- Test OAuth state validation and expiration.
+- Ensure tokens and credentials are not leaked in responses.
+
+---
+
+## End-to-End (E2E) Testing Plan
+
+### Scenarios
+
+#### 1. Complete Attestation Lifecycle
+
+1. Merchant logs in and initiates a sync for a specific period.
+2. Backend fetches data from connected integrations (Shopify / Razorpay).
+3. Backend generates a Merkle root.
+4. Backend submits the root to the Soroban contract.
+5. Verify the transaction hash is recorded and the root is queryable on Stellar.
+
+#### 2. Multi-Source Integration Sync
+
+1. User connects both Stripe and Shopify.
+2. Initiate a consolidated sync.
+3. Verify Merkle tree leaves contain data from both sources accurately.
+
+### Security & Resilience
+
+- **Rate Limiting** — verify excessive requests from a single IP/user are throttled.
+- **Idempotency** — re-submitting an attestation with the same `Idempotency-Key`
+  must not create duplicate on-chain transactions.
+- **Auth Resilience** — test deep-link auth and token rotation flows.
+
+### Performance & Scaling
+
+- **Load Testing** — 100+ concurrent attestation submissions.
+- **Large Dataset Aggregation** — sync with 10 000+ line items.
+
+### Security Assumptions
 
 4. **Idempotency Integrity**:
-    - *Assumption*: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
-    - *Validation*: Check local database for single record entry after multiple POST bursts.
-    
-## Read Consistency & Security
+   - _Assumption_: Multiple identical requests do not result in multiple on-chain transactions (saving gas/fees).
+   - _Validation_: Check local database for single record entry after multiple POST bursts.
 
-Veritasor implements a multi-tier consistency model for reading attestations to balance performance and security.
+## Business Service Schemas (`src/services/business/schemas.ts`)
 
-### Consistency Levels
+### Overview
 
-1.  **LOCAL (Default)**:
-    -   Reads directly from the PostgreSQL database.
-    -   Lowest latency, suitable for most dashboard views.
-    -   Subject to indexing lag (DB might be a few blocks behind the chain).
+Zod-based validation and normalization for business create / update inputs.
 
-2.  **STRONG**:
-    -   Reads from the DB and then verifies the record against the Soroban blockchain state.
-    -   Higher latency (requires RPC calls).
-    -   Guarantees the data matches the "Truth on Chain".
-    -   Used for critical audits and legal proof generation.
+| Schema                      | Purpose                                                         |
+| --------------------------- | --------------------------------------------------------------- |
+| `createBusinessInputSchema` | Full validation for new business creation                       |
+| `updateBusinessInputSchema` | Partial validation for PATCH/PUT updates; uses `.passthrough()` |
+| `businessListQuerySchema`   | Pagination + filter params for listing endpoints                |
 
-### Threat Model & Resilience Notes
+---
 
-| Threat | Strategy | Mechanism |
-| :--- | :--- | :--- |
-| **Indexing Lag** | Detection & Auto-Correction | If a STRONG read finds a record on-chain that is still marked as `pending` in the DB, the system auto-updates the DB to `confirmed`. |
-| **Data Tampering** | Integrity Verification | If a STRONG read detects a Merkle root mismatch between the DB and the Chain, it logs a CRITICAL CONSISTENCY ERROR for immediate operator review. |
-| **Revocation Propagation** | Immediate Verification | STRONG reads ensure that if an attestation is revoked on-chain, it is treated as revoked by the system regardless of DB state. |
-| **Network Outage** | Graceful Degradation | If the Soroban RPC is unavailable during a STRONG read, the system falls back to LOCAL data and logs a warning. |
+### Fields and Rules
 
-### Operator Runbook: Discrepancies
+| Field         | Max length | Required    | Notes                                                            |
+| ------------- | ---------- | ----------- | ---------------------------------------------------------------- |
+| `name`        | 255        | ✅ (create) | Unicode letters/numbers, spaces, `-'&.,`; NFC normalized         |
+| `industry`    | 100        | ❌          | Same pattern as name; empty/undefined → `null`                   |
+| `description` | 2000       | ❌          | Free text; newlines allowed; null bytes blocked                  |
+| `website`     | 2048       | ❌          | Lowercased; `https?://` or bare domain; blocked schemes rejected |
+| `countryCode` | 2          | ❌          | ISO 3166-1 alpha-2; uppercased; empty → `null`                   |
 
-If a `CRITICAL CONSISTENCY ERROR` is observed in logs:
-1.  Verify the on-chain data using a block explorer or `stellar-cli`.
-2.  Check the database for unauthorized modifications.
-3.  Initiate a manual re-sync if the DB record is corrupted.
+---
 
-## Email Security & Template Hardening
+### Security Refinements (added in this PR)
 
-The email service implements strict validation and sanitization to prevent injection attacks.
+#### Null-byte / control-character rejection
 
-### Injection Prevention
+Every string field is scanned for null bytes (`U+0000`) and ASCII control
+characters (`U+0001–U+001F`, `U+007F`) before the domain-level pattern check.
+Null bytes are a common vector for bypassing length checks in C-string
+consumers and for directory-traversal in file paths.
 
-1.  **Input Validation (Zod)**:
-    -   All emails are validated against the `z.string().email()` schema.
-    -   Reset links are validated to ensure they use safe protocols (`https:` or `http:` in dev). Unsafe protocols like `javascript:` or `data:` are rejected.
+The `description` field is an exception: it permits `\n` (U+000A) and `\r`
+(U+000D) as legitimate multi-line text while still blocking all other control
+characters.
 
-2.  **HTML Escaping**:
-    -   All dynamic values interpolated into HTML templates are escaped using a dedicated `escapeHtml` utility.
-    -   This prevents attackers from injecting malicious HTML tags (e.g., `<script>`, `<iframe>`, `<img>`) even if they manage to partially control the link or other parameters.
+#### Unicode NFC normalization
 
-### Threat Model: Email Risks
+All string fields are normalized to Unicode NFC (Canonical Decomposition,
+followed by Canonical Composition) before validation. This closes the
+**homoglyph / look-alike** vector where two visually identical strings can
+differ byte-for-byte due to Unicode equivalence (e.g. `é` as `U+00E9` vs
+`U+0065 U+0301`).
 
-| Threat | Strategy | Mechanism |
-| :--- | :--- | :--- |
-| **HTML Injection** | Sanitization | `escapeHtml` converts `<`, `>`, `&`, `"`, and `'` into entities. |
-| **Link Wrapping/Phishing** | Protocol Gating | Only allowed protocols are permitted; others trigger a validation error. |
-| **Header Injection** | SMTP Library Safety | Use of `nodemailer` which handles header sanitization internally, combined with Zod validation of the `to` field. |
-| **Information Leakage** | Dev Stubs | In development mode, reset links are logged to the console instead of sent, and the `to` address is never leaked in unauthorized contexts. |
+#### URL scheme allowlist
+
+The `website` field blocks the following schemes even when the value is
+already lower-cased:
+
+| Blocked scheme | Risk mitigated                                |
+| -------------- | --------------------------------------------- |
+| `javascript:`  | Cross-site scripting via `href`/`src`         |
+| `data:`        | Data-URI XSS and content-type confusion       |
+| `vbscript:`    | Legacy IE XSS                                 |
+| `file:`        | Local file read on desktop clients            |
+| `ftp:`         | Out-of-scope protocol                         |
+| `//` prefix    | Protocol-relative redirect to attacker origin |
+
+Percent-encoded variants (e.g. `javascript%3Aalert`) are also blocked because
+the value is lowercased _before_ the scheme check.
+
+---
+
+### Threat Model Notes
+
+| Vector                         | Mitigation                                                              |
+| ------------------------------ | ----------------------------------------------------------------------- |
+| **Null-byte injection**        | Rejected at `safeString()` layer before Zod chain                       |
+| **Homoglyph spoofing**         | NFC normalization before pattern checks                                 |
+| **XSS via website field**      | Blocked scheme list; `javascript:`, `data:`, and protocol-relative URLs |
+| **SSRF via internal IPs**      | URL pattern only allows `localhost` / `127.0.0.1`; no raw CIDR ranges   |
+| **Control-char log injection** | Control characters stripped from all fields before storage              |
+| **Oversized input DoS**        | Hard max-length checks on every field before any regex                  |
+
+---
+
+### Error Handling
+
+All schemas expose two surfaces:
+
+```typescript
+// Throwing — use in route handlers guarded by a global error handler
+const input = await parseCreateBusinessInput(req.body);
+
+// Safe — use when you need structured error objects without exceptions
+const result = await safeParseCreateBusinessInput(req.body);
+if (!result.success) {
+  return res.status(400).json({ errors: result.error.issues });
+}
+```
+
+`ZodError.issues` follow the shape:
+
+```json
+[
+  {
+    "path": ["name"],
+    "message": "Name contains invalid characters. Use letters, numbers, spaces, hyphens, apostrophes, and ampersands."
+  },
+  {
+    "path": ["website"],
+    "message": "Website scheme is not allowed. Use https:// or omit the scheme."
+  }
+]
+```
+
+Map these to `ValidationError.details` (existing middleware pattern) before
+returning to the client — the internal schema structure is never exposed.
+
+---
+
+### Edge Cases — Documented Behavior
+
+| Input                     | Field           | Outcome                                 |
+| ------------------------- | --------------- | --------------------------------------- |
+| `"NaN"`                   | `name`          | Accepted (matches `\p{L}\p{N}` pattern) |
+| `"Infinity"`              | `website`       | Rejected (fails URL pattern)            |
+| `"-Infinity"`             | `website`       | Rejected (fails URL pattern)            |
+| `"\u0000"`                | any             | Rejected (control-char check)           |
+| NFD-encoded `"Café"`      | any string      | Normalized to NFC before validation     |
+| Whitespace-only string    | optional fields | Trimmed → empty → `null`                |
+| `""` (empty string)       | optional fields | Transformed to `null`                   |
+| `undefined`               | optional fields | Transformed to `null`                   |
+| `"javascript:alert(1)"`   | `website`       | Rejected (blocked scheme)               |
+| `"javascript%3Aalert(1)"` | `website`       | Rejected (lowercased before check)      |
+
+---
+
+### Running the Schema Tests
+
+```bash
+# Run schema tests only
+npx vitest run tests/unit/services/business/schemas.test.ts
+
+# With coverage
+npx vitest run --coverage tests/unit/services/business/schemas.test.ts
+```
+
+Coverage target: **≥ 95% line and branch** on `src/services/business/schemas.ts`.

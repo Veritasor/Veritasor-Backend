@@ -26,6 +26,7 @@ export async function requireAuth(req, res, next) {
         id: payload.userId,
         userId: payload.userId,
         email: payload.email,
+        role: user.role,
     };
     next();
 }

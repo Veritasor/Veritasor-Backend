@@ -24,7 +24,7 @@ import {
 
 describe('Stripe OAuth State Store - Property-Based Tests', () => {
 
-  // ─── Property 1: Token identity preservation ────────────────────────────────
+  // ─── Property 1: Token identity preservation ──────────────────────────────
   describe('Property 1: Token Identity — any storable string round-trips correctly', () => {
     it('arbitrary valid state strings are stored and consumed successfully', () => {
       /**
@@ -80,7 +80,7 @@ describe('Stripe OAuth State Store - Property-Based Tests', () => {
     })
   })
 
-  // ─── Property 3: Boundary expiry metadata ───────────────────────────────────
+  // ─── Property 3: Boundary expiry metadata ──────────────────────────────────
   describe('Property 3: Boundary Expiry Metadata Variants', () => {
     it('token expiring exactly 1 ms in the future is valid', () => {
       /**
@@ -137,7 +137,7 @@ describe('Stripe OAuth State Store - Property-Based Tests', () => {
     })
   })
 
-  // ─── Property 4: State Token One-Time Use ───────────────────────────────────
+  // ─── Property 4: State Token One-Time Use ──────────────────────────────────
   describe('Property 4: State Token One-Time Use', () => {
     it('consumed tokens cannot be retrieved again', () => {
       /**
@@ -383,7 +383,7 @@ describe('Stripe Integration Store — ID Mapping Properties', () => {
     })
   })
 
-  // ── Property 10: Key isolation ───────────────────────────────────────────────
+  // ── Property 10: Key isolation ──────────────────────────────────────────────
   describe('Property 10: Key isolation — distinct Stripe IDs map to independent records', () => {
     it('upserting two different stripeUserIds does not cross-contaminate their records', () => {
       /**
@@ -411,7 +411,7 @@ describe('Stripe Integration Store — ID Mapping Properties', () => {
     })
   })
 
-  // ── Property 11: Missing record returns undefined ────────────────────────────
+  // ── Property 11: Missing record returns undefined ──────────────────────────
   describe('Property 11: Missing record — unknown stripeUserId returns undefined', () => {
     it('getStripeIntegration returns undefined for a stripeUserId that was never upserted', () => {
       /**
@@ -430,7 +430,7 @@ describe('Stripe Integration Store — ID Mapping Properties', () => {
     })
   })
 
-  // ── Property 12: Large / boundary field values ───────────────────────────────
+  // ── Property 12: Large / boundary field values ──────────────────────────────
   describe('Property 12: Large and boundary field values are stored without truncation', () => {
     it('accessToken and businessId at maximum realistic lengths round-trip correctly', () => {
       /**
@@ -455,7 +455,7 @@ describe('Stripe Integration Store — ID Mapping Properties', () => {
   })
 
   // -- Property 13: Validation rejects empty / non-string inputs ---------------
-  describe('Property 13: Validation � invalid inputs throw StripeStoreValidationError', () => {
+  describe('Property 13: Validation — invalid inputs throw StripeStoreValidationError', () => {
     it('upsertStripeIntegration throws on empty stripeUserId', () => {
       fc.assert(
         fc.property(

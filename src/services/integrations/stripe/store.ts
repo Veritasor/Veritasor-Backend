@@ -33,13 +33,22 @@ interface StateRecord {
   expiresAt: number
 }
 
-const stateStore = new Map<string, StateRecord>()
+let stateStore = new Map<string, StateRecord>()
+
 
 /**
  * In-memory store for Stripe integrations.
  * Keyed by stripeUserId for idempotent upserts.
  */
-const integrationStore = new Map<string, StripeIntegration>()
+let integrationStore = new Map<string, StripeIntegration>()
+
+/**
+ * Resets the in-memory stores. Intended for testing purposes only.
+ */
+export function resetStoresForTesting(): void {
+  stateStore = new Map<string, StateRecord>()
+  integrationStore = new Map<string, StripeIntegration>()
+}
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
