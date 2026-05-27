@@ -1,5 +1,7 @@
 import { Router } from 'express'
 import updateProfile from '../services/user/updateProfile.js'
+import { validateBody } from '../middleware/validate.js'
+import { updateUserProfileSchema } from './users.schema.js'
 
 export const usersRouter = Router()
 
@@ -21,16 +23,9 @@ function requireAuth(req: any, res: any, next: any) {
 }
 
 // PATCH /api/users/me - update current user's profile
-usersRouter.patch('/me', requireAuth, async (req: any, res: any) => {
+usersRouter.patch('/me', requireAuth, validateBody(updateUserProfileSchema), async (req: any, res: any) => {
   try {
-    const body = req.body ?? {}
-
-    // Validate allowed fields
-    const allowed = ['name', 'profile']
-    const updates: Record<string, any> = {}
-    for (const k of allowed) {
-      if (k in body) updates[k] = body[k]
-    }
+    const updates = req.body
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ message: 'No updatable fields provided' })
