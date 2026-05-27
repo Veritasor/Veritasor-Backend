@@ -8,6 +8,7 @@ import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
 import { revokeAttestation } from '../services/attestation/revoke.js';
 import { AppError } from '../types/errors.js';
+import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 
 type RouteAttestation = {
   id: string;
@@ -300,19 +301,19 @@ attestationsRouter.get(
       return true;
     });
 
+    const { page, limit, offset } = getPagination({ page: query.page, limit: query.limit });
     const total = filtered.length;
-    const totalPages = Math.max(1, Math.ceil(total / query.limit));
-    const start = (query.page - 1) * query.limit;
-    const items = filtered.slice(start, start + query.limit);
+    const items = filtered.slice(offset, offset + limit);
+    const paginated = formatPaginatedResponse(items, total, page, limit);
 
     res.status(200).json({
       status: 'success',
-      data: items,
+      data: paginated.data,
       pagination: {
-        page: query.page,
-        limit: query.limit,
-        total,
-        totalPages,
+        page: paginated.page,
+        limit: paginated.limit,
+        total: paginated.total,
+        totalPages: paginated.totalPages,
       },
     });
   }),

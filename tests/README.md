@@ -672,6 +672,10 @@ Environment variables used by JWT tests and auth flows:
 - Webhooks: verify provider signatures and reject replays using idempotency keys or event IDs.
 - Integrations: protect OAuth state, never log raw provider tokens, and enforce least-privilege scopes.
 
+## Razorpay Webhook Integration Tests
+
+`tests/integration/razorpay-webhook.test.ts` posts JSON webhook payloads through the mounted Express app and computes the Razorpay HMAC over the same raw UTF-8 bytes sent to the route. Coverage includes valid signed events, tampered payloads, missing signatures, missing `RAZORPAY_WEBHOOK_SECRET`, empty bodies, and replayed event IDs.
+
 ## End-to-End (E2E) Testing Plan
 
 ### Scenarios
