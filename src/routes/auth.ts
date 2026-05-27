@@ -13,6 +13,8 @@ import { resetPassword } from "../services/auth/resetPassword.js";
 import { me } from "../services/auth/me.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { rateLimiter } from "../middleware/rateLimiter.js";
+import { resetPasswordSchema } from "../schemas/resetPasswordSchema.js";
+import { validateBody } from "../middleware/validateBody.js";
 
 export const authRouter = Router();
 
@@ -23,6 +25,28 @@ const authRouteRateLimiters = {
   resetPassword: rateLimiter({ bucket: "auth:reset-password", max: 5 }),
   me: rateLimiter({ bucket: "auth:me", max: 60 }),
 };
+
+
+authRouter.post(
+  "/reset-password",
+  authRouteRateLimiters.resetPassword,
+  validateBody(resetPasswordSchema), // ← NEW: input validation
+  async (req: Request, res: Response) => {
+    try {
+      // Use validated data (guaranteed to match schema)
+      const { token, newPassword } = (
+        req as Request & { validatedBody: { token: string; newPassword: string } }
+      ).validatedBody;
+
+      const result = await resetPassword({ token, newPassword });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Password reset failed";
+      res.status(400).json({ error: message });
+    }
+  }
+);
 
 /**
  * Extract client IP address from request.
