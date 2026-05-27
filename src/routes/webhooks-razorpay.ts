@@ -49,7 +49,7 @@ razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
         }),
       )
 
-      return res.status(error.httpStatus).json({ error: error.message })
+      return res.status(error.httpStatus).json({ error: error.message, code: error.code })
     }
 
     logger.error(

@@ -5,7 +5,6 @@ import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
-import { apiVersionMiddleware, versionResponseMiddleware } from "./middleware/apiVersion.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
 import { authRouter } from "./routes/auth.js";
@@ -17,7 +16,10 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
-import { StartupReadinessReport } from "./startup/readiness.js";
+import {
+  runStartupDependencyReadinessChecks,
+  StartupReadinessReport,
+} from "./startup/readiness.js";
 
 const apiVersionMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const requestedVersion = req.headers['x-api-version'];
@@ -79,12 +81,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
 
+  app.use("/api/webhooks/razorpay", razorpayWebhookRouter);
+
   // 3. Body Parsing
   app.use(express.json());
   app.use(createCorsMiddleware());
   app.use(requestLogger);
 
-  app.use("/api/webhooks/razorpay", razorpayWebhookRouter);
   app.use("/api/analytics", analyticsRouter);
   app.use("/api/attestations", attestationsRouter);
   app.use("/api/auth", authRouter);
