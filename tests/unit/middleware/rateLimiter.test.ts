@@ -190,43 +190,123 @@ describe("rateLimiter", () => {
     expect((secondResponse as unknown as { statusCode: number }).statusCode).toBe(200);
   });
 
-   it("should fall back to safe defaults when environment variables are invalid", () => {
-     process.env.RATE_LIMIT_WINDOW_MS = "invalid";
-     process.env.RATE_LIMIT_MAX = "0";
+  it("should fall back to safe defaults when environment variables are invalid", () => {
+    process.env.RATE_LIMIT_WINDOW_MS = "invalid";
+    process.env.RATE_LIMIT_MAX = "0";
 
-     const middleware = rateLimiter({
-       bucket: (req) => (req.headers["x-bucket"] as string) || "",
-     });
-     const req = createRequest({ headers: { "x-bucket": "" } });
-     const res = createResponse();
-     const next = vi.fn() as NextFunction;
+    const middleware = rateLimiter({
+      bucket: (req) => (req.headers["x-bucket"] as string) || "",
+    });
+    const req = createRequest({ headers: { "x-bucket": "" } });
+    const res = createResponse();
+    const next = vi.fn() as NextFunction;
 
-     middleware(req, res, next);
+    middleware(req, res, next);
 
-     expect(next).toHaveBeenCalledOnce();
-     expect(res.getHeader("x-ratelimit-limit")).toBe("100");
-     expect(res.getHeader("x-ratelimit-bucket")).toBe("POST:/api/auth/login");
-   });
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.getHeader("x-ratelimit-limit")).toBe("100");
+    expect(res.getHeader("x-ratelimit-bucket")).toBe("POST:/api/auth/login");
+  });
 
-   it("should allow burst of up to max requests in fixed window", () => {
-     const middleware = rateLimiter({ bucket: "burst-test", max: 3, windowMs: 1000 });
-     const req = createRequest();
-     const next = vi.fn() as NextFunction;
+  it("should allow burst of up to max requests in fixed window", () => {
+    const middleware = rateLimiter({ bucket: "burst-test", max: 3, windowMs: 1000 });
+    const req = createRequest();
+    const next = vi.fn() as NextFunction;
 
-     // Make 3 requests (should all be allowed)
-     for (let i = 0; i < 3; i++) {
-       const res = createResponse();
-       middleware(req, res, next);
-       expect(next).toHaveBeenCalledTimes(i + 1);
-       expect((res as unknown as { statusCode: number }).statusCode).toBe(200);
-       expect(res.getHeader("x-ratelimit-remaining")).toBe((2 - i).toString());
-     }
+    for (let i = 0; i < 3; i++) {
+      const res = createResponse();
+      middleware(req, res, next);
+      expect(next).toHaveBeenCalledTimes(i + 1);
+      expect((res as unknown as { statusCode: number }).statusCode).toBe(200);
+      expect(res.getHeader("x-ratelimit-remaining")).toBe((2 - i).toString());
+    }
 
-     // 4th request should be rate limited
-     const res = createResponse();
-     middleware(req, res, next);
-     expect(next).toHaveBeenCalledTimes(3); // next not called for 4th request
-     expect((res as unknown as { statusCode: number }).statusCode).toBe(429);
-     expect(res.getHeader("x-ratelimit-remaining")).toBe("0");
-   });
- });
+    const res = createResponse();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalledTimes(3);
+    expect((res as unknown as { statusCode: number }).statusCode).toBe(429);
+    expect(res.getHeader("x-ratelimit-remaining")).toBe("0");
+  });
+
+  // -------------------------------------------------------------------------
+  // REQUIREMENT: Window-Rollover and Cleanup Boundary Tests (#328)
+  // -------------------------------------------------------------------------
+  describe("Window-Rollover & Cleanup Store Edge Cases", () => {
+    it("should verify Retry-After header is at least 1 second near boundary thresholds", () => {
+      const middleware = rateLimiter({ bucket: "boundary-test", max: 1, windowMs: 10_000 });
+      const req = createRequest();
+      const firstRes = createResponse();
+      const secondRes = createResponse();
+      const next = vi.fn() as NextFunction;
+
+      middleware(req, firstRes, next);
+      
+      // Advance time to 9.5 seconds (leaving 500ms left in window)
+      vi.advanceTimersByTime(9500);
+      middleware(req, secondRes, next);
+
+      expect((secondRes as unknown as { statusCode: number }).statusCode).toBe(429);
+      // Math.ceil(500 / 1000) must force Retry-After to evaluate to exactly "1"
+      expect(secondRes.getHeader("retry-after")).toBe("1");
+    });
+
+    it("should assert that cleanupRateLimiterStore ignores unexpired keys when no records are stale", () => {
+      const middleware = rateLimiter({ bucket: "cleanup-active-test", max: 1, windowMs: 5000 });
+      const req = createRequest();
+      const res = createResponse();
+      const next = vi.fn() as NextFunction;
+
+      middleware(req, res, next);
+
+      // Call cleanup before the window expires
+      vi.advanceTimersByTime(2000);
+      cleanupRateLimiterStore(Date.now());
+
+      // Making a subsequent request should flag it as the 2nd attempt, triggering a 429 because it wasn't purged
+      const retryRes = createResponse();
+      middleware(req, retryRes, next);
+      expect((retryRes as unknown as { statusCode: number }).statusCode).toBe(429);
+    });
+
+    it("should verify counter behavior exactly at the window expiration boundary", () => {
+      const middleware = rateLimiter({ bucket: "exact-boundary-test", max: 1, windowMs: 2000 });
+      const req = createRequest();
+      const firstRes = createResponse();
+      const next = vi.fn() as NextFunction;
+
+      middleware(req, firstRes, next);
+
+      // Advance time exactly to the boundary threshold (now === record.resetTime)
+      // The condition inside rateLimiter is (now > record.resetTime). 
+      // Therefore, EXACTLY at the boundary, the window has NOT rolled over yet.
+      vi.advanceTimersByTime(2000);
+      
+      const secondRes = createResponse();
+      middleware(req, secondRes, next);
+      expect((secondRes as unknown as { statusCode: number }).statusCode).toBe(429);
+
+      // Move just 1ms past the boundary (now > record.resetTime) -> window resets!
+      vi.advanceTimersByTime(1);
+      const thirdRes = createResponse();
+      middleware(req, thirdRes, next);
+      expect((thirdRes as unknown as { statusCode: number }).statusCode).toBe(200);
+    });
+
+    it("should handle far-past-boundary windows gracefully and reset count structure", () => {
+      const middleware = rateLimiter({ bucket: "far-past-test", max: 1, windowMs: 5000 });
+      const req = createRequest();
+      const res = createResponse();
+      const next = vi.fn() as NextFunction;
+
+      middleware(req, res, next);
+
+      // Skip way past the window (e.g., 1 hour later)
+      vi.advanceTimersByTime(60 * 60 * 1000);
+      
+      const lateRes = createResponse();
+      middleware(req, lateRes, next);
+      expect((lateRes as unknown as { statusCode: number }).statusCode).toBe(200);
+      expect(lateRes.getHeader("x-ratelimit-remaining")).toBe("0");
+    });
+  });
+});
