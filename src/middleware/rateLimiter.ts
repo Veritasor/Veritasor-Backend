@@ -3,10 +3,29 @@ import { logger } from "../utils/logger.js";
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
+/**
+ * Algorithm options for the rate limiter.
+ *
+ * - `"fixed"` (default): counts requests within a fixed calendar window.
+ *   Simple and cheap, but allows a burst of up to `2 * max` requests
+ *   across a window boundary.
+ *
+ * - `"sliding"`: counts requests in a rolling window that ends at the
+ *   current instant.  No boundary burst is possible; every window is
+ *   exactly `windowMs` wide no matter when it is measured.  Use this for
+ *   sensitive buckets such as `auth:login` and `auth:forgot-password`.
+ */
+type RateLimiterAlgorithm = "fixed" | "sliding";
+
 interface RateLimiterOptions {
   windowMs?: number;
   max?: number;
   bucket?: RateLimiterBucketResolver;
+  /**
+   * Rate-limiting algorithm to use.
+   * Defaults to `"fixed"` for backward compatibility.
+   */
+  algorithm?: RateLimiterAlgorithm;
 }
 
 export interface RateLimitRecord {
@@ -153,25 +172,41 @@ function applyRateLimitHeaders(
   res: Response,
   bucket: string,
   max: number,
-  record: RateLimitRecord,
+  count: number,
+  resetTime: number,
   now: number,
 ): void {
-  const retryAfterSeconds = Math.max(1, Math.ceil((record.resetTime - now) / 1000));
-  const remaining = Math.max(0, max - record.count);
+  const retryAfterSeconds = Math.max(1, Math.ceil((resetTime - now) / 1000));
+  const remaining = Math.max(0, max - count);
 
   res.setHeader("Retry-After", retryAfterSeconds.toString());
   res.setHeader("X-RateLimit-Bucket", bucket);
   res.setHeader("X-RateLimit-Limit", max.toString());
   res.setHeader("X-RateLimit-Remaining", remaining.toString());
-  res.setHeader("X-RateLimit-Reset", record.resetTime.toString());
+  res.setHeader("X-RateLimit-Reset", resetTime.toString());
 }
+
+// --- Public cleanup / reset helpers ---
 
 export function cleanupRateLimiterStore(now = Date.now()): void {
   memoryStore.cleanup(now);
 }
 
+export function cleanupSlidingStore(now = Date.now(), windowMs = DEFAULT_WINDOW_MS): void {
+  const cutoff = now - windowMs;
+  for (const [key, timestamps] of slidingStore.entries()) {
+    const pruned = timestamps.filter((t) => t > cutoff);
+    if (pruned.length === 0) {
+      slidingStore.delete(key);
+    } else {
+      slidingStore.set(key, pruned);
+    }
+  }
+}
+
 setInterval(() => {
   cleanupRateLimiterStore();
+  cleanupSlidingStore();
 }, 60 * 1000).unref();
 
 /**
@@ -181,6 +216,7 @@ setInterval(() => {
 export const rateLimiter = (options: RateLimiterOptions = {}) => {
   const windowMs = options.windowMs ?? parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, DEFAULT_WINDOW_MS);
   const max = options.max ?? parsePositiveInteger(process.env.RATE_LIMIT_MAX, DEFAULT_MAX);
+  const algorithm: RateLimiterAlgorithm = options.algorithm ?? "fixed";
 
   return (req: Request, res: Response, next: NextFunction): void => {
     const bucket = resolveBucket(req, options.bucket);

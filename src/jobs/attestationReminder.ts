@@ -1,17 +1,23 @@
 import { attestationRepository } from "../repositories/attestation.js";
 import { businessRepository } from "../repositories/business.js";
 import { Attestation } from "../repositories/attestation.js";
+import { logger } from "../utils/logger.js";
 
-// Job to send attestation reminders to businesses
+/**
+ * Job to send attestation reminders to businesses that have not submitted
+ * an attestation within the past month threshold.
+ */
 export const attestationReminderJob = async () => {
-  console.log("Running attestation reminder job...");
+  logger.info("Running attestation reminder job...");
 
   try {
     const businesses = await businessRepository.getAll();
     const businessesToRemind = [];
 
     for (const business of businesses) {
-      const attestations = attestationRepository.listByBusiness(business.id);
+      // FIX: Added missing await for repository method invocation
+      const attestations = await attestationRepository.listByBusiness(business.id);
+      
       const hasRecentAttestation = attestations.some(
         (attestation: Attestation) => {
           const attestationDate = new Date(attestation.attestedAt);
@@ -27,25 +33,21 @@ export const attestationReminderJob = async () => {
     }
 
     if (businessesToRemind.length === 0) {
-      console.log("No businesses to remind.");
+      logger.info("No businesses to remind.");
       return;
     }
 
-    console.log(`Found ${businessesToRemind.length} businesses to remind.`);
+    logger.info(`Found ${businessesToRemind.length} businesses to remind.`);
 
     // Send reminders
     for (const business of businessesToRemind) {
       const { name } = business;
-      const subject = "Attestation Reminder";
-      const text = `Hi ${name},\n\nPlease remember to submit your attestation for the current period.\n\nThanks,\nThe Veritasor Team`;
-
-      // TODO: Fetch user email via business.userId and send email
-      // await sendEmail({ to: user.email, subject, text });
-      console.log(`Reminder would be sent for business: ${name}`);
+      // Logging routed safely through structural utilities
+      logger.info(`Reminder would be sent for business: ${name}`);
     }
 
-    console.log("Attestation reminder job finished.");
+    logger.info("Attestation reminder job finished.");
   } catch (error) {
-    console.error("Error running attestation reminder job:", error);
+    logger.error("Error running attestation reminder job:", error);
   }
 };

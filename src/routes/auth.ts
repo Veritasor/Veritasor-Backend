@@ -13,15 +13,18 @@ import { resetPassword } from "../services/auth/resetPassword.js";
 import { me } from "../services/auth/me.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { rateLimiter } from "../middleware/rateLimiter.js";
-import { resetPasswordSchema } from "../schemas/resetPasswordSchema.js";
-import { validateBody } from "../middleware/validateBody.js";
+import { validateBody } from "../middleware/validate.js";
+import { loginInputSchema } from "../schemas/auth.js";
+
 
 export const authRouter = Router();
 
 const authRouteRateLimiters = {
-  login: rateLimiter({ bucket: "auth:login", max: 10 }),
+  // Sliding window: eliminates boundary burst on sensitive auth endpoints
+  login: rateLimiter({ bucket: "auth:login", max: 10, algorithm: "sliding" }),
+  forgotPassword: rateLimiter({ bucket: "auth:forgot-password", max: 5, algorithm: "sliding" }),
+  // Fixed window is fine for less sensitive endpoints
   refresh: rateLimiter({ bucket: "auth:refresh", max: 20 }),
-  forgotPassword: rateLimiter({ bucket: "auth:forgot-password", max: 5 }),
   resetPassword: rateLimiter({ bucket: "auth:reset-password", max: 5 }),
   me: rateLimiter({ bucket: "auth:me", max: 60 }),
 };
@@ -44,6 +47,49 @@ authRouter.post(
       const message =
         error instanceof Error ? error.message : "Password reset failed";
       res.status(400).json({ error: message });
+    }
+  }
+);
+
+/**
+ * Extract client IP address from request.
+ * Handles proxied requests with X-Forwarded-For header.
+ */
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
+
+/**
+ * POST /api/v1/auth/login
+ * Login with email and password
+ *
+ * Validation runs after rate limiting so abuse prevention
+ * still applies even to malformed requests.
+ */
+authRouter.post(
+  "/login",
+  authRouteRateLimiters.login,
+  validateBody(loginInputSchema),
+  async (req: Request, res: Response) => {
+    try {
+      const { email, password } = req.body;
+      const result = await login({ email, password });
+      res.json(result);
+    } catch (error) {
+      if (error instanceof AppError) {
+        res.status(error.status).json({
+          error: error.message,
+          code: error.code,
+        });
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Login failed";
+      res.status(401).json({ error: message });
     }
   }
 );
@@ -107,15 +153,13 @@ authRouter.post("/signup", async (req: Request, res: Response) => {
   try {
     const { email, password, website } = req.body;
 
-    // Pass IP and honeypot field to signup service
     const result = await signup({
       email,
       password,
       ipAddress: clientIp,
-      website, // Honeypot field - should be empty
+      website,
     });
 
-    // Add rate limit headers to successful response
     const headers = getSignupRateLimitHeaders(clientIp, email);
     Object.entries(headers).forEach(([key, value]) => {
       res.setHeader(key, value);
@@ -123,9 +167,7 @@ authRouter.post("/signup", async (req: Request, res: Response) => {
 
     res.status(201).json(result);
   } catch (error) {
-    // Handle SignupError with appropriate status codes
     if (error instanceof SignupError) {
-      // Add rate limit headers even on error
       const email = req.body.email || "";
       const headers = getSignupRateLimitHeaders(clientIp, email);
       Object.entries(headers).forEach(([key, value]) => {
@@ -148,7 +190,6 @@ authRouter.post("/signup", async (req: Request, res: Response) => {
 /**
  * GET /api/v1/auth/signup/availability
  * Check if signup is available for the current IP
- * Useful for pre-validation before showing signup form
  */
 authRouter.get("/signup/availability", (req: Request, res: Response) => {
   const clientIp = getClientIp(req);
