@@ -230,3 +230,123 @@ describe("rateLimiter", () => {
      expect(res.getHeader("x-ratelimit-remaining")).toBe("0");
    });
  });
+
+describe("auth route rate-limit bucket isolation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetRateLimiterStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetRateLimiterStore();
+  });
+
+  it("should isolate all five auth buckets from each other", () => {
+    const buckets = [
+      { name: "auth:login", limiter: rateLimiter({ bucket: "auth:login", max: 2, windowMs: 30_000 }) },
+      { name: "auth:refresh", limiter: rateLimiter({ bucket: "auth:refresh", max: 2, windowMs: 30_000 }) },
+      { name: "auth:forgot-password", limiter: rateLimiter({ bucket: "auth:forgot-password", max: 2, windowMs: 30_000 }) },
+      { name: "auth:reset-password", limiter: rateLimiter({ bucket: "auth:reset-password", max: 2, windowMs: 30_000 }) },
+      { name: "auth:me", limiter: rateLimiter({ bucket: "auth:me", max: 2, windowMs: 30_000 }) },
+    ];
+    const req = createRequest();
+    const next = vi.fn() as NextFunction;
+
+    for (const { name, limiter } of buckets) {
+      const r1 = createResponse();
+      limiter(req, r1, next);
+      expect((r1 as unknown as { statusCode: number }).statusCode).toBe(200);
+      expect(r1.getHeader("x-ratelimit-bucket")).toBe(name);
+      expect(r1.getHeader("x-ratelimit-remaining")).toBe("1");
+
+      const r2 = createResponse();
+      limiter(req, r2, next);
+      expect((r2 as unknown as { statusCode: number }).statusCode).toBe(200);
+      expect(r2.getHeader("x-ratelimit-remaining")).toBe("0");
+
+      const r3 = createResponse();
+      limiter(req, r3, next);
+      expect((r3 as unknown as { statusCode: number }).statusCode).toBe(429);
+    }
+  });
+
+  it("should enforce per-identifier separation between authenticated users on auth:me", () => {
+    const meLimiter = rateLimiter({ bucket: "auth:me", max: 1, windowMs: 30_000 });
+    const next = vi.fn() as NextFunction;
+
+    const user1Req = createRequest({
+      user: { id: "user-1", userId: "user-1", email: "alice@example.com" },
+    });
+    const user2Req = createRequest({
+      user: { id: "user-2", userId: "user-2", email: "bob@example.com" },
+    });
+
+    const u1r1 = createResponse();
+    meLimiter(user1Req, u1r1, next);
+    expect((u1r1 as unknown as { statusCode: number }).statusCode).toBe(200);
+
+    const u1r2 = createResponse();
+    meLimiter(user1Req, u1r2, next);
+    expect((u1r2 as unknown as { statusCode: number }).statusCode).toBe(429);
+
+    const u2r1 = createResponse();
+    meLimiter(user2Req, u2r1, next);
+    expect((u2r1 as unknown as { statusCode: number }).statusCode).toBe(200);
+  });
+
+  it("should enforce per-identifier separation between different IPs on the same bucket", () => {
+    const loginLimiter = rateLimiter({ bucket: "auth:login", max: 1, windowMs: 30_000 });
+    const next = vi.fn() as NextFunction;
+
+    const ip1Req = createRequest({ ip: "192.168.1.1", headers: {} });
+    const ip2Req = createRequest({ ip: "192.168.1.2", headers: {} });
+
+    const r1 = createResponse();
+    loginLimiter(ip1Req, r1, next);
+    expect((r1 as unknown as { statusCode: number }).statusCode).toBe(200);
+
+    const r2 = createResponse();
+    loginLimiter(ip1Req, r2, next);
+    expect((r2 as unknown as { statusCode: number }).statusCode).toBe(429);
+
+    const r3 = createResponse();
+    loginLimiter(ip2Req, r3, next);
+    expect((r3 as unknown as { statusCode: number }).statusCode).toBe(200);
+  });
+
+  it("should reset an exhausted bucket independently when its window expires while other buckets remain exhausted", () => {
+    const loginLimiter = rateLimiter({ bucket: "auth:login", max: 1, windowMs: 30_000 });
+    const refreshLimiter = rateLimiter({ bucket: "auth:refresh", max: 1, windowMs: 60_000 });
+    const req = createRequest();
+    const next = vi.fn() as NextFunction;
+
+    const l1 = createResponse();
+    loginLimiter(req, l1, next);
+    expect((l1 as unknown as { statusCode: number }).statusCode).toBe(200);
+
+    const r1 = createResponse();
+    refreshLimiter(req, r1, next);
+    expect((r1 as unknown as { statusCode: number }).statusCode).toBe(200);
+
+    const l2 = createResponse();
+    loginLimiter(req, l2, next);
+    expect((l2 as unknown as { statusCode: number }).statusCode).toBe(429);
+
+    const r2 = createResponse();
+    refreshLimiter(req, r2, next);
+    expect((r2 as unknown as { statusCode: number }).statusCode).toBe(429);
+
+    vi.advanceTimersByTime(31_000);
+
+    const l3 = createResponse();
+    loginLimiter(req, l3, next);
+    expect((l3 as unknown as { statusCode: number }).statusCode).toBe(200);
+    expect(l3.getHeader("x-ratelimit-bucket")).toBe("auth:login");
+
+    const r3 = createResponse();
+    refreshLimiter(req, r3, next);
+    expect((r3 as unknown as { statusCode: number }).statusCode).toBe(429);
+    expect(r3.getHeader("x-ratelimit-bucket")).toBe("auth:refresh");
+  });
+});
