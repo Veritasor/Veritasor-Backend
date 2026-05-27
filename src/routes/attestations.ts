@@ -7,6 +7,12 @@ import { validateBody, validateQuery } from '../middleware/validate.js';
 import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
 import { revokeAttestation } from '../services/attestation/revoke.js';
+import {
+  integrateRevenueChecks,
+  shouldProceedWithAttestation,
+  type AttestationRevenueSummary,
+  type RawRevenueInput,
+} from '../services/attestation/integrateRevenueChecks.js';
 import { AppError } from '../types/errors.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 
@@ -357,10 +363,47 @@ attestationsRouter.post(
       throw createHttpError(403, 'FORBIDDEN', 'Cannot submit attestation for another business');
     }
 
+    let merkleRoot = payload.merkleRoot;
+    let attestationSummary: AttestationRevenueSummary | undefined;
+
+    // Use revenue entries if provided (automatic Merkle + anomaly detection)
+    if (payload.revenueEntries && payload.revenueEntries.length > 0) {
+      attestationSummary = await integrateRevenueChecks(
+        payload.revenueEntries as RawRevenueInput[],
+        payload.monthlySeries ?? [],
+      );
+
+      merkleRoot = attestationSummary.merkleRoot;
+
+      // Check if attestation should proceed
+      const check = shouldProceedWithAttestation(attestationSummary);
+      if (!check.proceed) {
+        throw createHttpError(
+          400,
+          'VALIDATION_ERROR',
+          `Cannot proceed with attestation: ${check.reason}. Warnings: ${attestationSummary.warnings.join('; ')}`
+        );
+      }
+
+      // Log warnings but allow submission
+      if (attestationSummary.warnings.length > 0) {
+        console.warn(
+          `[Attestation] Warnings for business ${businessId} period ${payload.period}: ` +
+          attestationSummary.warnings.join('; ')
+        );
+      }
+    } else if (!merkleRoot) {
+      throw createHttpError(
+        400,
+        'VALIDATION_ERROR',
+        'Either revenueEntries or merkleRoot must be provided'
+      );
+    }
+
     const onChain = await submitOnChain({
       business: businessId,
       period: payload.period,
-      merkleRoot: payload.merkleRoot,
+      merkleRoot: merkleRoot!,
       timestamp: payload.timestamp ?? Date.now(),
       version: payload.version,
     });
@@ -370,7 +413,7 @@ attestationsRouter.post(
       id: randomUUID(),
       businessId,
       period: payload.period,
-      merkleRoot: payload.merkleRoot,
+      merkleRoot: merkleRoot,
       timestamp: payload.timestamp ?? Date.now(),
       version: payload.version,
       txHash: onChain.txHash,
@@ -385,6 +428,14 @@ attestationsRouter.post(
       status: 'success',
       data: saved,
       txHash: onChain.txHash,
+      ...(attestationSummary && {
+        attestationSummary: {
+          anomaly: attestationSummary.anomaly,
+          drift: attestationSummary.drift,
+          warnings: attestationSummary.warnings,
+          merkleProofsCount: attestationSummary.merkleProofs.length,
+        },
+      }),
     });
   }),
 );
