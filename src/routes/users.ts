@@ -1,24 +1,8 @@
 import { Router } from 'express'
+import { requireAuth } from '../middleware/requireAuth.js'
 import updateProfile from '../services/user/updateProfile.js'
 
 export const usersRouter = Router()
-
-// Very small auth guard for example purposes: requires `Authorization: Bearer <token>`
-function requireAuth(req: any, res: any, next: any) {
-  const header = req.headers?.authorization
-  if (!header || !header.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Unauthorized' })
-  }
-
-  // In a real app we'd verify the token and load the user from DB.
-  // Here we stub a user onto the request for the route to consume.
-  req.user = {
-    id: 'user_123',
-    email: 'alice@example.com',
-    name: 'Alice',
-  }
-  return next()
-}
 
 // PATCH /api/users/me - update current user's profile
 usersRouter.patch('/me', requireAuth, async (req: any, res: any) => {
