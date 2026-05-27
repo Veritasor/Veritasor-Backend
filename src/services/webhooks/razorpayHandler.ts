@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { logger } from '../../utils/logger.js'
+import { isEventProcessed, markEventProcessed, checkTimestampTolerance } from './idempotency.js'
 
 const HANDLED_EVENT_TYPES = new Set(['payment.captured', 'payment.failed', 'order.paid'])
 const DEFAULT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
@@ -134,7 +135,15 @@ export function handleRazorpayEvent(event: RazorpayEvent): { status: string; mes
     }
   }
 
-  processedEvents.add(event.id)
+  const tsCheck = checkTimestampTolerance(event.created_at)
+  if (!tsCheck.valid) {
+    throw new RazorpayWebhookError('invalid_timestamp', 400, tsCheck.reason ?? 'Event timestamp out of tolerance')
+  }
+  if (isEventProcessed(event.id)) {
+    logger.info(JSON.stringify({ type: 'razorpay_webhook_duplicate', eventId: event.id, eventType: event.event }))
+    return { status: 'duplicate', message: `Event ${event.id} already processed` }
+  }
+  markEventProcessed(event.id)
   logger.info(
     JSON.stringify({
       type: 'razorpay_webhook_processing',
