@@ -20,12 +20,36 @@ import { loginInputSchema } from "../schemas/auth.js";
 export const authRouter = Router();
 
 const authRouteRateLimiters = {
-  login: rateLimiter({ bucket: "auth:login", max: 10 }),
+  // Sliding window: eliminates boundary burst on sensitive auth endpoints
+  login: rateLimiter({ bucket: "auth:login", max: 10, algorithm: "sliding" }),
+  forgotPassword: rateLimiter({ bucket: "auth:forgot-password", max: 5, algorithm: "sliding" }),
+  // Fixed window is fine for less sensitive endpoints
   refresh: rateLimiter({ bucket: "auth:refresh", max: 20 }),
-  forgotPassword: rateLimiter({ bucket: "auth:forgot-password", max: 5 }),
   resetPassword: rateLimiter({ bucket: "auth:reset-password", max: 5 }),
   me: rateLimiter({ bucket: "auth:me", max: 60 }),
 };
+
+
+authRouter.post(
+  "/reset-password",
+  authRouteRateLimiters.resetPassword,
+  validateBody(resetPasswordSchema), // ← NEW: input validation
+  async (req: Request, res: Response) => {
+    try {
+      // Use validated data (guaranteed to match schema)
+      const { token, newPassword } = (
+        req as Request & { validatedBody: { token: string; newPassword: string } }
+      ).validatedBody;
+
+      const result = await resetPassword({ token, newPassword });
+      res.json(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Password reset failed";
+      res.status(400).json({ error: message });
+    }
+  }
+);
 
 /**
  * Extract client IP address from request.
@@ -129,15 +153,13 @@ authRouter.post("/signup", async (req: Request, res: Response) => {
   try {
     const { email, password, website } = req.body;
 
-    // Pass IP and honeypot field to signup service
     const result = await signup({
       email,
       password,
       ipAddress: clientIp,
-      website, // Honeypot field - should be empty
+      website,
     });
 
-    // Add rate limit headers to successful response
     const headers = getSignupRateLimitHeaders(clientIp, email);
     Object.entries(headers).forEach(([key, value]) => {
       res.setHeader(key, value);
@@ -145,9 +167,7 @@ authRouter.post("/signup", async (req: Request, res: Response) => {
 
     res.status(201).json(result);
   } catch (error) {
-    // Handle SignupError with appropriate status codes
     if (error instanceof SignupError) {
-      // Add rate limit headers even on error
       const email = req.body.email || "";
       const headers = getSignupRateLimitHeaders(clientIp, email);
       Object.entries(headers).forEach(([key, value]) => {
@@ -170,7 +190,6 @@ authRouter.post("/signup", async (req: Request, res: Response) => {
 /**
  * GET /api/v1/auth/signup/availability
  * Check if signup is available for the current IP
- * Useful for pre-validation before showing signup form
  */
 authRouter.get("/signup/availability", (req: Request, res: Response) => {
   const clientIp = getClientIp(req);
