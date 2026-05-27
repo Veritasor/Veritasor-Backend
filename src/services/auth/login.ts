@@ -1,11 +1,7 @@
-import {
-  findUserByEmail,
-} from '../../repositories/userRepository.js'
+import { findUserByEmail } from '../../repositories/userRepository.js'
 import { verifyPassword } from '../../utils/password.js'
-import {
-  generateToken,
-  generateRefreshToken,
-} from '../../utils/jwt.js'
+import { generateToken, generateRefreshToken } from '../../utils/jwt.js'
+import { AuthenticationError } from '../../types/errors.js'
 
 export interface LoginRequest {
   email: string
@@ -21,21 +17,18 @@ export interface LoginResponse {
   }
 }
 
-export async function login(request: LoginRequest): Promise<LoginResponse> {
+export async function login(request: LoginRequest): Promise<<LoginResponse> {
   const { email, password } = request
 
-  if (!email || !password) {
-    throw new Error('Email and password are required')
-  }
-
+  // Zod schema already validated presence and format
   const user = await findUserByEmail(email)
   if (!user) {
-    throw new Error('Invalid email or password')
+    throw new AuthenticationError('Invalid email or password')
   }
 
   const isPasswordValid = await verifyPassword(password, user.passwordHash)
   if (!isPasswordValid) {
-    throw new Error('Invalid email or password')
+    throw new AuthenticationError('Invalid email or password')
   }
 
   const accessToken = generateToken({

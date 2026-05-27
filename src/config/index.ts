@@ -12,7 +12,15 @@ export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
-  DATABASE_URL: z.string().url("DATABASE_URL must be a valid URL"),
+  DATABASE_URL: z.string({
+    required_error: "DATABASE_URL environment variable is required",
+    invalid_type_error: "DATABASE_URL environment variable is required",
+  }).url("DATABASE_URL must be a valid URL"),
+  PGPOOL_MAX: z.string().optional(),
+  PG_IDLE_TIMEOUT_MS: z.string().optional(),
+  PG_CONN_TIMEOUT_MS: z.string().optional(),
+  PGSSL: z.string().optional(),
+  PGSSL_REJECT_UNAUTHORIZED: z.string().optional(),
   STELLAR_NETWORK: z.enum(["testnet", "public", "futurenet"]).default("testnet"),
   SOROBAN_RPC_URL: z.string().url().default("https://soroban-testnet.stellar.org"),
   SOROBAN_CONTRACT_ID: z.string().default(""),
@@ -36,6 +44,40 @@ export const envSchema = z.object({
   }
 });
 
+const TRUE_VALUES = new Set(["true", "1", "yes", "on"]);
+const FALSE_VALUES = new Set(["false", "0", "no", "off"]);
+
+function parseBooleanEnv(name: string, rawValue: string | undefined, defaultValue: boolean): boolean {
+  if (rawValue === undefined) {
+    return defaultValue;
+  }
+
+  const normalized = rawValue.trim().toLowerCase();
+  if (TRUE_VALUES.has(normalized)) {
+    return true;
+  }
+  if (FALSE_VALUES.has(normalized)) {
+    return false;
+  }
+
+  throw new ConfigValidationError(
+    `${name} must be a boolean value (true/false, 1/0, yes/no, on/off)`,
+  );
+}
+
+function parsePositiveIntEnv(name: string, rawValue: string | undefined, defaultValue: number): number {
+  if (rawValue === undefined) {
+    return defaultValue;
+  }
+
+  const value = Number.parseInt(rawValue.trim(), 10);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ConfigValidationError(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
 let parsedEnv: z.infer<typeof envSchema>;
 
 try {
@@ -44,10 +86,8 @@ try {
 } catch (error) {
   if (error instanceof z.ZodError) {
     logger.error("Configuration validation failed", JSON.stringify(error.format()));
-
-
-    // Avoid silent failures and exit fast
-    throw new ConfigValidationError("Invalid environment configuration. Check logs for details.");
+    const message = error.issues.map((issue) => issue.message).join("; ");
+    throw new ConfigValidationError(`Invalid environment configuration: ${message}`);
   }
   throw error;
 }
@@ -82,6 +122,21 @@ export const config = {
   env: parsedEnv.NODE_ENV,
   jwtSecret: parsedEnv.JWT_SECRET as string,
   databaseUrl: parsedEnv.DATABASE_URL,
+  db: {
+    url: parsedEnv.DATABASE_URL,
+    poolMax: parsePositiveIntEnv("PGPOOL_MAX", parsedEnv.PGPOOL_MAX, 10),
+    idleTimeoutMs: parsePositiveIntEnv("PG_IDLE_TIMEOUT_MS", parsedEnv.PG_IDLE_TIMEOUT_MS, 30_000),
+    connectionTimeoutMs: parsePositiveIntEnv("PG_CONN_TIMEOUT_MS", parsedEnv.PG_CONN_TIMEOUT_MS, 2_000),
+    ssl: parseBooleanEnv("PGSSL", parsedEnv.PGSSL, false)
+      ? {
+          rejectUnauthorized: parseBooleanEnv(
+            "PGSSL_REJECT_UNAUTHORIZED",
+            parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
+            true,
+          ),
+        }
+      : undefined,
+  },
   stellar: {
     network: parsedEnv.STELLAR_NETWORK,
   },
