@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Request, Response, NextFunction } from "express";
 import {
   cleanupRateLimiterStore,
+  cleanupSlidingStore,
   rateLimiter,
   resetRateLimiterStore,
 } from "../../../src/middleware/rateLimiter.js";
@@ -45,7 +46,9 @@ function createRequest(overrides: Partial<Request> = {}): Request {
   } as Request;
 }
 
-describe("rateLimiter", () => {
+// ─── Fixed-window tests (existing behaviour) ──────────────────────────────────
+
+describe("rateLimiter (fixed window — default)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     resetRateLimiterStore();
