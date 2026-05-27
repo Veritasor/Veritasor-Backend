@@ -13,8 +13,9 @@ import { resetPassword } from "../services/auth/resetPassword.js";
 import { me } from "../services/auth/me.js";
 import { requireAuth } from "../middleware/requireAuth.js";
 import { rateLimiter } from "../middleware/rateLimiter.js";
-import { resetPasswordSchema } from "../schemas/resetPasswordSchema.js";
-import { validateBody } from "../middleware/validateBody.js";
+import { validateBody } from "../middleware/validate.js";
+import { loginInputSchema } from "../schemas/auth.js";
+
 
 export const authRouter = Router();
 
@@ -26,24 +27,45 @@ const authRouteRateLimiters = {
   me: rateLimiter({ bucket: "auth:me", max: 60 }),
 };
 
+/**
+ * Extract client IP address from request.
+ * Handles proxied requests with X-Forwarded-For header.
+ */
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
 
+
+/**
+ * POST /api/v1/auth/login
+ * Login with email and password
+ *
+ * Validation runs after rate limiting so abuse prevention
+ * still applies even to malformed requests.
+ */
 authRouter.post(
-  "/reset-password",
-  authRouteRateLimiters.resetPassword,
-  validateBody(resetPasswordSchema), // ← NEW: input validation
+  "/login",
+  authRouteRateLimiters.login,
+  validateBody(loginInputSchema),
   async (req: Request, res: Response) => {
     try {
-      // Use validated data (guaranteed to match schema)
-      const { token, newPassword } = (
-        req as Request & { validatedBody: { token: string; newPassword: string } }
-      ).validatedBody;
-
-      const result = await resetPassword({ token, newPassword });
+      const { email, password } = req.body;
+      const result = await login({ email, password });
       res.json(result);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Password reset failed";
-      res.status(400).json({ error: message });
+      if (error instanceof AppError) {
+        res.status(error.status).json({
+          error: error.message,
+          code: error.code,
+        });
+        return;
+      }
+      const message = error instanceof Error ? error.message : "Login failed";
+      res.status(401).json({ error: message });
     }
   }
 );
