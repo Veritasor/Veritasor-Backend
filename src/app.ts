@@ -116,6 +116,12 @@ export const app = createApp({ ready: true, checks: [] });
  * @returns A promise that resolves to the started HTTP server.
  */
 export async function startServer(port: number): Promise<Server> {
+  // Switch to the persistent DB-backed token store for production deployments.
+  // This must happen before any refresh requests are handled so that rotation
+  // protection is shared across all instances and survives restarts.
+  const { DbUsedTokenStore, setUsedTokenStore } = await import('./services/auth/usedTokenStore.js')
+  setUsedTokenStore(new DbUsedTokenStore())
+
   const readinessReport = await runStartupDependencyReadinessChecks();
 
   if (!readinessReport.ready) {
