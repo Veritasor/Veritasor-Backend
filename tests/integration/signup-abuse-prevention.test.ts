@@ -29,6 +29,7 @@ import {
   findUserByEmail,
 } from "../../src/repositories/userRepository.js";
 import { authRouter } from "../../src/routes/auth.js";
+import { errorHandler } from "../../src/middleware/errorHandler.js";
 
 /**
  * Helper to create a test express app with auth router
@@ -37,6 +38,7 @@ function createTestApp(): Express {
   const app = express();
   app.use(express.json());
   app.use("/api/auth", authRouter);
+  app.use(errorHandler);
   return app;
 }
 
@@ -520,8 +522,8 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty("error");
-      expect(response.body).toHaveProperty("type", "EMAIL_INVALID");
+      expect(response.body.status).toBe("error");
+      expect(response.body.code).toBe("EMAIL_INVALID");
     });
 
     it("should return 400 for disposable email", async () => {
@@ -531,7 +533,7 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.type).toBe("EMAIL_DISPOSABLE");
+      expect(response.body.code).toBe("EMAIL_DISPOSABLE");
     });
 
     it("should return 400 for weak password", async () => {
@@ -541,7 +543,7 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.type).toBe("PASSWORD_WEAK");
+      expect(response.body.code).toBe("PASSWORD_WEAK");
     });
 
     it("should return 400 for honeypot trigger", async () => {
@@ -552,7 +554,7 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.type).toBe("HONEYPOT_TRIGGERED");
+      expect(response.body.code).toBe("HONEYPOT_TRIGGERED");
     });
 
     it("should use client IP from X-Forwarded-For", async () => {

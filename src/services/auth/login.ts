@@ -17,7 +17,7 @@ export interface LoginResponse {
   }
 }
 
-export async function login(request: LoginRequest): Promise<<LoginResponse> {
+export async function login(request: LoginRequest): Promise<LoginResponse> {
   const { email, password } = request
 
   // Zod schema already validated presence and format

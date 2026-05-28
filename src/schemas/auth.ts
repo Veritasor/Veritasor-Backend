@@ -14,10 +14,11 @@ export const loginInputSchema = z.object({
       required_error: "Email is required",
       invalid_type_error: "Email must be a string",
     })
+    .trim()
     .min(1, "Email is required")
     .max(254, "Email must not exceed 254 characters")
     .email("Invalid email format")
-    .transform((val) => val.toLowerCase().trim()),
+    .transform((val) => val.toLowerCase()),
 
   password: z
     .string({
@@ -28,4 +29,4 @@ export const loginInputSchema = z.object({
     .max(128, "Password must not exceed 128 characters"),
 });
 
-export type LoginInput = z.infer<<typeof loginInputSchema>;
+export type LoginInput = z.infer<typeof loginInputSchema>;

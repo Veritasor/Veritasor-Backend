@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import express from "express";
 import { authRouter } from "../auth.js";
+import { errorHandler } from "../../middleware/errorHandler.js";
+import { AppError } from "../../types/errors.js";
 
-// Mock the resetPassword service to isolate route behavior
 vi.mock("../../services/auth/resetPassword.js", () => ({
   resetPassword: vi.fn(),
 }));
@@ -13,6 +14,7 @@ import { resetPassword } from "../../services/auth/resetPassword.js";
 const app = express();
 app.use(express.json());
 app.use("/api/v1/auth", authRouter);
+app.use(errorHandler);
 
 const mockedResetPassword = vi.mocked(resetPassword);
 
@@ -34,8 +36,13 @@ describe("POST /api/v1/auth/reset-password", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Validation Error");
-    expect(res.body.details.some((d: string) => d.includes("64-character"))).toBe(true);
+    expect(res.body.status).toBe("error");
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+    expect(
+      res.body.details.some((d: { message: string }) =>
+        d.message.includes("64-character"),
+      ),
+    ).toBe(true);
     expect(mockedResetPassword).not.toHaveBeenCalled();
   });
 
@@ -48,7 +55,7 @@ describe("POST /api/v1/auth/reset-password", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Validation Error");
+    expect(res.body.code).toBe("VALIDATION_ERROR");
     expect(mockedResetPassword).not.toHaveBeenCalled();
   });
 
@@ -72,8 +79,10 @@ describe("POST /api/v1/auth/reset-password", () => {
     });
   });
 
-  it("returns 400 when service throws (e.g., expired token)", async () => {
-    mockedResetPassword.mockRejectedValue(new Error("Invalid or expired reset token"));
+  it("returns error envelope when service throws invalid token", async () => {
+    mockedResetPassword.mockRejectedValue(
+      new AppError("Invalid or expired reset token", 400, "INVALID_RESET_TOKEN"),
+    );
 
     const res = await request(app)
       .post("/api/v1/auth/reset-password")
@@ -83,6 +92,8 @@ describe("POST /api/v1/auth/reset-password", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Invalid or expired reset token");
+    expect(res.body.status).toBe("error");
+    expect(res.body.code).toBe("INVALID_RESET_TOKEN");
+    expect(res.body.message).toMatch(/invalid or expired/i);
   });
 });

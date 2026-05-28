@@ -2,21 +2,23 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
 import { authRouter } from "./auth.js";
+import { errorHandler } from "../middleware/errorHandler.js";
 import * as loginModule from "../services/auth/login.js";
+import { AuthenticationError } from "../types/errors.js";
 
-// Mock the login service
 vi.mock("../services/auth/login.js", () => ({
   login: vi.fn(),
 }));
 
-// Mock rate limiter to pass through
 vi.mock("../middleware/rateLimiter.js", () => ({
-  rateLimiter: () => (req: any, res: any, next: any) => next(),
+  rateLimiter: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) =>
+    next(),
 }));
 
 const app = express();
 app.use(express.json());
 app.use("/api/v1/auth", authRouter);
+app.use(errorHandler);
 
 describe("POST /api/v1/auth/login", () => {
   beforeEach(() => {
@@ -29,14 +31,16 @@ describe("POST /api/v1/auth/login", () => {
       .send({ password: "secret123" });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe("Validation Error");
+    expect(res.body.status).toBe("error");
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+    expect(res.body.message).toBe("Validation Error");
     expect(res.body.details).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           path: ["email"],
           message: expect.stringMatching(/required/i),
         }),
-      ])
+      ]),
     );
   });
 
@@ -52,7 +56,7 @@ describe("POST /api/v1/auth/login", () => {
           path: ["password"],
           message: expect.stringMatching(/required/i),
         }),
-      ])
+      ]),
     );
   });
 
@@ -68,7 +72,7 @@ describe("POST /api/v1/auth/login", () => {
           path: ["email"],
           message: expect.stringMatching(/string/i),
         }),
-      ])
+      ]),
     );
   });
 
@@ -84,7 +88,7 @@ describe("POST /api/v1/auth/login", () => {
           path: ["email"],
           message: expect.stringMatching(/email/i),
         }),
-      ])
+      ]),
     );
   });
 
@@ -100,7 +104,7 @@ describe("POST /api/v1/auth/login", () => {
           path: ["password"],
           message: expect.stringMatching(/128/i),
         }),
-      ])
+      ]),
     );
   });
 
@@ -122,9 +126,9 @@ describe("POST /api/v1/auth/login", () => {
     });
   });
 
-  it("returns 401 for invalid credentials", async () => {
+  it("returns 401 envelope for invalid credentials", async () => {
     vi.mocked(loginModule.login).mockRejectedValue(
-      new Error("Invalid email or password")
+      new AuthenticationError("Invalid email or password"),
     );
 
     const res = await request(app)
@@ -132,7 +136,9 @@ describe("POST /api/v1/auth/login", () => {
       .send({ email: "user@example.com", password: "wrongpassword" });
 
     expect(res.status).toBe(401);
-    expect(res.body.error).toMatch(/invalid/i);
+    expect(res.body.status).toBe("error");
+    expect(res.body.code).toBe("AUTHENTICATION_ERROR");
+    expect(res.body.message).toMatch(/invalid/i);
   });
 
   it("returns 200 with tokens for valid login", async () => {
