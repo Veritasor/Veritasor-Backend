@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../utils/logger.js";
+import { rateLimitRejections } from "../metrics.js";
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
@@ -242,6 +243,7 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
               timestamp: new Date(now).toISOString(),
             })
           );
+          rateLimitRejections.inc({ bucket });
           res.status(429).json({ error: "Too many requests, please try again later." });
           return;
         }
@@ -276,6 +278,7 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
               timestamp: new Date(now).toISOString(),
             })
           );
+          rateLimitRejections.inc({ bucket });
           res.status(429).json({ error: "Too many requests, please try again later." });
           return;
         }
