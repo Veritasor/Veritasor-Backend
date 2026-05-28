@@ -44,6 +44,10 @@ paths:
   /integrations/{provider}/connect:
     post:
       summary: Initiate connect flow for a provider
+      description: |
+        Starts the provider-specific connect flow.
+        Razorpay connections require `apiKeyId` and `apiKeySecret` in the request body.
+        The backend verifies the credentials against Razorpay before storing them and only returns a redacted secret to clients.
       tags: [integrations]
       parameters:
         - name: provider
@@ -165,6 +169,14 @@ components:
         state:
           type: string
           example: "optional-csrf-state"
+        apiKeyId:
+          type: string
+          description: Razorpay API key id without leading or trailing whitespace.
+          example: "rzp_test_123456789"
+        apiKeySecret:
+          type: string
+          description: Razorpay API key secret. Only accepted during connect and never returned in plain text.
+          example: "secret_1234567890abcdef"
 
     ConnectResponse:
       type: object

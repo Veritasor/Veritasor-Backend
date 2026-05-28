@@ -4,6 +4,7 @@ export type ConnectedIntegration = {
   id: string
   provider: string
   userId: string
+  businessId: string
   meta: Record<string, any>
   createdAt: string
 }
@@ -26,7 +27,12 @@ export const integrationRepository = {
   findByUserAndProvider: (userId: string, provider: string) =>
     store.find((s) => s.userId === userId && s.provider === provider) ?? null,
 
+  findByBusinessAndProvider: (businessId: string, provider: string) =>
+    store.find((s) => s.businessId === businessId && s.provider === provider) ?? null,
+
   listByUser: (userId: string) => store.filter((s) => s.userId === userId),
+
+  listByBusiness: (businessId: string) => store.filter((s) => s.businessId === businessId),
 
   deleteById: (id: string) => {
     const idx = store.findIndex((s) => s.id === id)

@@ -15,13 +15,15 @@
 
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { validateBody } from '../middleware/validate.js';
+import { validateBody, validateQuery } from '../middleware/validate.js';
+import { asyncErrorHandler } from '../middleware/errorHandler.js';
 import { createBusiness } from '../services/business/create.js';
 import { updateBusiness } from '../services/business/update.js';
-import { getMyBusiness, getBusinessById } from '../services/business/get.js';
+import { getMyBusiness, getBusinessById, listBusinesses } from '../services/business/get.js';
 import {
   createBusinessInputSchema,
   updateBusinessInputSchema,
+  businessListQuerySchema,
 } from '../services/business/schemas.js';
 
 const router = Router();
@@ -50,7 +52,7 @@ router.post(
   '/',
   requireAuth,
   validateBody(createBusinessInputSchema),
-  createBusiness,
+  asyncErrorHandler(createBusiness),
 );
 
 /**
@@ -68,7 +70,7 @@ router.post(
  * @returns {error} 404 - Not found
  * @returns {error} 500 - Server error
  */
-router.get('/me', requireAuth, getMyBusiness);
+router.get('/me', requireAuth, asyncErrorHandler(getMyBusiness));
 
 /**
  * PATCH /me
@@ -94,8 +96,28 @@ router.patch(
   '/me',
   requireAuth,
   validateBody(updateBusinessInputSchema),
-  updateBusiness,
+  asyncErrorHandler(updateBusiness),
 );
+
+/**
+ * GET /
+ * List businesses
+ *
+ * Public endpoint - no authentication required.
+ * Supports keyset pagination and filtering.
+ *
+ * @route GET /api/businesses
+ * @param {number} [limit] - Number of items to return (default 20, max 100)
+ * @param {string} [cursor] - Keyset pagination cursor
+ * @param {string} [sortBy] - Sort column (createdAt, name)
+ * @param {string} [sortOrder] - Sort order (asc, desc)
+ * @param {string} [industry] - Filter by industry
+ *
+ * @returns {object} 200 - Paginated list of businesses
+ * @returns {error} 400 - Validation error
+ * @returns {error} 500 - Server error
+ */
+router.get('/', validateQuery(businessListQuerySchema), asyncErrorHandler(listBusinesses));
 
 /**
  * GET /:id
@@ -111,6 +133,6 @@ router.patch(
  * @returns {error} 404 - Not found
  * @returns {error} 500 - Server error
  */
-router.get('/:id', getBusinessById);
+router.get('/:id', asyncErrorHandler(getBusinessById));
 
 export default router;

@@ -1,3 +1,33 @@
+## Signup Abuse Prevention Edge Cases
+
+### Normalization Logic
+
+- **IP Addresses:**
+  - All IPs are normalized before rate limiting. IPv6 addresses are canonicalized, and IPv4-mapped IPv6 addresses (e.g., `::ffff:127.0.0.1`) are treated as their IPv4 equivalent.
+  - This ensures that adversarial clients cannot bypass rate limits by using alternate IP notations.
+- **Emails:**
+  - All emails are normalized by trimming, lowercasing, and removing plus-addressing (e.g., `user+tag@example.com` → `user@example.com`).
+  - For Gmail/Googlemail addresses, optional dot removal is supported (not enabled by default for privacy).
+  - This prevents abuse via aliasing tricks and ensures consistent enforcement.
+
+### Edge Case Test Coverage
+
+- **IPv6 normalization:**
+  - Tests ensure that different notations of the same IPv6 address are rate-limited as one.
+  - IPv4-mapped IPv6 addresses are treated as IPv4.
+- **Plus-address aliasing:**
+  - Tests ensure that `user+anything@example.com` and `user@example.com` are treated as the same for rate limiting.
+- **Burst traffic:**
+  - Simulated rapid signup attempts from the same IP/email are tested to ensure blocking after the configured threshold.
+
+All new logic is covered by unit tests in `tests/unit/utils/signupRateLimiter.test.ts` and `tests/unit/utils/abusePrevention.test.ts`.
+
+### Operator Notes
+
+- No silent failures: all blocks and denials are observable via structured logs and rate limit headers.
+- Error types are explicit and surfaced in API responses.
+
+**Minimum 95% coverage is enforced for these modules.**
 # Test Setup Guide
 
 ## Installation
@@ -9,11 +39,10 @@ npm install
 ```
 
 This will install:
-- `jest` - Test framework
-- `@jest/globals` - Jest globals for TypeScript
-- `ts-jest` - TypeScript preprocessor for Jest
+- `vitest` - Test framework
 - `supertest` - HTTP testing library
-- `@types/jest` - TypeScript types for Jest
+- `@vitest/coverage-v8` - Code coverage provider
+- `fast-check` - Property-based testing
 - `@types/supertest` - TypeScript types for Supertest
 
 ## Running Tests
@@ -99,17 +128,11 @@ Once the actual auth routes are implemented:
 Follow this pattern for new integration tests:
 
 ```typescript
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import request from 'supertest'
-import express from 'express'
+import { app } from '../../src/app.js'
 
 describe('Feature Name', () => {
-  let app: express.Express
-
-  beforeAll(() => {
-    // Setup test app
-  })
-
   it('should do something', async () => {
     const response = await request(app)
       .get('/api/endpoint')
@@ -118,6 +141,46 @@ describe('Feature Name', () => {
     expect(response.body).toHaveProperty('data')
   })
 })
+```
+
+## Multi-Tenant Integration Testing
+
+To ensure proper isolation between tenants in integration tests, use the shared `tenant.ts` fixture. This fixture manages isolated user contexts, roles, and authentication headers.
+
+### Core Utilities
+
+- `createIsolatedTenant(role, overrides)`: Creates a new user with a unique `userId` and `token`.
+- `getAuthHeaders(tenant)`: Generates the necessary headers (`Authorization`, `x-user-id`, `x-user-role`) for the tenant.
+- `clearTenants()`: Clears the global tenant registry. **Must be called in `beforeEach`**.
+
+### Usage Pattern
+
+```typescript
+import { createIsolatedTenant, getAuthHeaders, clearTenants } from '../fixtures/tenant.js';
+
+describe('Isolated Service', () => {
+  beforeEach(() => {
+    clearTenants(); // Prevent cross-test leakage
+  });
+
+  it('should isolate data between tenants', async () => {
+    const tenantA = createIsolatedTenant('user');
+    const tenantB = createIsolatedTenant('user');
+
+    // Action as Tenant A
+    await request(app)
+      .post('/api/resource')
+      .set(getAuthHeaders(tenantA))
+      .send({ data: 'A' });
+
+    // Verify Tenant B cannot see it
+    const res = await request(app)
+      .get('/api/resource')
+      .set(getAuthHeaders(tenantB));
+
+    expect(res.body.data).not.toContain('A');
+  });
+});
 ```
 
 ## E2E Environment Setup

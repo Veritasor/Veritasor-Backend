@@ -22,3 +22,24 @@ export async function getBusinessById(req: Request, res: Response) {
   );
   return res.status(200).json(publicBusiness);
 }
+
+export async function listBusinesses(req: Request, res: Response) {
+  const query = req.query as any;
+  const result = await businessRepository.list({
+    limit: query.limit,
+    cursor: query.cursor,
+    sortBy: query.sortBy,
+    sortOrder: query.sortOrder,
+    industry: query.industry,
+  });
+
+  // Filter public fields for each business
+  const items = result.items.map(business => 
+    Object.fromEntries(Object.entries(business).filter(([key]) => PUBLIC_FIELDS.includes(key as any)))
+  );
+
+  return res.status(200).json({
+    items,
+    nextCursor: result.nextCursor,
+  });
+}

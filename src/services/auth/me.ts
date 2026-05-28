@@ -1,4 +1,5 @@
 import { findUserById } from '../../repositories/userRepository.js'
+import { AuthenticationError, NotFoundError } from '../../types/errors.js'
 
 export interface MeResponse {
   user: {
@@ -11,12 +12,12 @@ export interface MeResponse {
 
 export async function me(userId: string): Promise<MeResponse> {
   if (!userId) {
-    throw new Error('User ID is required')
+    throw new AuthenticationError('User ID is required')
   }
 
   const user = await findUserById(userId)
   if (!user) {
-    throw new Error('User not found')
+    throw new NotFoundError('User not found')
   }
 
   return {

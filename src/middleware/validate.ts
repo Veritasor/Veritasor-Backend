@@ -9,7 +9,7 @@ export const validateBody = (schema: z.ZodSchema) => {
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return next(new ValidationError(error.issues));
+        return next(new ValidationError(error.issues.map((i) => ({ path: i.path, message: i.message }))));
       }
       next(error);
     }
@@ -23,7 +23,7 @@ export const validateQuery = (schema: z.ZodSchema) => {
       next();
     } catch (error) {
       if (error instanceof z.ZodError) {
-        return next(new ValidationError(error.issues));
+        return next(new ValidationError(error.issues.map((i) => ({ path: i.path, message: i.message }))));
       }
       next(error);
     }

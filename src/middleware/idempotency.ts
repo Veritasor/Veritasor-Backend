@@ -15,7 +15,9 @@
  * @version 1.0.0
  */
 
+import { createHash } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
+import { logger } from '../utils/logger.js';
 
 // ============================================================================
 // Constants
@@ -49,6 +51,8 @@ export interface IdempotencyEntry {
   status: number;
   /** Response body (cached) */
   body: unknown;
+  /** Hash of the original request body to detect collisions */
+  requestHash: string;
   /** Timestamp when the entry was created */
   createdAt: number;
 }
@@ -129,7 +133,10 @@ export interface IdempotencyOptions {
  * In-memory storage for idempotency entries
  * Note: This is suitable for single-instance deployments only.
  * For production, use Redis or similar distributed cache.
+ * 
+ * Safety: Implements a basic size limit to prevent memory exhaustion.
  */
+const MAX_MEMORY_STORE_SIZE = 10000;
 const memoryStore = new Map<string, { entry: IdempotencyEntry; expiresAt: number }>();
 
 /**
@@ -157,6 +164,22 @@ export const inMemoryIdempotencyStore: IdempotencyStore = {
    * Store an idempotency entry
    */
   async set(key: string, entry: IdempotencyEntry, ttlMs: number): Promise<void> {
+    // Basic memory protection: if store is too large, clear old entries or just stop
+    // In a real LRU we'd evict the oldest, but here we just prevent unbounded growth
+    if (memoryStore.size >= MAX_MEMORY_STORE_SIZE) {
+      logger.warn(`[idempotency] Memory store reached limit (${MAX_MEMORY_STORE_SIZE}). Pruning expired entries.`);
+      const now = Date.now();
+      for (const [k, v] of memoryStore.entries()) {
+        if (now > v.expiresAt) memoryStore.delete(k);
+      }
+      
+      // If still too large, stop adding to prevent OOM
+      if (memoryStore.size >= MAX_MEMORY_STORE_SIZE) {
+        logger.error('[idempotency] Memory store still at limit after pruning. Skipping cache set.');
+        return;
+      }
+    }
+
     memoryStore.set(key, {
       entry,
       expiresAt: Date.now() + ttlMs,
@@ -211,6 +234,16 @@ function isValidKeyFormat(key: string, strict: boolean): boolean {
  */
 function generateStoreKey(scope: string, userKey: string, keyValue: string): string {
   return `idempotency:${scope}:${userKey}:${keyValue}`;
+}
+
+/**
+ * Generate a hash of the request body for integrity checking
+ * @param body - Request body
+ * @returns SHA-256 hash
+ */
+function generateRequestHash(body: unknown): string {
+  const content = body ? JSON.stringify(body) : '';
+  return createHash('sha256').update(content).digest('hex');
 }
 
 // ============================================================================
@@ -297,10 +330,23 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
     // Generate unique key for this user + scope + key combination
     const userKey = getUserKey(req);
     const storeKey = generateStoreKey(scope, userKey, keyValue);
+    const currentRequestHash = generateRequestHash(req.body);
 
     // Check for cached response
     const cached = await store.get(storeKey);
     if (cached) {
+      // Verify body integrity to prevent key collisions with different payloads
+      if (cached.requestHash !== currentRequestHash) {
+        logger.warn(`[idempotency] Key collision detected for key: ${keyValue}. Payloads do not match.`);
+        res.status(422).json({
+          error: 'Unprocessable Entity',
+          message: 'Idempotency key already used with a different request body',
+          code: 'IDEMPOTENCY_KEY_COLLISION',
+        });
+        return;
+      }
+
+      logger.info(`[idempotency] Returning cached response for key: ${keyValue}`);
       // Return cached response
       res.status(cached.status).json(cached.body);
       return;
@@ -324,10 +370,11 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
         const entry: IdempotencyEntry = {
           status: statusCode,
           body,
+          requestHash: currentRequestHash,
           createdAt: Date.now(),
         };
         store.set(storeKey, entry, ttlMs).catch((err) => {
-          console.error('[idempotency] Failed to cache response:', err);
+          logger.error('[idempotency] Failed to cache response:', err);
         });
       }
       return originalJson(body);

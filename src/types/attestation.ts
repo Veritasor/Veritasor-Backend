@@ -151,3 +151,35 @@ export function createConflictError(
 ): ConflictError {
   return new ConflictError(type, message, details);
 }
+
+/**
+ * Consistency level for read operations
+ */
+export enum ReadConsistency {
+  /** Fastest: Read only from local database. */
+  LOCAL = 'local',
+  /** Strongest: Verify local database record against Soroban chain state. */
+  STRONG = 'strong',
+}
+
+/**
+ * Options for read operations with consistency control
+ */
+export interface ConsistencyOptions {
+  /** Desired consistency level (defaults to LOCAL) */
+  consistency?: ReadConsistency;
+}
+
+/**
+ * Details about a consistency discrepancy between DB and Chain
+ */
+export interface ConsistencyDiscrepancy {
+  id: string;
+  businessId: string;
+  period: string;
+  localRoot: string;
+  chainRoot: string;
+  localStatus: AttestationStatus;
+  chainStatus?: string;
+  timestamp: Date;
+}

@@ -4,7 +4,12 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'src/**/*.test.ts'],
+    env: {
+      DATABASE_URL: 'postgres://localhost:5432/test_db',
+      NODE_ENV: 'test',
+      SOROBAN_CONTRACT_ID: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
@@ -12,5 +17,10 @@ export default defineConfig({
       exclude: ['src/**/*.d.ts', 'src/index.ts'],
       reportsDirectory: 'coverage',
     },
+    server: {
+      deps: {
+        inline: ['C:']
+      }
+    }
   },
 })

@@ -1,3 +1,7 @@
+
+// Utilities for normalization
+import { normalizeEmail } from './abusePrevention.js';
+
 /**
  * Signup Rate Limiter Store
  *
@@ -8,6 +12,34 @@
  *
  * @module signupRateLimiter
  */
+
+import net from 'net';
+
+/**
+ * Normalize an IP address (IPv4 or IPv6) for consistent storage.
+ * - Collapses IPv6 to canonical form.
+ * - Collapses IPv4-mapped IPv6 addresses to IPv4.
+ * @param ip - The IP address string
+ * @returns Normalized IP address string
+ */
+function normalizeIp(ip: string): string {
+  try {
+    // Remove port if present (e.g., ::1:12345)
+    const ipOnly = ip.split(':').length > 2 ? ip : ip.split(':')[0];
+    const parsed = net.isIP(ipOnly) === 6 ? ipOnly : ip;
+    // Canonicalize IPv6
+    if (net.isIP(parsed) === 6) {
+      // Collapse IPv4-mapped IPv6
+      if (parsed.startsWith('::ffff:')) {
+        return parsed.replace('::ffff:', '');
+      }
+      return parsed.toLowerCase();
+    }
+    return parsed;
+  } catch {
+    return ip;
+  }
+}
 
 /**
  * Record tracking signup attempts for a single identifier (IP or email)
@@ -189,8 +221,10 @@ class SignupRateLimitStore {
    */
   checkLimit(ip: string, email: string): RateLimitCheckResult {
     const now = Date.now();
-    const ipRecord = this.getOrCreateRecord(this.ipStore, ip);
-    const emailRecord = this.getOrCreateRecord(this.emailStore, email);
+    const normIp = normalizeIp(ip);
+    const normEmail = normalizeEmail(email);
+    const ipRecord = this.getOrCreateRecord(this.ipStore, normIp);
+    const emailRecord = this.getOrCreateRecord(this.emailStore, normEmail);
 
     // Check if IP is blocked
     if (ipRecord.isBlocked) {
@@ -355,14 +389,16 @@ class SignupRateLimitStore {
    */
   recordAttempt(ip: string, email: string): void {
     const now = Date.now();
+    const normIp = normalizeIp(ip);
+    const normEmail = normalizeEmail(email);
 
     // Update IP record
-    const ipRecord = this.getOrCreateRecord(this.ipStore, ip);
+    const ipRecord = this.getOrCreateRecord(this.ipStore, normIp);
     ipRecord.attemptCount++;
     ipRecord.expiresAt = now + this.config.windowMs;
 
     // Update email record
-    const emailRecord = this.getOrCreateRecord(this.emailStore, email);
+    const emailRecord = this.getOrCreateRecord(this.emailStore, normEmail);
     emailRecord.attemptCount++;
     emailRecord.expiresAt = now + this.config.windowMs;
 
@@ -392,9 +428,11 @@ class SignupRateLimitStore {
     blockOnThreshold: boolean = false,
   ): void {
     const now = Date.now();
+    const normIp = normalizeIp(ip);
+    const normEmail = normalizeEmail(email);
 
     // Update IP record
-    const ipRecord = this.getOrCreateRecord(this.ipStore, ip);
+    const ipRecord = this.getOrCreateRecord(this.ipStore, normIp);
     ipRecord.failedAttempts++;
 
     if (
@@ -407,7 +445,7 @@ class SignupRateLimitStore {
     }
 
     // Update email record
-    const emailRecord = this.getOrCreateRecord(this.emailStore, email);
+    const emailRecord = this.getOrCreateRecord(this.emailStore, normEmail);
     emailRecord.failedAttempts++;
 
     if (
@@ -430,12 +468,13 @@ class SignupRateLimitStore {
    * @param email - Email being registered (normalized)
    */
   recordSuccess(ip: string, email: string): void {
-    const ipRecord = this.ipStore.get(ip);
+    const normIp = normalizeIp(ip);
+    const normEmail = normalizeEmail(email);
+    const ipRecord = this.ipStore.get(normIp);
     if (ipRecord) {
       ipRecord.failedAttempts = 0;
     }
-
-    const emailRecord = this.emailStore.get(email);
+    const emailRecord = this.emailStore.get(normEmail);
     if (emailRecord) {
       emailRecord.failedAttempts = 0;
     }
@@ -455,8 +494,9 @@ class SignupRateLimitStore {
     reason: string,
     durationMs?: number,
   ): void {
+    const norm = type === 'ip' ? normalizeIp(identifier) : normalizeEmail(identifier);
     const store = type === "ip" ? this.ipStore : this.emailStore;
-    const record = this.getOrCreateRecord(store, identifier);
+    const record = this.getOrCreateRecord(store, norm);
 
     record.isBlocked = true;
     record.blockReason = reason;
@@ -470,8 +510,9 @@ class SignupRateLimitStore {
    * @param identifier - The identifier to unblock
    */
   unblock(type: "ip" | "email", identifier: string): void {
+    const norm = type === 'ip' ? normalizeIp(identifier) : normalizeEmail(identifier);
     const store = type === "ip" ? this.ipStore : this.emailStore;
-    const record = store.get(identifier);
+    const record = store.get(norm);
 
     if (record) {
       record.isBlocked = false;

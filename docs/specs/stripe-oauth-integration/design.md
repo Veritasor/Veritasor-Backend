@@ -121,6 +121,7 @@ export interface CallbackResult {
 
 export async function handleCallback(params: CallbackParams): Promise<CallbackResult> {
   // Validate required parameters (code, state)
+  // Validate state format (64-char lowercase hex)
   // Consume state token from store (validates and removes)
   // If state invalid/expired, return error
   // Exchange authorization code for tokens via POST to Stripe token endpoint
@@ -218,7 +219,7 @@ await create({
 
 ```typescript
 {
-  state: string,                 // 32-byte hex-encoded random token
+  state: string,                 // 32-byte token encoded as 64-char lowercase hex
   expiresAt: number,             // Unix timestamp (milliseconds)
 }
 ```

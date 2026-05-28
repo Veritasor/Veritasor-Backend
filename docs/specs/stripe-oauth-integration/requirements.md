@@ -39,13 +39,14 @@ This document specifies the requirements for implementing Stripe OAuth integrati
 1. WHEN the callback endpoint receives a request, THE Stripe_OAuth_Service SHALL validate that the code, state parameters are present
 2. WHEN the callback endpoint receives a request, THE Stripe_OAuth_Service SHALL retrieve and consume the OAuth_State from the State_Store
 3. IF the OAuth_State does not match or has expired, THEN THE Route_Handler SHALL return an HTTP 400 error indicating invalid or expired state
-4. WHEN the OAuth_State is valid, THE Stripe_OAuth_Service SHALL exchange the Authorization_Code for tokens by making a POST request to Stripe's token endpoint
-5. WHEN the token exchange succeeds, THE Stripe_OAuth_Service SHALL extract the Access_Token and Refresh_Token from the response
-6. WHEN tokens are obtained, THE Stripe_OAuth_Service SHALL retrieve the Stripe account ID from the token response
-7. WHEN tokens are obtained, THE Integration_Repository SHALL create a new integration record with provider set to "stripe", the user ID, Stripe account ID as externalId, and tokens stored in the token field
-8. WHEN the integration is successfully stored, THE Route_Handler SHALL redirect to the frontend success URL if STRIPE_SUCCESS_REDIRECT is configured
-9. IF STRIPE_SUCCESS_REDIRECT is not configured, THEN THE Route_Handler SHALL return an HTTP 200 JSON response with success status
-10. IF the token exchange fails, THEN THE Route_Handler SHALL return an HTTP 400 error with a descriptive message
+4. BEFORE consuming from State_Store, THE Stripe_OAuth_Service SHALL validate the OAuth_State format as a 64-character lowercase hexadecimal token
+5. WHEN the OAuth_State is valid, THE Stripe_OAuth_Service SHALL exchange the Authorization_Code for tokens by making a POST request to Stripe's token endpoint
+6. WHEN the token exchange succeeds, THE Stripe_OAuth_Service SHALL extract the Access_Token and Refresh_Token from the response
+7. WHEN tokens are obtained, THE Stripe_OAuth_Service SHALL retrieve the Stripe account ID from the token response
+8. WHEN tokens are obtained, THE Integration_Repository SHALL create a new integration record with provider set to "stripe", the user ID, Stripe account ID as externalId, and tokens stored in the token field
+9. WHEN the integration is successfully stored, THE Route_Handler SHALL redirect to the frontend success URL if STRIPE_SUCCESS_REDIRECT is configured
+10. IF STRIPE_SUCCESS_REDIRECT is not configured, THEN THE Route_Handler SHALL return an HTTP 200 JSON response with success status
+11. IF the token exchange fails, THEN THE Route_Handler SHALL return an HTTP 400 error with a descriptive message
 
 ### Requirement 3: Secure Token Storage
 

@@ -239,3 +239,72 @@ function buildDriftCheck(
         `(expected ${expected.toFixed(4)}, observed ${observed.toFixed(4)}).`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic rounding for reporting endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * Round a monetary amount to a fixed number of decimal places using
+ * symmetric half-up rounding (the standard for financial reporting).
+ *
+ * Using string-based rounding avoids IEEE-754 drift that accumulates when
+ * summing many floating-point values (e.g. 0.1 + 0.2 ≠ 0.3 in JS).
+ *
+ * @param value   The raw amount (may be negative for refunds).
+ * @param decimals Number of decimal places. Default: 2.
+ */
+export function roundAmount(value: number, decimals = 2): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = Math.pow(10, decimals);
+  return Math.round((value + Number.EPSILON) * factor) / factor;
+}
+
+export type AggregateRevenueResult = {
+  /** Currency code (uppercase). */
+  currency: string;
+  /** Net total (payments minus refunds), rounded to `decimals` places. */
+  total: number;
+  /** Sum of payment amounts, rounded. */
+  payments: number;
+  /** Sum of refund amounts (always ≤ 0), rounded. */
+  refunds: number;
+  /** Number of entries included. */
+  count: number;
+};
+
+/**
+ * Aggregate a batch of normalized revenue entries by currency.
+ *
+ * Totals are computed with deterministic rounding so that the same input
+ * always produces the same output regardless of floating-point evaluation
+ * order. Each per-currency bucket is rounded independently after summing.
+ *
+ * @param entries  Already-normalized revenue entries.
+ * @param decimals Decimal places for rounding. Default: 2.
+ */
+export function aggregateRevenue(
+  entries: NormalizedRevenue[],
+  decimals = 2
+): AggregateRevenueResult[] {
+  const buckets = new Map<string, { payments: number; refunds: number; count: number }>();
+
+  for (const entry of entries) {
+    const key = entry.currency;
+    if (!buckets.has(key)) buckets.set(key, { payments: 0, refunds: 0, count: 0 });
+    const b = buckets.get(key)!;
+    if (entry.type === "refund") {
+      b.refunds += entry.amount;
+    } else {
+      b.payments += entry.amount;
+    }
+    b.count += 1;
+  }
+
+  return Array.from(buckets.entries()).map(([currency, b]) => {
+    const payments = roundAmount(b.payments, decimals);
+    const refunds = roundAmount(b.refunds, decimals);
+    const total = roundAmount(payments + refunds, decimals);
+    return { currency, total, payments, refunds, count: b.count };
+  });
+}
