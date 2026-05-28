@@ -134,14 +134,14 @@ export type AnomalyResult = {
  */
 export type CalibrationConfig = {
 	/**
-	 * Month-over-month fractional drop that triggers `unusual_drop`.
-	 * E.g. 0.3 = flag when revenue drops ≥ 30%.
+	 * Fractional drop from the rolling-average baseline that triggers `unusual_drop`.
+	 * E.g. 0.3 = flag when revenue drops ≥ 30% below the rolling average.
 	 * Default: ANOMALY_DROP_THRESHOLD env var, or 0.4.
 	 */
 	dropThreshold?: number;
 	/**
-	 * Month-over-month fractional rise that triggers `unusual_spike`.
-	 * E.g. 2.0 = flag when revenue rises ≥ 200%.
+	 * Fractional rise from the rolling-average baseline that triggers `unusual_spike`.
+	 * E.g. 2.0 = flag when revenue rises ≥ 200% above the rolling average.
 	 * Default: ANOMALY_SPIKE_THRESHOLD env var, or 3.0.
 	 */
 	spikeThreshold?: number;
@@ -151,12 +151,24 @@ export type CalibrationConfig = {
 	 */
 	minDataPoints?: number;
 	/**
-	 * Optional per-pair score hook called for every consecutive `(prev, curr)`.
+	 * Number of preceding periods used to compute the rolling-average baseline.
+	 * A window of 1 is equivalent to the old single-predecessor comparison.
+	 * Larger windows reduce sensitivity to single-period spikes or drops.
+	 * Default: 3.
+	 */
+	rollingWindow?: number;
+	/**
+	 * Optional per-pair score hook called for every `(baseline, curr)` evaluation.
 	 *
-	 * - Return `{ score, flag }` to override built-in logic for that pair.
+	 * - Return `{ score, flag }` to override built-in logic for that point.
 	 * - Return `null` to fall back to the built-in threshold comparison.
 	 *
-	 * `change` is the signed fractional MoM change: `(curr − prev) / prev`.
+	 * `change` is the signed fractional change vs the rolling-average baseline:
+	 * `(curr − baseline) / baseline`.
+	 *
+	 * Note: `prev` is the immediately preceding period (for context); the actual
+	 * baseline used for scoring is the rolling average of the last `rollingWindow`
+	 * periods.
 	 */
 	scoreHook?: (
 		prev: MonthlyRevenue,
@@ -413,8 +425,31 @@ export function calibrateFromSeries(
 // ---------------------------------------------------------------------------
 
 /**
- * Iterates consecutive pairs, applies calibration config, and returns the
- * worst anomaly found.
+ * Compute the rolling average of the last `window` non-zero amounts ending
+ * before index `i`. Returns 0 if no valid preceding amounts exist.
+ *
+ * @internal
+ */
+function rollingAverage(sorted: MonthlyRevenue[], i: number, window: number): number {
+	const start = Math.max(0, i - window);
+	const slice = sorted.slice(start, i).filter((p) => p.amount !== 0);
+	if (slice.length === 0) return 0;
+	return slice.reduce((sum, p) => sum + p.amount, 0) / slice.length;
+}
+
+/**
+ * Iterates the series, compares each period against a rolling-average baseline
+ * of the preceding `rollingWindow` periods, and returns the worst anomaly found.
+ *
+ * Using a rolling average instead of a single predecessor reduces sensitivity
+ * to single-period spikes or drops: a one-off outlier shifts the baseline only
+ * slightly, so the following period is not unfairly penalised.
+ *
+ * Score inputs that matter most:
+ * - `rollingWindow` (default 3): wider windows smooth more aggressively.
+ * - `dropThreshold` / `spikeThreshold`: fractional change vs the rolling average
+ *   required to flag an anomaly.
+ * - The rolling baseline itself: mean of the last N non-zero periods.
  *
  * @internal
  */
@@ -424,6 +459,7 @@ function scoreSeriesAnomaly(
 ): AnomalyResult {
 	const dropThreshold  = calibration.dropThreshold  ?? DROP_THRESHOLD;
 	const spikeThreshold = calibration.spikeThreshold ?? SPIKE_THRESHOLD;
+	const window         = Math.max(1, calibration.rollingWindow ?? 3);
 	const { scoreHook }  = calibration;
 
 	let worstScore  = 0;
@@ -431,13 +467,16 @@ function scoreSeriesAnomaly(
 	let worstDetail = "No anomaly detected.";
 
 	for (let i = 1; i < sorted.length; i++) {
-		const prev = sorted[i - 1];
+		const prev = sorted[i - 1]; // immediate predecessor (for hook context / detail)
 		const curr = sorted[i];
 
-		// Skip if previous amount is zero to avoid division by zero.
-		if (prev.amount === 0) continue;
+		// Compute rolling-average baseline from the last `window` periods.
+		const baseline = rollingAverage(sorted, i, window);
 
-		const change = (curr.amount - prev.amount) / prev.amount; // signed fraction
+		// Skip if baseline is zero to avoid division by zero.
+		if (baseline === 0) continue;
+
+		const change = (curr.amount - baseline) / baseline; // signed fraction vs baseline
 
 		// Delegate to the score hook when provided; null means use built-in logic.
 		if (scoreHook) {
@@ -461,14 +500,14 @@ function scoreSeriesAnomaly(
 			worstScore  = score;
 			worstFlag   = "unusual_drop";
 			worstDetail =
-				`Revenue dropped ${(absChange * 100).toFixed(1)}% from ` +
-				`${prev.period} (${prev.amount}) to ${curr.period} (${curr.amount}).`;
+				`Revenue dropped ${(absChange * 100).toFixed(1)}% vs rolling average ` +
+				`(baseline ${baseline.toFixed(0)}) at ${curr.period} (${curr.amount}).`;
 		} else if (change >= spikeThreshold && score > worstScore) {
 			worstScore  = score;
 			worstFlag   = "unusual_spike";
 			worstDetail =
-				`Revenue spiked ${(absChange * 100).toFixed(1)}% from ` +
-				`${prev.period} (${prev.amount}) to ${curr.period} (${curr.amount}).`;
+				`Revenue spiked ${(absChange * 100).toFixed(1)}% vs rolling average ` +
+				`(baseline ${baseline.toFixed(0)}) at ${curr.period} (${curr.amount}).`;
 		}
 	}
 

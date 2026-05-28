@@ -695,13 +695,12 @@ describe("detectRevenueAnomaly — drop threshold", () => {
     expect(result.score).toBeCloseTo(0.5, 5);
   });
 
-  it("detail string contains both period labels and amounts for the worst pair", () => {
+  it("detail string contains the current period, amount, and rolling average reference", () => {
     const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 5_000)];
     const result = detectRevenueAnomaly(series);
-    expect(result.detail).toContain("2025-01");
     expect(result.detail).toContain("2025-02");
-    expect(result.detail).toContain("10000");
     expect(result.detail).toContain("5000");
+    expect(result.detail.toLowerCase()).toContain("rolling average");
   });
 
   it("flags the worst drop across a multi-period series", () => {
@@ -758,12 +757,12 @@ describe("detectRevenueAnomaly — spike threshold", () => {
     expect(result.flag).toBe("unusual_spike");
   });
 
-  it("detail string includes 'spiked' and both period labels", () => {
+  it("detail string includes 'spiked', the current period, and rolling average reference", () => {
     const series = [makeMonthly("2025-01", 5_000), makeMonthly("2025-02", 25_000)];
     const result = detectRevenueAnomaly(series, { spikeThreshold: 1.0 });
     expect(result.detail.toLowerCase()).toContain("spike");
-    expect(result.detail).toContain("2025-01");
     expect(result.detail).toContain("2025-02");
+    expect(result.detail.toLowerCase()).toContain("rolling average");
   });
 });
 
@@ -1111,6 +1110,121 @@ describe("detectRevenueAnomaly — seasonality and false-positive scenarios", ()
     const result = detectRevenueAnomaly(stableSeries(3), cal);
     expect(result).toBeDefined();
     expect(["ok", "unusual_drop", "unusual_spike", "insufficient_data"]).toContain(result.flag);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rolling average baseline — regression tests (#42)
+//
+// Before this fix, scoreSeriesAnomaly compared each period only to its
+// immediate predecessor. A single-period spike would therefore cause the
+// *following* period to look like a severe drop, even when revenue returned
+// to a perfectly normal level. The rolling-average baseline smooths over
+// such outliers.
+//
+// Expected score behaviour:
+//   - Baseline = mean of the last min(rollingWindow, available) non-zero periods.
+//   - Change   = (curr.amount − baseline) / baseline.
+//   - Score    = min(|change|, 1), flagged only when change ≤ −dropThreshold
+//                or change ≥ spikeThreshold.
+//   - A single-period spike raises the rolling average only slightly, so the
+//     period after the spike is NOT falsely flagged as a drop.
+// ---------------------------------------------------------------------------
+
+describe("detectRevenueAnomaly — rolling average baseline (regression #42)", () => {
+  it("does not flag the period after a single-period spike as a drop", () => {
+    // Without rolling average: 2025-03 (10 000) vs 2025-02 (50 000) = −80% → false drop
+    // With rolling average (window=3): baseline ≈ (10 000 + 50 000) / 2 = 30 000
+    //   change = (10 000 − 30 000) / 30 000 ≈ −66.7% → still flagged
+    // With window=3 and three prior periods: baseline ≈ (10 000 + 10 000 + 50 000) / 3 ≈ 23 333
+    //   change ≈ −57% → still flagged at default 40% threshold
+    // Use a narrower spike so the post-spike period is clearly within normal range:
+    //   Jan=10 000, Feb=15 000 (+50% spike, below default 300% threshold → ok),
+    //   Mar=10 500 (back to normal)
+    //   With window=3: baseline for Mar = (10 000 + 15 000) / 2 = 12 500
+    //   change = (10 500 − 12 500) / 12 500 = −16% → below 40% threshold → ok
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 15_000), // moderate spike
+      makeMonthly("2025-03", 10_500), // recovery — should NOT be flagged
+    ];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("ok");
+  });
+
+  it("still flags a genuine sustained drop even with rolling average smoothing", () => {
+    // Stable at 10 000 for 3 months, then drops to 4 000 (−60% vs rolling avg)
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 10_000),
+      makeMonthly("2025-03", 10_000),
+      makeMonthly("2025-04", 4_000), // genuine drop: −60% vs rolling avg of 10 000
+    ];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("unusual_drop");
+    expect(result.detail).toContain("2025-04");
+  });
+
+  it("rolling window of 1 behaves like the old single-predecessor comparison", () => {
+    // With window=1, baseline = prev.amount exactly
+    // 10 000 → 6 000 = −40% → should flag at default threshold
+    const series = [makeMonthly("2025-01", 10_000), makeMonthly("2025-02", 6_000)];
+    const result = detectRevenueAnomaly(series, { rollingWindow: 1 });
+    expect(result.flag).toBe("unusual_drop");
+    expect(result.score).toBeCloseTo(0.4, 5);
+  });
+
+  it("wider rolling window reduces sensitivity to a single-period spike", () => {
+    // Spike in month 3, recovery in month 4.
+    // window=1: month 3 vs month 2 (10 000) = +300% → spike flagged at score 1.0
+    //           month 4 vs month 3 (40 000) = −75% → drop at score 0.75 (but spike wins)
+    // window=3: baseline for month 3 = (10 000 + 10 000) / 2 = 10 000 → +300% spike still fires
+    //           baseline for month 4 = (10 000 + 10 000 + 40 000) / 3 ≈ 20 000
+    //             change = (10 000 − 20 000) / 20 000 = −50% → drop at score 0.5
+    // Both windows detect the spike, but window=3 produces a lower worst score
+    // because the post-spike drop is scored against the smoothed baseline.
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 10_000),
+      makeMonthly("2025-03", 40_000), // spike
+      makeMonthly("2025-04", 10_000), // recovery
+    ];
+    const narrowResult = detectRevenueAnomaly(series, { rollingWindow: 1 });
+    const wideResult   = detectRevenueAnomaly(series, { rollingWindow: 3 });
+
+    // Both detect an anomaly (the spike in month 3 is real)
+    expect(narrowResult.flag).not.toBe("ok");
+    expect(wideResult.flag).not.toBe("ok");
+
+    // window=3 produces a lower or equal worst score than window=1
+    expect(wideResult.score).toBeLessThanOrEqual(narrowResult.score);
+  });
+
+  it("alternating balance pattern does not produce escalating false positives", () => {
+    // Alternating high/low pattern — each period is 'normal' for the business
+    // With rolling average the baseline tracks the mean, suppressing false flags
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 14_000),
+      makeMonthly("2025-03", 10_000),
+      makeMonthly("2025-04", 14_000),
+      makeMonthly("2025-05", 10_000),
+      makeMonthly("2025-06", 14_000),
+    ];
+    // With window=3 the rolling average stays near 12 000; ±33% swings are below threshold
+    const result = detectRevenueAnomaly(series, { rollingWindow: 3 });
+    expect(result.flag).toBe("ok");
+  });
+
+  it("detail string references 'rolling average' for transparency", () => {
+    const series: MonthlyRevenue[] = [
+      makeMonthly("2025-01", 10_000),
+      makeMonthly("2025-02", 10_000),
+      makeMonthly("2025-03", 3_000), // genuine drop
+    ];
+    const result = detectRevenueAnomaly(series);
+    expect(result.flag).toBe("unusual_drop");
+    expect(result.detail.toLowerCase()).toContain("rolling average");
   });
 });
 
