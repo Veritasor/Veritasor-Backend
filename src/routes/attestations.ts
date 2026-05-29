@@ -7,6 +7,10 @@ import { validateBody, validateQuery } from '../middleware/validate.js';
 import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
 import { revokeAttestation } from '../services/attestation/revoke.js';
+import type {
+  SubmitAttestationParams as SorobanSubmitAttestationParams,
+  SubmitAttestationResult as SorobanSubmitAttestationResult,
+} from '../services/soroban/submitAttestation.js';
 import {
   integrateRevenueChecks,
   shouldProceedWithAttestation,
@@ -29,17 +33,9 @@ type RouteAttestation = {
   revokedAt?: string | null;
 };
 
-type SubmitAttestationParams = {
-  business: string;
-  period: string;
-  merkleRoot: string;
-  timestamp: number;
-  version: string;
-};
+type SubmitAttestationParams = Omit<SorobanSubmitAttestationParams, 'sourcePublicKey' | 'signerSecret'>;
 
-type SubmitAttestationResult = {
-  txHash: string;
-};
+type SubmitAttestationResult = SorobanSubmitAttestationResult;
 
 type SorobanServiceError = Error & {
   code?: string;
@@ -102,6 +98,7 @@ const submitBodySchema = z.object({
   merkleRoot: z.string().min(1).max(1024),
   timestamp: z.coerce.number().int('timestamp must be an integer').nonnegative('timestamp must be ≥ 0').optional(),
   version: z.string().min(1).max(50).default('1.0.0'),
+  submit: z.boolean().optional(),
 }).strict();
 
 /**
@@ -246,42 +243,56 @@ async function revokeAttestation(id: string, reason?: string): Promise<RouteAtte
 }
 
 async function submitOnChain(params: SubmitAttestationParams): Promise<SubmitAttestationResult> {
+  const shouldSubmit = params.submit ?? true;
+  const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === 'true';
+
+  if (shouldSubmit && !submissionEnabled) {
+    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+  }
+
+  const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
+  if (!sourcePublicKey) {
+    throw createHttpError(503, 'SOROBAN_NOT_CONFIGURED', 'Soroban submission is not available right now.');
+  }
+
   const modulePath = '../services/soroban/submitAttestation.js';
   let module: {
-    submitAttestation?: (value: SubmitAttestationParams) => Promise<SubmitAttestationResult>;
+    submitAttestation?: (value: SorobanSubmitAttestationParams) => Promise<SorobanSubmitAttestationResult>;
   };
 
   try {
     module = (await import(modulePath)) as typeof module;
   } catch (_error) {
-    return { txHash: `pending_${randomUUID()}` };
+    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
   }
 
   if (typeof module.submitAttestation !== 'function') {
-    return { txHash: `pending_${randomUUID()}` };
+    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
   }
 
   try {
-    return await module.submitAttestation(params);
+    return await module.submitAttestation({ ...params, sourcePublicKey, submit: shouldSubmit });
   } catch (error) {
     const sorobanError = error as SorobanServiceError;
+    const code = sorobanError?.code;
 
-    if (sorobanError?.code === 'VALIDATION_ERROR') {
-      throw createHttpError(400, sorobanError.code, sorobanError.message);
+    if (code === 'VALIDATION_ERROR') {
+      throw createHttpError(400, code, sorobanError.message);
+    }
+
+    if (code === 'MISSING_SIGNER' || code === 'SIGNER_MISMATCH') {
+      throw createHttpError(503, code, 'Soroban submission is not available right now.');
     }
 
     if (
-      sorobanError?.code === 'MISSING_SIGNER' ||
-      sorobanError?.code === 'SIGNER_MISMATCH'
+      code === 'SUBMIT_FAILED' ||
+      code === 'SOROBAN_NETWORK_ERROR' ||
+      code === 'INVALID_RESPONSE' ||
+      code === 'CONFIRMATION_FAILED' ||
+      code === 'RESULT_VALIDATION_FAILED' ||
+      code === 'RESULT_MISMATCH'
     ) {
-      throw createHttpError(503, sorobanError.code, 'Soroban submission is not available right now.');
-    }
-
-    if (
-      sorobanError?.code === 'SUBMIT_FAILED' ||
-      sorobanError?.code === 'SOROBAN_NETWORK_ERROR'
-    ) {
-      throw createHttpError(502, sorobanError.code, 'Soroban RPC request failed after applying the retry policy.');
+      throw createHttpError(502, code, 'Soroban RPC request failed after applying the retry policy.');
     }
 
     throw error;
@@ -406,7 +417,17 @@ attestationsRouter.post(
       merkleRoot: merkleRoot!,
       timestamp: payload.timestamp ?? Date.now(),
       version: payload.version,
+      submit: payload.submit,
     });
+
+    const submission = {
+      status: onChain.status,
+      txHash: onChain.txHash,
+      ...(onChain.unsignedXdr ? { unsignedXdr: onChain.unsignedXdr } : {}),
+      ...(onChain.ledger !== undefined ? { ledger: onChain.ledger } : {}),
+      ...(onChain.resultMerkleRoot ? { resultMerkleRoot: onChain.resultMerkleRoot } : {}),
+      ...(onChain.resultTimestamp !== undefined ? { resultTimestamp: onChain.resultTimestamp } : {}),
+    };
 
     const now = new Date().toISOString();
     const record: RouteAttestation = {
@@ -428,6 +449,7 @@ attestationsRouter.post(
       status: 'success',
       data: saved,
       txHash: onChain.txHash,
+      submission,
       ...(attestationSummary && {
         attestationSummary: {
           anomaly: attestationSummary.anomaly,
