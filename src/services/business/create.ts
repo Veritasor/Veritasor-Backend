@@ -31,11 +31,28 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { businessRepository } from '../../repositories/business.js';
+import { AppError } from '../../types/errors.js';
 import {
   parseCreateBusinessInput,
   CreateBusinessInput,
 } from './schemas.js';
 import { formatForStorage } from './normalize.js';
+
+const BUSINESS_USER_UNIQUE_CONSTRAINT = 'businesses_user_id_unique_idx';
+
+type PostgresError = Error & { code?: string; constraint?: string };
+
+function isBusinessOwnerUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const pgError = error as PostgresError;
+  return (
+    pgError.code === '23505' &&
+    pgError.constraint === BUSINESS_USER_UNIQUE_CONSTRAINT
+  );
+}
 
 /**
  * Create Business Handler
@@ -157,6 +174,14 @@ export async function createBusiness(req: Request, res: Response) {
     // @dev Return created business with 201 status
     return res.status(201).json(business);
   } catch (error) {
+    if (isBusinessOwnerUniqueViolation(error)) {
+      throw new AppError(
+        'A business already exists for this user',
+        409,
+        'BUSINESS_ALREADY_EXISTS',
+      );
+    }
+
     // @dev Structured log: emit a JSON-serialisable object so log aggregators
     //      (e.g. Datadog, Cloud Logging) can index fields individually.
     console.error(JSON.stringify({
