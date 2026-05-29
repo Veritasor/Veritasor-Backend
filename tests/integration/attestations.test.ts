@@ -50,6 +50,9 @@ import {
   PeriodParseError,
 } from '../../src/services/analytics/periods.js';
 
+const ORIGINAL_ENV = { ...process.env };
+const VALID_SOURCE_PUBLIC_KEY = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+
 const AUTH = { 'x-user-id': 'user_1' };
 
 const BUSINESS = {
@@ -78,12 +81,15 @@ const VALID_SUBMIT = {
 
 describe('Attestations HTTP integration', () => {
   beforeEach(() => {
+    process.env.SOROBAN_SUBMIT_ENABLED = 'true';
+    process.env.SOROBAN_SOURCE_PUBLIC_KEY = VALID_SOURCE_PUBLIC_KEY;
     submitAttestationMock.mockClear();
-    submitAttestationMock.mockResolvedValue({ txHash: 'tx_default_mock' });
+    submitAttestationMock.mockResolvedValue({ txHash: 'tx_default_mock', status: 'pending' });
     vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(BUSINESS);
   });
 
   afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
     vi.restoreAllMocks();
   });
 
@@ -542,6 +548,56 @@ describe('Attestations HTTP integration', () => {
       expect(second.status).toBe(201);
       expect(second.body).toEqual(first.body);
       expect(submitAttestationMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('POST /api/attestations — submission response', () => {
+    it('includes submission status and tx hash', async () => {
+      const res = await request(app)
+        .post('/api/attestations')
+        .set(AUTH)
+        .set('Idempotency-Key', iKey('submission-status'))
+        .send(VALID_SUBMIT);
+      expect(res.status).toBe(201);
+      expect(res.body.submission).toMatchObject({
+        status: 'pending',
+        txHash: 'tx_default_mock',
+      });
+    });
+
+    it('returns unsigned XDR when submit=false', async () => {
+      submitAttestationMock.mockResolvedValueOnce({
+        txHash: 'tx_unsigned_mock',
+        status: 'unsigned',
+        unsignedXdr: 'AAAA_fake_xdr',
+      });
+
+      const res = await request(app)
+        .post('/api/attestations')
+        .set(AUTH)
+        .set('Idempotency-Key', iKey('unsigned'))
+        .send({ ...VALID_SUBMIT, submit: false });
+      expect(res.status).toBe(201);
+      expect(res.body.submission).toMatchObject({
+        status: 'unsigned',
+        txHash: 'tx_unsigned_mock',
+        unsignedXdr: 'AAAA_fake_xdr',
+      });
+    });
+
+    it('skips Soroban submission when SOROBAN_SUBMIT_ENABLED is not true', async () => {
+      process.env.SOROBAN_SUBMIT_ENABLED = 'false';
+      submitAttestationMock.mockClear();
+
+      const res = await request(app)
+        .post('/api/attestations')
+        .set(AUTH)
+        .set('Idempotency-Key', iKey('flag-off'))
+        .send(VALID_SUBMIT);
+      expect(res.status).toBe(201);
+      expect(submitAttestationMock).not.toHaveBeenCalled();
+      expect(res.body.submission.status).toBe('pending');
+      expect(res.body.txHash).toMatch(/^pending_/);
     });
   });
 
