@@ -263,6 +263,10 @@ Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and 
 
 ## Redaction Policy
 
+`requestLogger` seeds a request-scoped correlation id before body parsing, including webhook routes that require raw payloads. Inbound `x-correlation-id` values are reused only when they match the safe character and length policy; otherwise the middleware generates a UUID. The selected id is attached to `req.correlationId`, copied to `res.locals.requestId`, and echoed in both `X-Correlation-ID` and legacy `X-Request-ID` response headers.
+
+All application logs flow through `src/utils/logger.ts`, which emits one structured JSON object per line and automatically merges the request-scoped `correlationId` into logs written during the request, including auth, attestation, and webhook handlers.
+
 `requestLogger` never writes sensitive values to logs. The policy is enforced via two exported sets in `src/middleware/requestLogger.ts`:
 
 | Set                     | Members                                                                                                    |
@@ -272,14 +276,17 @@ Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and 
 
 Matched values are replaced with the literal string `[REDACTED]` before the log entry is written. Non-sensitive fields pass through unchanged.
 
+`logger.ts` also recursively redacts sensitive structured fields such as `password`, `token`, `accessToken`, `refreshToken`, `resetLink`, `secret`, `apiKey`, and `email` before writing to stdout/stderr.
+
 **Threat model notes:**
 
 - Bearer tokens in `Authorization` headers are excluded from logs entirely (headers are not logged).
 - Cookies and `Set-Cookie` are in `REDACTED_HEADERS` for future-proofing if header logging is added.
 - OAuth `code` and `state` query params are redacted to prevent authorization-code interception via log aggregators.
 - Webhook payloads and request bodies are never logged (existing policy).
+- Correlation IDs are constrained before reflection to response headers to prevent header or log injection.
 
-To extend the policy, add entries to `REDACTED_HEADERS` or `REDACTED_QUERY_PARAMS` in `src/middleware/requestLogger.ts`. Tests in `tests/integration/auth.test.ts` under `"requestLogger redaction policy"` verify coverage.
+To extend the policy, add entries to `REDACTED_HEADERS` or `REDACTED_QUERY_PARAMS` in `src/middleware/requestLogger.ts`, and sensitive structured field names to `SENSITIVE_LOG_FIELDS` in `src/utils/logger.ts`. Tests in `tests/integration/auth.test.ts` under `"requestLogger redaction policy"` and `tests/unit/middleware/requestLogger.test.ts` verify coverage.
 
 ## Running Tests
 
