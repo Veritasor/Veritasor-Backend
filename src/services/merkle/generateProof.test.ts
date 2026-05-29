@@ -71,9 +71,8 @@ describe("Merkle proof", () => {
       expect(verifyProof("a", proof, "a".repeat(65))).toBe(false);
     });
 
-    it("returns false for root with uppercase hex (normalized ok, but mixed case)", () => {
-      // normalizeHashHex handles this, but verifyProof should still accept valid 0x-prefixed
-      const validRootWithPrefix = "0x" + "a".repeat(64);
+    it("accepts valid root with uppercase hex and prefix (normalized properly)", () => {
+      const validRootWithPrefix = "0x" + root.toUpperCase();
       expect(verifyProof("a", proof, validRootWithPrefix)).toBe(true);
     });
 

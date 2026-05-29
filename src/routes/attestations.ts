@@ -15,6 +15,8 @@ import {
 } from '../services/attestation/integrateRevenueChecks.js';
 import { AppError } from '../types/errors.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
+import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
+import { rateLimiter } from '../middleware/rateLimiter.js';
 
 type RouteAttestation = {
   id: string;
@@ -111,6 +113,30 @@ const submitBodySchema = z.object({
 const revokeBodySchema = z.object({
   reason: z.string().trim().min(1).max(1000).optional(),
 }).strict();
+
+/**
+ * @notice NatSpec: Schema for requesting a Merkle inclusion proof.
+ * @dev Enforces strict query parameters and handles array preprocessing.
+ */
+const proofQuerySchema = z.object({
+  leaves: z.preprocess((val) => {
+    if (typeof val === 'string') {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        return [val];
+      }
+    }
+    return val;
+  }, z.array(z.string().min(1)).min(1)),
+  leafIndex: z.coerce.number().int('leafIndex must be an integer').nonnegative('leafIndex must be ≥ 0'),
+}).strict();
+
+const proofRateLimiter = rateLimiter({
+  bucket: 'attestations:proof',
+  max: 30,
+});
 
 function createHttpError(status: number, code: string, message: string): AppError {
   return new AppError(message, status, code);
@@ -222,9 +248,20 @@ async function revokeAttestation(id: string, reason?: string): Promise<RouteAtte
     return (repo.revoke as (value: string, data?: { reason?: string }) => Promise<RouteAttestation | null>)(id, { reason });
   }
 
+  if (typeof repo.update === 'function' && typeof repo.findById === 'function') {
+    const existing = await (repo.findById as (value: string) => Promise<RouteAttestation | null>)(id);
+    if (existing) {
+      const updated = await (repo.update as (id: string, data: Partial<RouteAttestation>) => Promise<RouteAttestation | null>)(id, {
+        status: 'revoked',
+        revokedAt: new Date().toISOString(),
+      } as any);
+      return updated;
+    }
+  }
+
   const index = localAttestationStore.findIndex((item) => item.id === id);
   if (index === -1) {
-    console.log(`Attestation ${id} not found in local store. Available IDs:`,
+    console.log(`Attestation ${id} not found in local store or repository. Available local IDs:`,
       localAttestationStore.map(i => i.id));
     return null;
   }
@@ -342,6 +379,55 @@ attestationsRouter.get(
     }
 
     res.status(200).json({ status: 'success', data: attestation });
+  }),
+);
+
+attestationsRouter.get(
+  '/:id/proof',
+  requireAuth,
+  proofRateLimiter,
+  validateQuery(proofQuerySchema),
+  asyncHandler(async (req, res) => {
+    const id = parseIdParam(req.params.id);
+    const query = req.query as unknown as z.infer<typeof proofQuerySchema>;
+    const { leaves, leafIndex } = query;
+
+    const businessId = await resolveBusinessIdForUser(req.user!.id);
+    if (!businessId) {
+      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+    }
+
+    const attestation = await getById(id, businessId);
+    if (!attestation || attestation.status === 'revoked') {
+      throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
+    }
+
+    if (leafIndex < 0 || leafIndex >= leaves.length) {
+      throw createHttpError(404, 'LEAF_NOT_FOUND', 'Leaf not found at specified index');
+    }
+
+    const leaf = leaves[leafIndex];
+    const root = attestation.merkleRoot;
+    if (!root) {
+      throw createHttpError(404, 'MERKLE_ROOT_NOT_FOUND', 'Merkle root not found for attestation');
+    }
+
+    const proof = generateProof(leaves, leafIndex);
+
+    // Self-check: verify that the generated proof is indeed valid for this leaf and root
+    const isValid = verifyProof(leaf, proof, root);
+    if (!isValid) {
+      throw createHttpError(400, 'INVALID_LEAVES', 'Provided leaves do not match the attestation Merkle root');
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        leaf,
+        proof,
+        root,
+      },
+    });
   }),
 );
 

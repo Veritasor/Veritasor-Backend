@@ -312,6 +312,144 @@ describe('Attestations HTTP integration', () => {
     });
   });
 
+  describe('GET /api/attestations/:id/proof — Merkle proof retrieval', () => {
+    let attId: string;
+    const testLeaves = ['leaf1', 'leaf2', 'leaf3', 'leaf4'];
+    let root: string;
+
+    beforeEach(async () => {
+      const { buildTree, getRoot } = await import('../../src/services/merkle/buildTree.js');
+      const tree = buildTree(testLeaves);
+      root = getRoot(tree, testLeaves.length);
+
+      // Create an attestation to query
+      const postRes = await request(app)
+        .post('/api/attestations')
+        .set(AUTH)
+        .set('Idempotency-Key', iKey('proof-setup'))
+        .send({ period: '2026-03', merkleRoot: root });
+      expect(postRes.status).toBe(201);
+      attId = postRes.body.data.id;
+    });
+
+    it('returns 401 when unauthenticated', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .query({ leaves: testLeaves, leafIndex: 1 });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 200 with the valid proof path on the happy path', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 1 });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('success');
+      expect(res.body.data.leaf).toBe('leaf2');
+      expect(res.body.data.root).toBe(root);
+      expect(Array.isArray(res.body.data.proof)).toBe(true);
+
+      // Self-verify using verifyProof service to ensure the returned data is correct
+      const { verifyProof } = await import('../../src/services/merkle/generateProof.js');
+      const isValid = verifyProof(res.body.data.leaf, res.body.data.proof, res.body.data.root);
+      expect(isValid).toBe(true);
+    });
+
+    it('returns 200 with valid proof when leaves are passed as a JSON array string', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: JSON.stringify(testLeaves), leafIndex: 1 });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('success');
+      expect(res.body.data.leaf).toBe('leaf2');
+      expect(res.body.data.root).toBe(root);
+    });
+
+    it('returns 400 validation error when leafIndex is negative', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: -1 });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns 400 validation error when leafIndex is a float', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 1.5 });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns 404 LEAF_NOT_FOUND when leafIndex is out of range', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 10 });
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('LEAF_NOT_FOUND');
+    });
+
+    it('returns 400 INVALID_LEAVES when leaves do not match the attestation root', async () => {
+      const invalidLeaves = ['other1', 'other2'];
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: invalidLeaves, leafIndex: 0 });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('INVALID_LEAVES');
+    });
+
+    it('returns 404 ATTESTATION_NOT_FOUND when attestation does not exist', async () => {
+      const res = await request(app)
+        .get('/api/attestations/nonexistent-id-xyz/proof')
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 0 });
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('ATTESTATION_NOT_FOUND');
+    });
+
+    it('returns 404 ATTESTATION_NOT_FOUND when attestation is revoked', async () => {
+      // Revoke the attestation first
+      const revokeRes = await request(app)
+        .post(`/api/attestations/${attId}/revoke`)
+        .set(AUTH)
+        .send({ reason: 'testing revocation' });
+      expect(revokeRes.status).toBe(200);
+
+      // Now query proof
+      const res = await request(app)
+        .get(`/api/attestations/${attId}/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 1 });
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('ATTESTATION_NOT_FOUND');
+    });
+
+    it('returns 400 when :id exceeds 512 characters', async () => {
+      const longId = 'a'.repeat(513);
+      const res = await request(app)
+        .get(`/api/attestations/${longId}/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns 400 when :id contains invalid control characters', async () => {
+      const res = await request(app)
+        .get(`/api/attestations/att%1Fevil/proof`)
+        .set(AUTH)
+        .query({ leaves: testLeaves, leafIndex: 1 });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
   describe('POST /api/attestations — body validation', () => {
     // --- required fields ---
 
