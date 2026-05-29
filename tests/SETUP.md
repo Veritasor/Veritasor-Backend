@@ -217,6 +217,9 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
 SOROBAN_RPC_URL=http://localhost:8000/soroban/rpc
 SOROBAN_NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
 SOROBAN_CONTRACT_ID=C... (your test contract)
+SOROBAN_SUBMIT_ENABLED=true
+SOROBAN_SOURCE_PUBLIC_KEY=G... (source account public key)
+SOROBAN_SOURCE_SECRET=S... (required for submit=true; omit when using submit=false)
 ```
 
 ### Running E2E Tests

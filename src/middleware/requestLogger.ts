@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../utils/logger.js";
 import { randomUUID } from "crypto";
+import { httpRequestDuration } from "../metrics.js";
 
 /**
  * Extended Express Request with correlation ID for request tracing.
@@ -93,6 +94,13 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
   res.on("finish", () => {
     const [sec, nano] = process.hrtime(start);
     const durationMs = sec * 1e3 + nano / 1e6;
+    const durationSec = sec + nano / 1e9;
+
+    const route = (req.route?.path as string | undefined) ?? req.path;
+    httpRequestDuration.observe(
+      { method: req.method, route, status_code: String(res.statusCode) },
+      durationSec,
+    );
 
     const responseLog = {
       type: "response",

@@ -5,6 +5,7 @@ import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
 import { authRouter } from "./routes/auth.js";
@@ -87,6 +88,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use(express.json());
   app.use(createCorsMiddleware());
   app.use(requestLogger);
+
+  if (process.env.METRICS_ENABLED === "true") {
+    app.get("/metrics", async (_req: Request, res: Response) => {
+      res.set("Content-Type", metricsRegistry.contentType);
+      res.end(await metricsRegistry.metrics());
+    });
+  }
 
   app.use("/api/analytics", analyticsRouter);
   app.use("/api/attestations", attestationsRouter);
