@@ -375,6 +375,12 @@ Covers two source files:
 | `anomalyDetection.ts` | `detectRevenueAnomaly`     | MoM anomaly scoring with configurable thresholds     |
 | `anomalyDetection.ts` | `calibrateFromSeries`      | Derive thresholds from historical training data      |
 
+`normalizeRevenueEntry` date fallback tests use a fixed Vitest clock so invalid,
+missing, and empty date inputs assert the exact fallback ISO timestamp. The edge
+suite also pins Unix-seconds timestamp conversion, empty currency defaulting,
+zero-amount payment classification, and lowercase currency normalization on
+refunds.
+
 #### Coverage target
 
 ≥ 95% line and branch coverage on all touched modules where practical.
