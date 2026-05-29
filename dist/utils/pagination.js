@@ -20,7 +20,7 @@ export function formatPaginatedResponse(data, total, page, limit) {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit) || 0,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
     };
 }
 export default { getPagination, formatPaginatedResponse };

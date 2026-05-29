@@ -5,11 +5,15 @@ import { businessRepository } from "../../repositories/business.js";
  *
  * - Verifies the attestation exists.
  * - Verifies the attestation belongs to a business owned by the requesting user.
- * - Updates the attestation status to 'revoked' and records the revocation timestamp.
+ * - Checks if already revoked.
+ * - Updates the attestation status to 'revoked' and records the revocation timestamp and reason.
  *
+ * @param attestationId - The ID of the attestation to revoke.
+ * @param userId - The ID of the user requesting the revocation.
+ * @param reason - Optional reason for revocation.
  * @throws {Error} If the attestation is not found, already revoked, or the user is not authorised.
  */
-export async function revokeAttestation(attestationId, userId) {
+export async function revokeAttestation(attestationId, userId, reason) {
     // 1. Look up attestation
     const attestation = attestationRepository.findById(attestationId);
     if (!attestation) {
@@ -25,10 +29,14 @@ export async function revokeAttestation(attestationId, userId) {
         throw new Error(`Attestation ${attestationId} is already revoked`);
     }
     // 4. Update status in repository
-    attestationRepository.update(attestationId, {
+    const updateData = {
         status: "revoked",
         revokedAt: new Date().toISOString(),
-    });
+    };
+    if (reason) {
+        updateData.revokeReason = reason;
+    }
+    attestationRepository.update(attestationId, updateData);
     // TODO: Optionally call Soroban revoke if the contract supports it.
     // This will be implemented when the Soroban integration is ready.
 }

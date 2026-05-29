@@ -17,7 +17,7 @@ export function startConnect(shop, userId, businessId) {
         throw new Error('Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop');
     }
     const expiresAt = Date.now() + 10 * 60 * 1000; // State expires in 10 minutes
-    store.setOAuthState(state, shopHost, userId, 'shopify', expiresAt);
+    store.setOAuthState(state, shopHost, userId, businessId);
     const params = new URLSearchParams({
         client_id: clientId,
         scope: scopes,

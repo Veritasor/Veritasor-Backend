@@ -12,7 +12,7 @@ export class StripeStoreValidationError extends Error {
         this.name = 'StripeStoreValidationError';
     }
 }
-const stateStore = new Map();
+let stateStore = new Map();
 /**
  * In-memory store for Stripe integrations.
  * Keyed by stripeUserId for idempotent upserts.

@@ -1,11 +1,12 @@
 import { findUserById } from '../../repositories/userRepository.js';
+import { AuthenticationError, NotFoundError } from '../../types/errors.js';
 export async function me(userId) {
     if (!userId) {
-        throw new Error('User ID is required');
+        throw new AuthenticationError('User ID is required');
     }
     const user = await findUserById(userId);
     if (!user) {
-        throw new Error('User not found');
+        throw new NotFoundError('User not found');
     }
     return {
         user: {

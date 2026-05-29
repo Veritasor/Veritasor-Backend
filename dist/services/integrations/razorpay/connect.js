@@ -23,14 +23,14 @@ const STATE_MAX_LENGTH = 512;
  * Example env var:
  *   RAZORPAY_ALLOWED_REDIRECT_ORIGINS=https://app.veritasor.com,https://staging.veritasor.com
  */
-const ALLOWED_REDIRECT_ORIGINS = (() => {
+function getAllowedOrigins() {
     const raw = process.env.RAZORPAY_ALLOWED_REDIRECT_ORIGINS ?? '';
     const origins = raw
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
     return new Set(origins);
-})();
+}
 const oauthStateStore = new Map();
 /** Exposed for tests only — clears all state entries. */
 export function _clearOAuthStateStore() {
@@ -103,7 +103,7 @@ function validateRedirectUrl(rawUrl) {
         return { valid: false, reason: 'redirectUrl scheme must be https (or http for local dev)' };
     }
     const origin = parsed.origin; // e.g. "https://app.veritasor.com"
-    if (!ALLOWED_REDIRECT_ORIGINS.has(origin)) {
+    if (!getAllowedOrigins().has(origin)) {
         return {
             valid: false,
             reason: `redirectUrl origin "${origin}" is not in the allowed list`,

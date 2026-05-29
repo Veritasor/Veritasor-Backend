@@ -90,12 +90,8 @@ export function blacklistToken(jti, familyId) {
 export function getTokenFamily(familyId) {
     return tokenFamilies.get(familyId);
 }
-/**
- * @notice Intended recipient audience for long-lived refresh tokens.
- *         Intentionally distinct from JWT_AUDIENCE to prevent cross-token
- *         substitution attacks.
- *         Override via the JWT_REFRESH_AUDIENCE environment variable.
- */
+const JWT_ISSUER = process.env.JWT_ISSUER ?? 'veritasor-api';
+const JWT_AUDIENCE = process.env.JWT_AUDIENCE ?? 'veritasor-client';
 const JWT_REFRESH_AUDIENCE = process.env.JWT_REFRESH_AUDIENCE ?? 'veritasor-refresh';
 export { JWT_ISSUER, JWT_AUDIENCE, JWT_REFRESH_AUDIENCE };
 // ---------------------------------------------------------------------------
@@ -138,7 +134,8 @@ function getSecret() {
  * const token = generateToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateToken(payload) {
-    return jwt.sign(payload, config.jwtSecret, {
+    const secret = getSecret();
+    return jwt.sign({ ...payload, jti: randomUUID() }, secret, {
         expiresIn: '1h',
         issuer: JWT_ISSUER,
         audience: JWT_AUDIENCE,
@@ -157,8 +154,8 @@ export function generateToken(payload) {
  * const refreshToken = generateRefreshToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateRefreshToken(payload) {
-    const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
-    return jwt.sign(payload, secret, {
+    const secret = process.env.JWT_REFRESH_SECRET || getSecret();
+    return jwt.sign({ ...payload, jti: randomUUID() }, secret, {
         expiresIn: '7d',
         issuer: JWT_ISSUER,
         audience: JWT_REFRESH_AUDIENCE,
@@ -181,7 +178,8 @@ export function generateRefreshToken(payload) {
  */
 export function verifyToken(token) {
     try {
-        const decoded = jwt.verify(token, config.jwtSecret, {
+        const secret = getSecret();
+        const decoded = jwt.verify(token, secret, {
             issuer: JWT_ISSUER,
             audience: JWT_AUDIENCE,
         });
@@ -206,7 +204,7 @@ export function verifyToken(token) {
  */
 export function verifyRefreshToken(token) {
     try {
-        const secret = process.env.JWT_REFRESH_SECRET || config.jwtSecret;
+        const secret = process.env.JWT_REFRESH_SECRET || getSecret();
         const decoded = jwt.verify(token, secret, {
             issuer: JWT_ISSUER,
             audience: JWT_REFRESH_AUDIENCE,

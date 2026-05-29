@@ -114,7 +114,7 @@ export async function handleCallback(params, userId, businessId) {
         },
         metadata: {}
     };
-    const existingIntegrations = await IntegrationRepository.listByBusinessId(businessId);
+    const existingIntegrations = (await IntegrationRepository.listByBusinessId(businessId)) || [];
     const existingStripeIntegration = existingIntegrations.find((integration) => integration.provider === 'stripe' && integration.externalId === stripeUserId);
     if (existingStripeIntegration) {
         await IntegrationRepository.update(businessId, existingStripeIntegration.id, {

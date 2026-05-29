@@ -6,29 +6,63 @@ import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { attestationRepository } from '../repositories/attestation.js';
 import { businessRepository } from '../repositories/business.js';
+import { integrateRevenueChecks, shouldProceedWithAttestation, } from '../services/attestation/integrateRevenueChecks.js';
 import { AppError } from '../types/errors.js';
+import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
+import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
+import { rateLimiter } from '../middleware/rateLimiter.js';
 const localAttestationStore = [];
 export const attestationsRouter = Router();
 /**
+ * Maximum byte length allowed for a route :id parameter.
+ *
+ * Express does not enforce parameter length; an unbounded parameter could cause
+ * DoS by forcing a full DB scan or log-line overflow. 512 chars covers any
+ * reasonable UUID, slug, or hash while staying well under typical DB index limits.
+ */
+const ATTESTATION_ID_MAX_LENGTH = 512;
+/**
+ * Regex that rejects null bytes and ASCII control characters in the :id param.
+ * Control characters in IDs can confuse log aggregators and some DB drivers.
+ */
+const SAFE_ID_PATTERN = /^[^\u0000-\u001F\u007F]+$/;
+/**
  * @notice NatSpec: Schema for listing attestations.
  * @dev Enforces strict query parameters and sets maximum bounds to prevent DoS.
+ *
+ * Security notes:
+ * - `.strict()` rejects unknown keys (prevents prototype-pollution via query params).
+ * - `page` and `limit` use `z.coerce` to handle query-string strings, but integer
+ *   and range checks prevent NaN/Infinity/float/negative inputs from reaching the
+ *   pagination logic silently.
  */
 const listQuerySchema = z.object({
     businessId: z.string().min(1).max(255).optional(),
     period: z.string().min(1).max(50).optional(),
     status: z.enum(['submitted', 'revoked']).optional(),
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(100).default(20),
+    page: z.coerce.number().int('page must be an integer').min(1, 'page must be ≥ 1').default(1),
+    limit: z.coerce
+        .number()
+        .int('limit must be an integer')
+        .min(1, 'limit must be ≥ 1')
+        .max(100, 'limit must be ≤ 100')
+        .default(20),
 }).strict();
 /**
  * @notice NatSpec: Schema for submitting an attestation.
- * @dev Enforces strict body payload to prevent prototype pollution and arbitrary field injection.
+ * @dev Enforces strict body payload to prevent prototype pollution and arbitrary
+ *      field injection.
+ *
+ * Security notes:
+ * - `timestamp` uses `z.coerce.number().int().nonnegative()` — rejects NaN strings,
+ *   negative values, and floats that would survive a plain `Number()` conversion.
+ * - `.strict()` rejects extra fields including `__proto__`, `constructor`, etc.
  */
 const submitBodySchema = z.object({
     businessId: z.string().min(1).max(255).optional(),
     period: z.string().min(1).max(50),
     merkleRoot: z.string().min(1).max(1024),
-    timestamp: z.coerce.number().int().nonnegative().optional(),
+    timestamp: z.coerce.number().int('timestamp must be an integer').nonnegative('timestamp must be ≥ 0').optional(),
     version: z.string().min(1).max(50).default('1.0.0'),
 }).strict();
 /**
@@ -38,6 +72,30 @@ const submitBodySchema = z.object({
 const revokeBodySchema = z.object({
     reason: z.string().trim().min(1).max(1000).optional(),
 }).strict();
+/**
+ * @notice NatSpec: Schema for requesting a Merkle inclusion proof.
+ * @dev Enforces strict query parameters and handles array preprocessing.
+ */
+const proofQuerySchema = z.object({
+    leaves: z.preprocess((val) => {
+        if (typeof val === 'string') {
+            try {
+                const parsed = JSON.parse(val);
+                if (Array.isArray(parsed))
+                    return parsed;
+            }
+            catch {
+                return [val];
+            }
+        }
+        return val;
+    }, z.array(z.string().min(1)).min(1)),
+    leafIndex: z.coerce.number().int('leafIndex must be an integer').nonnegative('leafIndex must be ≥ 0'),
+}).strict();
+const proofRateLimiter = rateLimiter({
+    bucket: 'attestations:proof',
+    max: 30,
+});
 function createHttpError(status, code, message) {
     return new AppError(message, status, code);
 }
@@ -46,12 +104,30 @@ function asyncHandler(handler) {
         void handler(req, res, next).catch(next);
     };
 }
+/**
+ * Parse and validate the :id route parameter.
+ *
+ * Guards:
+ * 1. Must be a non-empty string (Express always provides a string, but be explicit).
+ * 2. Must not contain null bytes or control characters — these can confuse DB
+ *    drivers, log parsers, and upstream cache keys.
+ * 3. Bounded to ATTESTATION_ID_MAX_LENGTH characters to prevent DoS via oversized
+ *    index lookups or log-line inflation.
+ *
+ * @throws AppError 400 VALIDATION_ERROR on any violation.
+ */
 function parseIdParam(id) {
-    const parsed = z.string().min(1).safeParse(id);
-    if (!parsed.success) {
+    const lengthResult = z.string().min(1).safeParse(id);
+    if (!lengthResult.success) {
         throw createHttpError(400, 'VALIDATION_ERROR', 'Invalid attestation id');
     }
-    return parsed.data;
+    if (id.length > ATTESTATION_ID_MAX_LENGTH) {
+        throw createHttpError(400, 'VALIDATION_ERROR', `Attestation id must be at most ${ATTESTATION_ID_MAX_LENGTH} characters`);
+    }
+    if (!SAFE_ID_PATTERN.test(id)) {
+        throw createHttpError(400, 'VALIDATION_ERROR', 'Attestation id contains invalid characters');
+    }
+    return id;
 }
 async function resolveBusinessIdForUser(userId) {
     const repo = businessRepository;
@@ -107,16 +183,33 @@ async function revokeAttestation(id, reason) {
     if (typeof repo.revoke === 'function') {
         return repo.revoke(id, { reason });
     }
+    if (typeof repo.update === 'function' && typeof repo.findById === 'function') {
+        const existing = await repo.findById(id);
+        if (existing) {
+            const updated = await repo.update(id, {
+                status: 'revoked',
+                revokedAt: new Date().toISOString(),
+            });
+            return updated;
+        }
+    }
     const index = localAttestationStore.findIndex((item) => item.id === id);
     if (index === -1) {
+        console.log(`Attestation ${id} not found in local store or repository. Available local IDs:`, localAttestationStore.map(i => i.id));
         return null;
     }
-    localAttestationStore[index] = {
+    if (localAttestationStore[index].status === 'revoked') {
+        console.log(`Attestation ${id} is already revoked`);
+        return localAttestationStore[index];
+    }
+    const updated = {
         ...localAttestationStore[index],
         status: 'revoked',
         revokedAt: new Date().toISOString(),
     };
-    return localAttestationStore[index];
+    localAttestationStore[index] = updated;
+    console.log(`Successfully revoked attestation ${id}`, updated);
+    return updated;
 }
 async function submitOnChain(params) {
     const modulePath = '../services/soroban/submitAttestation.js';
@@ -125,15 +218,10 @@ async function submitOnChain(params) {
         module = (await import(modulePath));
     }
     catch (_error) {
-        // Service is optional at route layer while other issue lands.
-        return {
-            txHash: `pending_${randomUUID()}`,
-        };
+        return { txHash: `pending_${randomUUID()}` };
     }
     if (typeof module.submitAttestation !== 'function') {
-        return {
-            txHash: `pending_${randomUUID()}`,
-        };
+        return { txHash: `pending_${randomUUID()}` };
     }
     try {
         return await module.submitAttestation(params);
@@ -162,26 +250,24 @@ attestationsRouter.get('/', requireAuth, validateQuery(listQuerySchema), asyncHa
     }
     const allItems = await listByBusinessId(businessId);
     const filtered = allItems.filter((item) => {
-        if (query.period && item.period !== query.period) {
+        if (query.period && item.period !== query.period)
             return false;
-        }
-        if (query.status && (item.status ?? 'submitted') !== query.status) {
+        if (query.status && (item.status ?? 'submitted') !== query.status)
             return false;
-        }
         return true;
     });
+    const { page, limit, offset } = getPagination({ page: query.page, limit: query.limit });
     const total = filtered.length;
-    const totalPages = Math.max(1, Math.ceil(total / query.limit));
-    const start = (query.page - 1) * query.limit;
-    const items = filtered.slice(start, start + query.limit);
+    const items = filtered.slice(offset, offset + limit);
+    const paginated = formatPaginatedResponse(items, total, page, limit);
     res.status(200).json({
         status: 'success',
-        data: items,
+        data: paginated.data,
         pagination: {
-            page: query.page,
-            limit: query.limit,
-            total,
-            totalPages,
+            page: paginated.page,
+            limit: paginated.limit,
+            total: paginated.total,
+            totalPages: paginated.totalPages,
         },
     });
 }));
@@ -195,9 +281,41 @@ attestationsRouter.get('/:id', requireAuth, asyncHandler(async (req, res) => {
     if (!attestation) {
         throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
     }
+    res.status(200).json({ status: 'success', data: attestation });
+}));
+attestationsRouter.get('/:id/proof', requireAuth, proofRateLimiter, validateQuery(proofQuerySchema), asyncHandler(async (req, res) => {
+    const id = parseIdParam(req.params.id);
+    const query = req.query;
+    const { leaves, leafIndex } = query;
+    const businessId = await resolveBusinessIdForUser(req.user.id);
+    if (!businessId) {
+        throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+    }
+    const attestation = await getById(id, businessId);
+    if (!attestation || attestation.status === 'revoked') {
+        throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
+    }
+    if (leafIndex < 0 || leafIndex >= leaves.length) {
+        throw createHttpError(404, 'LEAF_NOT_FOUND', 'Leaf not found at specified index');
+    }
+    const leaf = leaves[leafIndex];
+    const root = attestation.merkleRoot;
+    if (!root) {
+        throw createHttpError(404, 'MERKLE_ROOT_NOT_FOUND', 'Merkle root not found for attestation');
+    }
+    const proof = generateProof(leaves, leafIndex);
+    // Self-check: verify that the generated proof is indeed valid for this leaf and root
+    const isValid = verifyProof(leaf, proof, root);
+    if (!isValid) {
+        throw createHttpError(400, 'INVALID_LEAVES', 'Provided leaves do not match the attestation Merkle root');
+    }
     res.status(200).json({
         status: 'success',
-        data: attestation,
+        data: {
+            leaf,
+            proof,
+            root,
+        },
     });
 }));
 attestationsRouter.post('/', requireAuth, idempotencyMiddleware({ scope: 'attestations' }), validateBody(submitBodySchema), asyncHandler(async (req, res) => {
@@ -210,10 +328,30 @@ attestationsRouter.post('/', requireAuth, idempotencyMiddleware({ scope: 'attest
     if (payload.businessId && userBusinessId && payload.businessId !== userBusinessId) {
         throw createHttpError(403, 'FORBIDDEN', 'Cannot submit attestation for another business');
     }
+    let merkleRoot = payload.merkleRoot;
+    let attestationSummary;
+    // Use revenue entries if provided (automatic Merkle + anomaly detection)
+    if (payload.revenueEntries && payload.revenueEntries.length > 0) {
+        attestationSummary = await integrateRevenueChecks(payload.revenueEntries, payload.monthlySeries ?? []);
+        merkleRoot = attestationSummary.merkleRoot;
+        // Check if attestation should proceed
+        const check = shouldProceedWithAttestation(attestationSummary);
+        if (!check.proceed) {
+            throw createHttpError(400, 'VALIDATION_ERROR', `Cannot proceed with attestation: ${check.reason}. Warnings: ${attestationSummary.warnings.join('; ')}`);
+        }
+        // Log warnings but allow submission
+        if (attestationSummary.warnings.length > 0) {
+            console.warn(`[Attestation] Warnings for business ${businessId} period ${payload.period}: ` +
+                attestationSummary.warnings.join('; '));
+        }
+    }
+    else if (!merkleRoot) {
+        throw createHttpError(400, 'VALIDATION_ERROR', 'Either revenueEntries or merkleRoot must be provided');
+    }
     const onChain = await submitOnChain({
         business: businessId,
         period: payload.period,
-        merkleRoot: payload.merkleRoot,
+        merkleRoot: merkleRoot,
         timestamp: payload.timestamp ?? Date.now(),
         version: payload.version,
     });
@@ -222,7 +360,7 @@ attestationsRouter.post('/', requireAuth, idempotencyMiddleware({ scope: 'attest
         id: randomUUID(),
         businessId,
         period: payload.period,
-        merkleRoot: payload.merkleRoot,
+        merkleRoot: merkleRoot,
         timestamp: payload.timestamp ?? Date.now(),
         version: payload.version,
         txHash: onChain.txHash,
@@ -235,27 +373,44 @@ attestationsRouter.post('/', requireAuth, idempotencyMiddleware({ scope: 'attest
         status: 'success',
         data: saved,
         txHash: onChain.txHash,
+        ...(attestationSummary && {
+            attestationSummary: {
+                anomaly: attestationSummary.anomaly,
+                drift: attestationSummary.drift,
+                warnings: attestationSummary.warnings,
+                merkleProofsCount: attestationSummary.merkleProofs.length,
+            },
+        }),
     });
 }));
 async function handleRevoke(req, res) {
-    const id = parseIdParam(req.params.id);
-    const businessId = await resolveBusinessIdForUser(req.user.id);
-    if (!businessId) {
-        throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+    try {
+        const id = parseIdParam(req.params.id);
+        const businessId = await resolveBusinessIdForUser(req.user.id);
+        if (!businessId) {
+            throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+        }
+        const attestation = await getById(id, businessId);
+        if (!attestation) {
+            throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
+        }
+        if (attestation.status === 'revoked') {
+            throw createHttpError(400, 'ALREADY_REVOKED', 'Attestation is already revoked');
+        }
+        const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+        const revoked = await revokeAttestation(id, reason);
+        if (!revoked) {
+            throw createHttpError(500, 'REVOKE_FAILED', 'Failed to revoke attestation');
+        }
+        res.status(200).json({ status: 'success', data: revoked });
     }
-    const attestation = await getById(id, businessId);
-    if (!attestation) {
-        throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
+    catch (error) {
+        if (error instanceof AppError) {
+            throw error;
+        }
+        console.error('Revoke error:', error);
+        throw createHttpError(500, 'REVOKE_FAILED', 'Internal server error during revocation');
     }
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
-    const revoked = await revokeAttestation(id, reason);
-    if (!revoked) {
-        throw createHttpError(500, 'REVOKE_FAILED', 'Failed to revoke attestation');
-    }
-    res.status(200).json({
-        status: 'success',
-        data: revoked,
-    });
 }
 attestationsRouter.post('/:id/revoke', requireAuth, validateBody(revokeBodySchema), asyncHandler(handleRevoke));
 attestationsRouter.delete('/:id/revoke', requireAuth, asyncHandler(handleRevoke));

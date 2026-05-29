@@ -1,10 +1,11 @@
 import pg from 'pg';
-const connectionString = process.env.DATABASE_URL;
-if (!connectionString) {
-    throw new Error('DATABASE_URL environment variable is required');
-}
+import { config } from '../config/index.js';
 export const pool = new pg.Pool({
-    connectionString,
+    connectionString: config.db.url,
+    max: config.db.poolMax,
+    idleTimeoutMillis: config.db.idleTimeoutMs,
+    connectionTimeoutMillis: config.db.connectionTimeoutMs,
+    ssl: config.db.ssl,
 });
 export const db = {
     query: (text, params) => pool.query(text, params),

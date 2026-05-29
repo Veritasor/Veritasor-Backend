@@ -6,16 +6,8 @@
 import * as integrationRepository from '../../../repositories/integration.js';
 import * as store from './store.js';
 import { logger } from '../../../utils/logger.js';
-/**
- * Compute Shopify HMAC for request verification.
- * Sorts parameters alphabetically and excludes the 'hmac' key.
- */
-export function computeShopifyHmac(secret, params) {
-    const { hmac: _excluded, ...filtered } = params;
-    const sorted = Object.keys(filtered).sort();
-    const message = sorted.map(key => `${key}=${filtered[key]}`).join('&');
-    return createHmac('sha256', secret).update(message).digest('hex');
-}
+import { computeShopifyHmac } from './utils.js';
+import { timingSafeEqual } from 'crypto';
 /**
  * Handle OAuth callback: consume state, exchange code for token, persist via integration store.
  */
@@ -54,7 +46,6 @@ export async function handleCallback(params) {
         logger.warn({ event: 'shopify_callback_invalid_shop', shop, shopHost }, 'Shopify callback invalid shop hostname');
         return { success: false, error: 'Invalid shop hostname' };
     }
-    const shopHost = store.normalizeShop(shop);
     const stateRecord = store.consumeOAuthState(state);
     if (!stateRecord || stateRecord.shop !== shopHost) {
         logger.warn({ event: 'shopify_callback_invalid_state', shop, state, shopHost }, 'Shopify callback invalid or expired state');
@@ -113,7 +104,7 @@ export async function handleCallback(params) {
     }
     if (existingShopifyIntegration && existingShopifyIntegration.externalId !== shopHost) {
         try {
-            await integrationRepository.deleteById(existingShopifyIntegration.id);
+            await integrationRepository.deleteById(stateRecord.businessId, existingShopifyIntegration.id);
             store.deleteToken(existingShopifyIntegration.externalId);
         }
         catch (err) {
@@ -126,8 +117,8 @@ export async function handleCallback(params) {
         : null;
     if (reusableIntegration) {
         try {
-            const updated = await integrationRepository.update(reusableIntegration.id, {
-                token: { accessToken: '[REDACTED]' },
+            const updated = await integrationRepository.update(stateRecord.businessId, reusableIntegration.id, {
+                token: { accessToken },
                 metadata: { shop: shopHost },
             });
             if (!updated) {
@@ -144,9 +135,10 @@ export async function handleCallback(params) {
         try {
             await integrationRepository.create({
                 userId: stateRecord.userId,
+                businessId: stateRecord.businessId,
                 provider: 'shopify',
                 externalId: shopHost,
-                token: { accessToken: '[REDACTED]' },
+                token: { accessToken },
                 metadata: { shop: shopHost },
             });
         }

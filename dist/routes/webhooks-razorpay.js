@@ -34,7 +34,7 @@ razorpayWebhookRouter.post('/', (req, res) => {
                 statusCode: error.httpStatus,
                 correlationId,
             }));
-            return res.status(error.httpStatus).json({ error: error.message });
+            return res.status(error.httpStatus).json({ error: error.message, code: error.code });
         }
         logger.error(JSON.stringify({
             type: 'razorpay_webhook_failure',
