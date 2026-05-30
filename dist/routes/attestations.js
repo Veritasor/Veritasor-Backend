@@ -4,14 +4,14 @@ import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
-import { attestationRepository } from '../repositories/attestation.js';
+import * as attestationRepository from '../repositories/attestationRepository.js';
 import { businessRepository } from '../repositories/business.js';
+import { db } from '../db/client.js';
 import { integrateRevenueChecks, shouldProceedWithAttestation, } from '../services/attestation/integrateRevenueChecks.js';
 import { AppError } from '../types/errors.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
-const localAttestationStore = [];
 export const attestationsRouter = Router();
 /**
  * Maximum byte length allowed for a route :id parameter.
@@ -61,10 +61,13 @@ const listQuerySchema = z.object({
 const submitBodySchema = z.object({
     businessId: z.string().min(1).max(255).optional(),
     period: z.string().min(1).max(50),
-    merkleRoot: z.string().min(1).max(1024),
+    merkleRoot: z.string().min(1).max(1024).optional(),
     timestamp: z.coerce.number().int('timestamp must be an integer').nonnegative('timestamp must be ≥ 0').optional(),
     version: z.string().min(1).max(50).default('1.0.0'),
-}).strict();
+    submit: z.boolean().optional(),
+    revenueEntries: z.array(z.any()).optional(),
+    monthlySeries: z.array(z.any()).optional(),
+});
 /**
  * @notice NatSpec: Schema for revoking an attestation.
  * @dev Limits reason length and strictly prevents extra fields.
@@ -141,103 +144,114 @@ async function resolveBusinessIdForUser(userId) {
     }
     return null;
 }
-async function listByBusinessId(businessId) {
-    const repo = attestationRepository;
-    let repositoryItems = [];
-    if (typeof repo.listByBusiness === 'function') {
-        repositoryItems = repo.listByBusiness(businessId);
-    }
-    else if (typeof repo.list === 'function') {
-        repositoryItems = await repo.list({ businessId });
-    }
-    const localItems = localAttestationStore.filter((item) => item.businessId === businessId);
-    const merged = [...repositoryItems, ...localItems];
-    const deduped = new Map();
-    for (const item of merged) {
-        deduped.set(item.id, item);
-    }
-    return Array.from(deduped.values()).sort((a, b) => b.attestedAt.localeCompare(a.attestedAt));
+async function listByBusinessId(businessId, page, limit) {
+    const result = await attestationRepository.list(db, { businessId }, { limit, offset: (page - 1) * limit });
+    const items = result.items.map((item) => ({
+        id: item.id,
+        businessId: item.businessId,
+        period: item.period,
+        attestedAt: item.createdAt.toISOString(),
+        merkleRoot: item.merkleRoot,
+        txHash: item.txHash,
+        status: item.status === 'revoked' ? 'revoked' : 'submitted',
+        revokedAt: item.status === 'revoked' ? item.updatedAt.toISOString() : null,
+        version: item.version.toString(),
+    }));
+    return { items, total: result.total };
 }
 async function getById(id, businessId) {
-    const repo = attestationRepository;
-    if (typeof repo.getById === 'function') {
-        const found = await repo.getById(id);
-        if (!found || found.businessId !== businessId) {
-            return null;
-        }
-        return found;
-    }
-    const items = await listByBusinessId(businessId);
-    return items.find((item) => item.id === id) ?? null;
-}
-async function saveAttestation(record) {
-    const repo = attestationRepository;
-    if (typeof repo.create === 'function') {
-        return repo.create(record);
-    }
-    localAttestationStore.push(record);
-    return record;
-}
-async function revokeAttestation(id, reason) {
-    const repo = attestationRepository;
-    if (typeof repo.revoke === 'function') {
-        return repo.revoke(id, { reason });
-    }
-    if (typeof repo.update === 'function' && typeof repo.findById === 'function') {
-        const existing = await repo.findById(id);
-        if (existing) {
-            const updated = await repo.update(id, {
-                status: 'revoked',
-                revokedAt: new Date().toISOString(),
-            });
-            return updated;
-        }
-    }
-    const index = localAttestationStore.findIndex((item) => item.id === id);
-    if (index === -1) {
-        console.log(`Attestation ${id} not found in local store or repository. Available local IDs:`, localAttestationStore.map(i => i.id));
+    const found = await attestationRepository.getById(db, id);
+    if (!found || found.businessId !== businessId) {
         return null;
     }
-    if (localAttestationStore[index].status === 'revoked') {
-        console.log(`Attestation ${id} is already revoked`);
-        return localAttestationStore[index];
-    }
-    const updated = {
-        ...localAttestationStore[index],
-        status: 'revoked',
-        revokedAt: new Date().toISOString(),
+    return {
+        id: found.id,
+        businessId: found.businessId,
+        period: found.period,
+        attestedAt: found.createdAt.toISOString(),
+        merkleRoot: found.merkleRoot,
+        txHash: found.txHash,
+        status: found.status === 'revoked' ? 'revoked' : 'submitted',
+        revokedAt: found.status === 'revoked' ? found.updatedAt.toISOString() : null,
+        version: found.version.toString(),
     };
-    localAttestationStore[index] = updated;
-    console.log(`Successfully revoked attestation ${id}`, updated);
-    return updated;
+}
+async function saveAttestation(record) {
+    const created = await attestationRepository.create(db, {
+        businessId: record.businessId,
+        period: record.period,
+        merkleRoot: record.merkleRoot || '',
+        txHash: record.txHash || '',
+        status: 'submitted',
+    });
+    return {
+        id: created.id,
+        businessId: created.businessId,
+        period: created.period,
+        attestedAt: created.createdAt.toISOString(),
+        merkleRoot: created.merkleRoot,
+        txHash: created.txHash,
+        status: 'submitted',
+        revokedAt: null,
+        version: created.version.toString(),
+    };
+}
+async function revokeAttestation(id, reason) {
+    const updated = await attestationRepository.updateStatus(db, id, 'revoked');
+    if (!updated)
+        return null;
+    return {
+        id: updated.id,
+        businessId: updated.businessId,
+        period: updated.period,
+        attestedAt: updated.createdAt.toISOString(),
+        merkleRoot: updated.merkleRoot,
+        txHash: updated.txHash,
+        status: 'revoked',
+        revokedAt: updated.updatedAt.toISOString(),
+        version: updated.version.toString(),
+    };
 }
 async function submitOnChain(params) {
+    const shouldSubmit = params.submit ?? true;
+    const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === 'true';
+    if (shouldSubmit && !submissionEnabled) {
+        return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
+    const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
+    if (!sourcePublicKey) {
+        throw createHttpError(503, 'SOROBAN_NOT_CONFIGURED', 'Soroban submission is not available right now.');
+    }
     const modulePath = '../services/soroban/submitAttestation.js';
     let module;
     try {
         module = (await import(modulePath));
     }
     catch (_error) {
-        return { txHash: `pending_${randomUUID()}` };
+        return { txHash: `pending_${randomUUID()}`, status: 'pending' };
     }
     if (typeof module.submitAttestation !== 'function') {
-        return { txHash: `pending_${randomUUID()}` };
+        return { txHash: `pending_${randomUUID()}`, status: 'pending' };
     }
     try {
-        return await module.submitAttestation(params);
+        return await module.submitAttestation({ ...params, sourcePublicKey, submit: shouldSubmit });
     }
     catch (error) {
         const sorobanError = error;
-        if (sorobanError?.code === 'VALIDATION_ERROR') {
-            throw createHttpError(400, sorobanError.code, sorobanError.message);
+        const code = sorobanError?.code;
+        if (code === 'VALIDATION_ERROR') {
+            throw createHttpError(400, code, sorobanError.message);
         }
-        if (sorobanError?.code === 'MISSING_SIGNER' ||
-            sorobanError?.code === 'SIGNER_MISMATCH') {
-            throw createHttpError(503, sorobanError.code, 'Soroban submission is not available right now.');
+        if (code === 'MISSING_SIGNER' || code === 'SIGNER_MISMATCH') {
+            throw createHttpError(503, code, 'Soroban submission is not available right now.');
         }
-        if (sorobanError?.code === 'SUBMIT_FAILED' ||
-            sorobanError?.code === 'SOROBAN_NETWORK_ERROR') {
-            throw createHttpError(502, sorobanError.code, 'Soroban RPC request failed after applying the retry policy.');
+        if (code === 'SUBMIT_FAILED' ||
+            code === 'SOROBAN_NETWORK_ERROR' ||
+            code === 'INVALID_RESPONSE' ||
+            code === 'CONFIRMATION_FAILED' ||
+            code === 'RESULT_VALIDATION_FAILED' ||
+            code === 'RESULT_MISMATCH') {
+            throw createHttpError(502, code, 'Soroban RPC request failed after applying the retry policy.');
         }
         throw error;
     }
@@ -248,18 +262,20 @@ attestationsRouter.get('/', requireAuth, validateQuery(listQuerySchema), asyncHa
     if (!businessId) {
         throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
     }
-    const allItems = await listByBusinessId(businessId);
-    const filtered = allItems.filter((item) => {
-        if (query.period && item.period !== query.period)
-            return false;
-        if (query.status && (item.status ?? 'submitted') !== query.status)
-            return false;
-        return true;
-    });
-    const { page, limit, offset } = getPagination({ page: query.page, limit: query.limit });
-    const total = filtered.length;
-    const items = filtered.slice(offset, offset + limit);
-    const paginated = formatPaginatedResponse(items, total, page, limit);
+    const { page, limit } = getPagination({ page: query.page, limit: query.limit });
+    const { items, total } = await listByBusinessId(businessId, page, limit);
+    // Filter server-side if query params present (repository list handles businessId but not period/status yet)
+    let filteredItems = items;
+    if (query.period || query.status) {
+        filteredItems = items.filter(item => {
+            if (query.period && item.period !== query.period)
+                return false;
+            if (query.status && (item.status ?? 'submitted') !== query.status)
+                return false;
+            return true;
+        });
+    }
+    const paginated = formatPaginatedResponse(filteredItems, total, page, limit);
     res.status(200).json({
         status: 'success',
         data: paginated.data,
@@ -354,10 +370,18 @@ attestationsRouter.post('/', requireAuth, idempotencyMiddleware({ scope: 'attest
         merkleRoot: merkleRoot,
         timestamp: payload.timestamp ?? Date.now(),
         version: payload.version,
+        submit: payload.submit,
     });
+    const submission = {
+        status: onChain.status,
+        txHash: onChain.txHash,
+        ...(onChain.unsignedXdr ? { unsignedXdr: onChain.unsignedXdr } : {}),
+        ...(onChain.ledger !== undefined ? { ledger: onChain.ledger } : {}),
+        ...(onChain.resultMerkleRoot ? { resultMerkleRoot: onChain.resultMerkleRoot } : {}),
+        ...(onChain.resultTimestamp !== undefined ? { resultTimestamp: onChain.resultTimestamp } : {}),
+    };
     const now = new Date().toISOString();
     const record = {
-        id: randomUUID(),
         businessId,
         period: payload.period,
         merkleRoot: merkleRoot,
@@ -365,14 +389,13 @@ attestationsRouter.post('/', requireAuth, idempotencyMiddleware({ scope: 'attest
         version: payload.version,
         txHash: onChain.txHash,
         status: 'submitted',
-        revokedAt: null,
-        attestedAt: now,
     };
     const saved = await saveAttestation(record);
     res.status(201).json({
         status: 'success',
         data: saved,
         txHash: onChain.txHash,
+        submission,
         ...(attestationSummary && {
             attestationSummary: {
                 anomaly: attestationSummary.anomaly,

@@ -262,25 +262,51 @@ export function calibrateFromSeries(series, options = {}) {
 // Internal algorithm
 // ---------------------------------------------------------------------------
 /**
- * Iterates consecutive pairs, applies calibration config, and returns the
- * worst anomaly found.
+ * Compute the rolling average of the last `window` non-zero amounts ending
+ * before index `i`. Returns 0 if no valid preceding amounts exist.
+ *
+ * @internal
+ */
+function rollingAverage(sorted, i, window) {
+    const start = Math.max(0, i - window);
+    const slice = sorted.slice(start, i).filter((p) => p.amount !== 0);
+    if (slice.length === 0)
+        return 0;
+    return slice.reduce((sum, p) => sum + p.amount, 0) / slice.length;
+}
+/**
+ * Iterates the series, compares each period against a rolling-average baseline
+ * of the preceding `rollingWindow` periods, and returns the worst anomaly found.
+ *
+ * Using a rolling average instead of a single predecessor reduces sensitivity
+ * to single-period spikes or drops: a one-off outlier shifts the baseline only
+ * slightly, so the following period is not unfairly penalised.
+ *
+ * Score inputs that matter most:
+ * - `rollingWindow` (default 3): wider windows smooth more aggressively.
+ * - `dropThreshold` / `spikeThreshold`: fractional change vs the rolling average
+ *   required to flag an anomaly.
+ * - The rolling baseline itself: mean of the last N non-zero periods.
  *
  * @internal
  */
 function scoreSeriesAnomaly(sorted, calibration) {
     const dropThreshold = calibration.dropThreshold ?? DROP_THRESHOLD;
     const spikeThreshold = calibration.spikeThreshold ?? SPIKE_THRESHOLD;
+    const window = Math.max(1, calibration.rollingWindow ?? 3);
     const { scoreHook } = calibration;
     let worstScore = 0;
     let worstFlag = "ok";
     let worstDetail = "No anomaly detected.";
     for (let i = 1; i < sorted.length; i++) {
-        const prev = sorted[i - 1];
+        const prev = sorted[i - 1]; // immediate predecessor (for hook context / detail)
         const curr = sorted[i];
-        // Skip if previous amount is zero to avoid division by zero.
-        if (prev.amount === 0)
+        // Compute rolling-average baseline from the last `window` periods.
+        const baseline = rollingAverage(sorted, i, window);
+        // Skip if baseline is zero to avoid division by zero.
+        if (baseline === 0)
             continue;
-        const change = (curr.amount - prev.amount) / prev.amount; // signed fraction
+        const change = (curr.amount - baseline) / baseline; // signed fraction vs baseline
         // Delegate to the score hook when provided; null means use built-in logic.
         if (scoreHook) {
             const hookResult = scoreHook(prev, curr, change);
@@ -301,15 +327,15 @@ function scoreSeriesAnomaly(sorted, calibration) {
             worstScore = score;
             worstFlag = "unusual_drop";
             worstDetail =
-                `Revenue dropped ${(absChange * 100).toFixed(1)}% from ` +
-                    `${prev.period} (${prev.amount}) to ${curr.period} (${curr.amount}).`;
+                `Revenue dropped ${(absChange * 100).toFixed(1)}% vs rolling average ` +
+                    `(baseline ${baseline.toFixed(0)}) at ${curr.period} (${curr.amount}).`;
         }
         else if (change >= spikeThreshold && score > worstScore) {
             worstScore = score;
             worstFlag = "unusual_spike";
             worstDetail =
-                `Revenue spiked ${(absChange * 100).toFixed(1)}% from ` +
-                    `${prev.period} (${prev.amount}) to ${curr.period} (${curr.amount}).`;
+                `Revenue spiked ${(absChange * 100).toFixed(1)}% vs rolling average ` +
+                    `(baseline ${baseline.toFixed(0)}) at ${curr.period} (${curr.amount}).`;
         }
     }
     return { score: worstScore, flag: worstFlag, detail: worstDetail };

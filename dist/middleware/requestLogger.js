@@ -1,5 +1,6 @@
 import { logger } from "../utils/logger.js";
 import { randomUUID } from "crypto";
+import { httpRequestDuration } from "../metrics.js";
 const REDACTED = "[REDACTED]";
 /** Headers whose values must never appear in logs. */
 export const REDACTED_HEADERS = new Set([
@@ -72,6 +73,9 @@ export function requestLogger(req, res, next) {
     res.on("finish", () => {
         const [sec, nano] = process.hrtime(start);
         const durationMs = sec * 1e3 + nano / 1e6;
+        const durationSec = sec + nano / 1e9;
+        const route = req.route?.path ?? req.path;
+        httpRequestDuration.observe({ method: req.method, route, status_code: String(res.statusCode) }, durationSec);
         const responseLog = {
             type: "response",
             correlationId,

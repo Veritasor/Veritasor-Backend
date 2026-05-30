@@ -1,4 +1,5 @@
 import { logger } from "../utils/logger.js";
+import { rateLimitRejections } from "../metrics.js";
 export class MemoryStore {
     store = new Map();
     increment(key, windowMs) {
@@ -164,6 +165,7 @@ export const rateLimiter = (options = {}) => {
                         windowMs,
                         timestamp: new Date(now).toISOString(),
                     }));
+                    rateLimitRejections.inc({ bucket });
                     res.status(429).json({ error: "Too many requests, please try again later." });
                     return;
                 }
@@ -193,6 +195,7 @@ export const rateLimiter = (options = {}) => {
                     windowMs,
                     timestamp: new Date(now).toISOString(),
                 }));
+                rateLimitRejections.inc({ bucket });
                 res.status(429).json({ error: "Too many requests, please try again later." });
                 return;
             }

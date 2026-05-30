@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
-import { attestationRepository } from '../repositories/attestation.js';
+import * as attestationRepository from '../repositories/attestationRepository.js';
 import { businessRepository } from '../repositories/business.js';
-import { revokeAttestation } from '../services/attestation/revoke.js';
+import { db } from '../db/client.js';
+import { ReadConsistency, type Attestation } from '../types/attestation.js';
+import { revokeAttestation as revokeAttestationService } from '../services/attestation/revoke.js';
 import type {
   SubmitAttestationParams as SorobanSubmitAttestationParams,
   SubmitAttestationResult as SorobanSubmitAttestationResult,
@@ -43,7 +45,6 @@ type SorobanServiceError = Error & {
   code?: string;
 };
 
-const localAttestationStore: RouteAttestation[] = [];
 export const attestationsRouter = Router();
 
 /**
@@ -97,11 +98,13 @@ const listQuerySchema = z.object({
 const submitBodySchema = z.object({
   businessId: z.string().min(1).max(255).optional(),
   period: z.string().min(1).max(50),
-  merkleRoot: z.string().min(1).max(1024),
+  merkleRoot: z.string().min(1).max(1024).optional(),
   timestamp: z.coerce.number().int('timestamp must be an integer').nonnegative('timestamp must be ≥ 0').optional(),
   version: z.string().min(1).max(50).default('1.0.0'),
   submit: z.boolean().optional(),
-}).strict();
+  revenueEntries: z.array(z.any()).optional(),
+  monthlySeries: z.array(z.any()).optional(),
+});
 
 /**
  * @notice NatSpec: Schema for revoking an attestation.
@@ -190,93 +193,79 @@ async function resolveBusinessIdForUser(userId: string): Promise<string | null> 
   return null;
 }
 
-async function listByBusinessId(businessId: string): Promise<RouteAttestation[]> {
-  const repo = attestationRepository as Record<string, unknown>;
+async function listByBusinessId(businessId: string, page: number, limit: number): Promise<{ items: RouteAttestation[], total: number }> {
+  const result = await attestationRepository.list(db, { businessId }, { limit, offset: (page - 1) * limit });
 
-  let repositoryItems: RouteAttestation[] = [];
+  const items = result.items.map((item: Attestation) => ({
+    id: item.id,
+    businessId: item.businessId,
+    period: item.period,
+    attestedAt: item.createdAt.toISOString(),
+    merkleRoot: item.merkleRoot,
+    txHash: item.txHash,
+    status: item.status === 'revoked' ? 'revoked' as const : 'submitted' as const,
+    revokedAt: item.status === 'revoked' ? item.updatedAt.toISOString() : null,
+    version: item.version.toString(),
+  }));
 
-  if (typeof repo.listByBusiness === 'function') {
-    repositoryItems = (repo.listByBusiness as (id: string) => RouteAttestation[])(businessId);
-  } else if (typeof repo.list === 'function') {
-    repositoryItems = await (repo.list as (filters: { businessId: string }) => Promise<RouteAttestation[]>)({ businessId });
-  }
-
-  const localItems = localAttestationStore.filter((item) => item.businessId === businessId);
-  const merged = [...repositoryItems, ...localItems];
-  const deduped = new Map<string, RouteAttestation>();
-
-  for (const item of merged) {
-    deduped.set(item.id, item);
-  }
-
-  return Array.from(deduped.values()).sort((a, b) => b.attestedAt.localeCompare(a.attestedAt));
+  return { items, total: result.total };
 }
 
 async function getById(id: string, businessId: string): Promise<RouteAttestation | null> {
-  const repo = attestationRepository as Record<string, unknown>;
-
-  if (typeof repo.getById === 'function') {
-    const found = await (repo.getById as (value: string) => Promise<RouteAttestation | null>)(id);
-    if (!found || found.businessId !== businessId) {
-      return null;
-    }
-    return found;
+  const found = await attestationRepository.getById(db, id);
+  if (!found || found.businessId !== businessId) {
+    return null;
   }
-
-  const items = await listByBusinessId(businessId);
-  return items.find((item) => item.id === id) ?? null;
+  return {
+    id: found.id,
+    businessId: found.businessId,
+    period: found.period,
+    attestedAt: found.createdAt.toISOString(),
+    merkleRoot: found.merkleRoot,
+    txHash: found.txHash,
+    status: found.status === 'revoked' ? 'revoked' as const : 'submitted' as const,
+    revokedAt: found.status === 'revoked' ? found.updatedAt.toISOString() : null,
+    version: found.version.toString(),
+  };
 }
 
-async function saveAttestation(record: RouteAttestation): Promise<RouteAttestation> {
-  const repo = attestationRepository as Record<string, unknown>;
+async function saveAttestation(record: Omit<RouteAttestation, 'id' | 'attestedAt' | 'revokedAt'> & { id?: string }): Promise<RouteAttestation> {
+  const created = await attestationRepository.create(db, {
+    businessId: record.businessId,
+    period: record.period,
+    merkleRoot: record.merkleRoot || '',
+    txHash: record.txHash || '',
+    status: 'submitted',
+  });
 
-  if (typeof repo.create === 'function') {
-    return (repo.create as (value: RouteAttestation) => Promise<RouteAttestation>)(record);
-  }
-
-  localAttestationStore.push(record);
-  return record;
+  return {
+    id: created.id,
+    businessId: created.businessId,
+    period: created.period,
+    attestedAt: created.createdAt.toISOString(),
+    merkleRoot: created.merkleRoot,
+    txHash: created.txHash,
+    status: 'submitted',
+    revokedAt: null,
+    version: created.version.toString(),
+  };
 }
 
 async function revokeAttestation(id: string, reason?: string): Promise<RouteAttestation | null> {
-  const repo = attestationRepository as Record<string, unknown>;
+  const updated = await attestationRepository.updateStatus(db, id, 'revoked');
+  if (!updated) return null;
 
-  if (typeof repo.revoke === 'function') {
-    return (repo.revoke as (value: string, data?: { reason?: string }) => Promise<RouteAttestation | null>)(id, { reason });
-  }
-
-  if (typeof repo.update === 'function' && typeof repo.findById === 'function') {
-    const existing = await (repo.findById as (value: string) => Promise<RouteAttestation | null>)(id);
-    if (existing) {
-      const updated = await (repo.update as (id: string, data: Partial<RouteAttestation>) => Promise<RouteAttestation | null>)(id, {
-        status: 'revoked',
-        revokedAt: new Date().toISOString(),
-      } as any);
-      return updated;
-    }
-  }
-
-  const index = localAttestationStore.findIndex((item) => item.id === id);
-  if (index === -1) {
-    console.log(`Attestation ${id} not found in local store or repository. Available local IDs:`,
-      localAttestationStore.map(i => i.id));
-    return null;
-  }
-
-  if (localAttestationStore[index].status === 'revoked') {
-    console.log(`Attestation ${id} is already revoked`);
-    return localAttestationStore[index];
-  }
-
-  const updated: RouteAttestation = {
-    ...localAttestationStore[index],
+  return {
+    id: updated.id,
+    businessId: updated.businessId,
+    period: updated.period,
+    attestedAt: updated.createdAt.toISOString(),
+    merkleRoot: updated.merkleRoot,
+    txHash: updated.txHash,
     status: 'revoked',
-    revokedAt: new Date().toISOString(),
+    revokedAt: updated.updatedAt.toISOString(),
+    version: updated.version.toString(),
   };
-
-  localAttestationStore[index] = updated;
-  console.log(`Successfully revoked attestation ${id}`, updated);
-  return updated;
 }
 
 async function submitOnChain(params: SubmitAttestationParams): Promise<SubmitAttestationResult> {
@@ -348,17 +337,20 @@ attestationsRouter.get(
       throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
     }
 
-    const allItems = await listByBusinessId(businessId);
-    const filtered = allItems.filter((item) => {
-      if (query.period && item.period !== query.period) return false;
-      if (query.status && (item.status ?? 'submitted') !== query.status) return false;
-      return true;
-    });
+    const { page, limit } = getPagination({ page: query.page, limit: query.limit });
+    const { items, total } = await listByBusinessId(businessId, page, limit);
 
-    const { page, limit, offset } = getPagination({ page: query.page, limit: query.limit });
-    const total = filtered.length;
-    const items = filtered.slice(offset, offset + limit);
-    const paginated = formatPaginatedResponse(items, total, page, limit);
+    // Filter server-side if query params present (repository list handles businessId but not period/status yet)
+    let filteredItems = items;
+    if (query.period || query.status) {
+      filteredItems = items.filter(item => {
+        if (query.period && item.period !== query.period) return false;
+        if (query.status && (item.status ?? 'submitted') !== query.status) return false;
+        return true;
+      });
+    }
+
+    const paginated = formatPaginatedResponse(filteredItems, total, page, limit);
 
     res.status(200).json({
       status: 'success',
@@ -516,17 +508,14 @@ attestationsRouter.post(
     };
 
     const now = new Date().toISOString();
-    const record: RouteAttestation = {
-      id: randomUUID(),
+    const record: Omit<RouteAttestation, 'id' | 'attestedAt' | 'revokedAt'> = {
       businessId,
       period: payload.period,
-      merkleRoot: merkleRoot,
+      merkleRoot: merkleRoot!,
       timestamp: payload.timestamp ?? Date.now(),
       version: payload.version,
       txHash: onChain.txHash,
       status: 'submitted',
-      revokedAt: null,
-      attestedAt: now,
     };
 
     const saved = await saveAttestation(record);
