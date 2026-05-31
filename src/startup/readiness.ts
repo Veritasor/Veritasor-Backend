@@ -17,6 +17,7 @@
  *   - All decisions are emitted as structured log entries for observability.
  */
 
+import { pool } from "../db/client.js"
 import { logger } from "../utils/logger.js"
 
 // ---------------------------------------------------------------------------
@@ -111,9 +112,8 @@ export async function runStartupDependencyReadinessChecks(): Promise<StartupRead
   checks.push(checkStripeConfig(isProduction))
 
   // 4. Database check
-  const dbConnectionString = process.env.DATABASE_URL?.trim()
-  if (dbConnectionString) {
-    checks.push(await checkDatabaseConnectivity(dbConnectionString))
+  if (process.env.DATABASE_URL?.trim()) {
+    checks.push(await checkDatabase())
   }
 
   const allReady = checks.every((c) => c.ready)
@@ -174,48 +174,24 @@ function checkStripeConfig(isProduction: boolean): DependencyReadinessResult {
 }
 
 /**
- * Probe database connectivity with a bounded SELECT 1 query.
+ * Probe database connectivity using the shared pool with a bounded SELECT 1 query.
  *
- * Returns an explicit failure reason that identifies whether the failure
- * was a connection error or a query timeout  without leaking the
- * connection string or credentials.
+ * Uses the shared pool from client.ts rather than opening a one-off connection,
+ * so the probe exercises the same connection path as normal request handling.
+ *
+ * Returns an explicit failure reason without leaking credentials.
  */
-async function checkDatabaseConnectivity(connectionString: string): Promise<DependencyReadinessResult> {
-  let failureReason: string
-
+export async function checkDatabase(): Promise<DependencyReadinessResult> {
   try {
-    const { default: pg } = await import("pg")
-    const client = new pg.Client({ connectionString })
-
-    await withTimeout(
-      (async () => {
-        await client.connect()
-        try {
-          await client.query("SELECT 1")
-        } finally {
-          await client.end()
-        }
-      })(),
-      STARTUP_CHECK_TIMEOUT_MS,
-    )
-
+    await withTimeout(pool.query("SELECT 1"), STARTUP_CHECK_TIMEOUT_MS)
     return { dependency: "database", ready: true }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-
-    if (message === "timeout") {
-      failureReason = `database probe timed out after ${STARTUP_CHECK_TIMEOUT_MS} ms`
-    } else {
-      // Sanitise: strip the connection string from the error message so
-      // credentials are never written to logs.
-      failureReason = "database connection failed: " + sanitiseDbError(message)
-    }
-
-    return {
-      dependency: "database",
-      ready: false,
-      reason: failureReason,
-    }
+    const reason =
+      message === "timeout"
+        ? `database probe timed out after ${STARTUP_CHECK_TIMEOUT_MS} ms`
+        : "database connection failed: " + sanitiseDbError(message)
+    return { dependency: "database", ready: false, reason }
   }
 }
 
