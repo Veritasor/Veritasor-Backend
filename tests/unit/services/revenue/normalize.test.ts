@@ -249,31 +249,33 @@ describe("revenue normalizer", () => {
   // -------------------------------------------------------------------------
 
   describe("date normalization edge cases", () => {
+    const fixedNow = new Date("2026-02-03T04:05:06.789Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(fixedNow);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it("should fall back to current time for an invalid date string", () => {
-      const before = Date.now();
       const result = normalizeRevenueEntry(raw({ id: "dt1", amount: 1, date: "not-a-date" }));
-      const after = Date.now();
-      const ts = new Date(result.date).getTime();
-      expect(ts).toBeGreaterThanOrEqual(before);
-      expect(ts).toBeLessThanOrEqual(after);
+
+      expect(result.date).toBe(fixedNow.toISOString());
     });
 
     it("should fall back to current time when date is undefined", () => {
-      const before = Date.now();
       const result = normalizeRevenueEntry({ id: "dt2", amount: 1 });
-      const after = Date.now();
-      const ts = new Date(result.date).getTime();
-      expect(ts).toBeGreaterThanOrEqual(before);
-      expect(ts).toBeLessThanOrEqual(after);
+
+      expect(result.date).toBe(fixedNow.toISOString());
     });
 
     it("should fall back to current time when date is an empty string", () => {
-      const before = Date.now();
       const result = normalizeRevenueEntry(raw({ id: "dt3", amount: 1, date: "" }));
-      const after = Date.now();
-      const ts = new Date(result.date).getTime();
-      expect(ts).toBeGreaterThanOrEqual(before);
-      expect(ts).toBeLessThanOrEqual(after);
+
+      expect(result.date).toBe(fixedNow.toISOString());
     });
 
     it("should handle Unix timestamp 0 (epoch) correctly", () => {
@@ -307,6 +309,12 @@ describe("revenue normalizer", () => {
         const result = normalizeRevenueEntry({ id: "dt7", amount: 1, date });
         expect(result.date).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
       }
+    });
+
+    it("should convert a numeric seconds timestamp to the exact ISO 8601 instant", () => {
+      const result = normalizeRevenueEntry(raw({ id: "dt8", amount: 1, date: 1_700_000_000 }));
+
+      expect(result.date).toBe("2023-11-14T22:13:20.000Z");
     });
   });
 
@@ -345,6 +353,14 @@ describe("revenue normalizer", () => {
     it("should preserve the exact amount value without rounding", () => {
       const result = normalizeRevenueEntry(raw({ id: "a6", amount: 123.456789 }));
       expect(result.amount).toBe(123.456789);
+    });
+
+    it("should classify negative lowercase-currency entries as refunds with uppercase currency", () => {
+      const result = normalizeRevenueEntry(raw({ id: "a7", amount: -12.34, currency: "inr" }));
+
+      expect(result.type).toBe("refund");
+      expect(result.currency).toBe("INR");
+      expect(result.amount).toBe(-12.34);
     });
   });
 

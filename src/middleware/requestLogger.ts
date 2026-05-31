@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { logger } from "../utils/logger.js";
+import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
 import { httpRequestDuration } from "../metrics.js";
 
@@ -13,6 +13,9 @@ export interface CorrelatedRequest extends Request {
 }
 
 const REDACTED = "[REDACTED]";
+const CORRELATION_ID_HEADER = "x-correlation-id";
+const LEGACY_REQUEST_ID_HEADER = "x-request-id";
+const CORRELATION_ID_PATTERN = /^[a-zA-Z0-9._:/=@-]{8,128}$/;
 
 /** Headers whose values must never appear in logs. */
 export const REDACTED_HEADERS = new Set([
@@ -35,6 +38,21 @@ export const REDACTED_QUERY_PARAMS = new Set([
   "reset_token",
   "code",
 ]);
+
+export function sanitizeCorrelationId(value: unknown): string | undefined {
+  const candidate = Array.isArray(value) ? value[0] : value;
+
+  if (typeof candidate !== "string") {
+    return undefined;
+  }
+
+  const trimmed = candidate.trim();
+  if (!CORRELATION_ID_PATTERN.test(trimmed)) {
+    return undefined;
+  }
+
+  return trimmed;
+}
 
 function redactQuery(query: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -66,54 +84,48 @@ function redactQuery(query: Record<string, unknown>): Record<string, unknown> {
 export function requestLogger(req: Request, res: Response, next: NextFunction) {
   const start = process.hrtime();
 
-  // Generate or reuse correlation ID from X-Request-ID header
-  // Use existing header if provided (for distributed tracing), otherwise generate new UUID
-  const correlationId = (req.headers["x-request-id"] as string) || randomUUID();
+  const correlationId =
+    sanitizeCorrelationId(req.headers[CORRELATION_ID_HEADER]) ??
+    sanitizeCorrelationId(req.headers[LEGACY_REQUEST_ID_HEADER]) ??
+    randomUUID();
 
-  // Attach correlation ID to request for use in downstream handlers
   (req as CorrelatedRequest).correlationId = correlationId;
+  res.locals.requestId = correlationId;
+  res.locals.correlationId = correlationId;
 
-  // Set correlation ID in response header for client-side tracing
+  res.setHeader("X-Correlation-ID", correlationId);
   res.setHeader("X-Request-ID", correlationId);
 
-  // Log incoming request with correlation ID
-  const requestLog = {
-    type: "request",
-    correlationId,
-    method: req.method,
-    path: req.path,
-    query: redactQuery(req.query as Record<string, unknown>),
-    ip: req.ip,
-    userAgent: req.headers["user-agent"],
-    timestamp: new Date().toISOString(),
-  };
-
-  logger.info(JSON.stringify(requestLog));
-
-  // Once the response has finished, compute duration and log
-  res.on("finish", () => {
-    const [sec, nano] = process.hrtime(start);
-    const durationMs = sec * 1e3 + nano / 1e6;
-    const durationSec = sec + nano / 1e9;
-
-    const route = (req.route?.path as string | undefined) ?? req.path;
-    httpRequestDuration.observe(
-      { method: req.method, route, status_code: String(res.statusCode) },
-      durationSec,
-    );
-
-    const responseLog = {
-      type: "response",
-      correlationId,
+  return runWithLoggerContext({ correlationId }, () => {
+    logger.info({
+      type: "request",
       method: req.method,
       path: req.path,
-      statusCode: res.statusCode,
-      durationMs: parseFloat(durationMs.toFixed(3)),
-      timestamp: new Date().toISOString(),
-    };
+      query: redactQuery(req.query as Record<string, unknown>),
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
 
-    logger.info(JSON.stringify(responseLog));
+    res.on("finish", () => {
+      const [sec, nano] = process.hrtime(start);
+      const durationMs = sec * 1e3 + nano / 1e6;
+      const durationSec = sec + nano / 1e9;
+
+      const route = (req.route?.path as string | undefined) ?? req.path;
+      httpRequestDuration.observe(
+        { method: req.method, route, status_code: String(res.statusCode) },
+        durationSec,
+      );
+
+      logger.info({
+        type: "response",
+        method: req.method,
+        path: req.path,
+        statusCode: res.statusCode,
+        durationMs: parseFloat(durationMs.toFixed(3)),
+      });
+    });
+
+    next();
   });
-
-  next();
 }

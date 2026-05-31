@@ -78,6 +78,7 @@ const securityHeadersMiddleware = (req: Request, res: Response, next: NextFuncti
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
 
+  app.use(requestLogger);
   app.use(securityHeadersMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
@@ -87,7 +88,6 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   // 3. Body Parsing
   app.use(express.json());
   app.use(createCorsMiddleware());
-  app.use(requestLogger);
 
   if (process.env.METRICS_ENABLED === "true") {
     app.get("/metrics", async (_req: Request, res: Response) => {
