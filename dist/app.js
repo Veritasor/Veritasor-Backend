@@ -2,6 +2,7 @@ import express from "express";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import { apiVersionMiddleware, versionResponseMiddleware, } from "./middleware/apiVersion.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -15,29 +16,6 @@ import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { runStartupDependencyReadinessChecks, } from "./startup/readiness.js";
-const apiVersionMiddleware = (req, res, next) => {
-    const requestedVersion = req.headers['x-api-version'];
-    const supportedVersions = ['1', 'v1'];
-    if (!requestedVersion) {
-        res.setHeader('api-version', 'v1');
-        next();
-        return;
-    }
-    const versionStr = String(requestedVersion);
-    const isSupported = supportedVersions.some(v => v === versionStr);
-    if (!isSupported) {
-        res.setHeader('api-version', 'v1');
-        res.setHeader('api-version-fallback', 'true');
-    }
-    else {
-        res.setHeader('api-version', 'v1');
-    }
-    next();
-};
-const versionResponseMiddleware = (req, res, next) => {
-    res.setHeader('Vary', 'Accept, X-API-Version');
-    next();
-};
 // Security middleware to reject prototype pollution attempts
 const securityHeadersMiddleware = (req, res, next) => {
     if (req.query && Object.keys(req.query).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
@@ -62,6 +40,7 @@ const securityHeadersMiddleware = (req, res, next) => {
 };
 export function createApp(readinessReport) {
     const app = express();
+    app.use(requestLogger);
     app.use(securityHeadersMiddleware);
     app.use(apiVersionMiddleware);
     app.use(versionResponseMiddleware);
@@ -69,7 +48,6 @@ export function createApp(readinessReport) {
     // 3. Body Parsing
     app.use(express.json());
     app.use(createCorsMiddleware());
-    app.use(requestLogger);
     if (process.env.METRICS_ENABLED === "true") {
         app.get("/metrics", async (_req, res) => {
             res.set("Content-Type", metricsRegistry.contentType);

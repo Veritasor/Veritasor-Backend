@@ -16,8 +16,12 @@ export function startConnect(shop, userId, businessId) {
     if (!clientId || !redirectUri || !store.isValidShopHost(shopHost)) {
         throw new Error('Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop');
     }
-    const expiresAt = Date.now() + 10 * 60 * 1000; // State expires in 10 minutes
-    store.setOAuthState(state, shopHost, userId, businessId);
+    // Read TTL from environment or default to 10 minutes
+    const ttlMs = process.env.SHOPIFY_OAUTH_STATE_TTL_MS
+        ? Number.parseInt(process.env.SHOPIFY_OAUTH_STATE_TTL_MS, 10)
+        : 10 * 60 * 1000;
+    const expiresAt = Date.now() + ttlMs;
+    store.setOAuthState(state, shopHost, userId, businessId, expiresAt);
     const params = new URLSearchParams({
         client_id: clientId,
         scope: scopes,
