@@ -17,6 +17,7 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import adminRouter from "./routes/admin.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
@@ -106,6 +107,8 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/integrations/shopify", integrationsShopifyRouter);
   app.use("/api/integrations/stripe", integrationsStripeRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/v1/admin", adminRouter);
+  app.use("/api/admin", adminRouter);
 
   // 5. Error Handling
   app.use(errorHandler);

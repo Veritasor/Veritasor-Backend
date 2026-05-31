@@ -6,6 +6,9 @@ import { getAllUsers, updateUser, deleteUser, findUserById } from '../repositori
 import { getAllAuditLogs, createAuditLog } from '../repositories/auditLogRepository.js'
 import * as attestationRepository from '../repositories/attestationRepository.js'
 import { db } from '../db/client.js'
+import { getDeadLetter, deleteDeadLetter, computePayloadHash } from '../services/webhooks/deadLetterQueue.js'
+import { handleRazorpayEvent } from '../services/webhooks/razorpayHandler.js'
+import { logger } from '../utils/logger.js'
 
 const adminRouter = Router()
 
@@ -199,6 +202,58 @@ adminRouter.get(
       res.json(logs)
     } catch (error: any) {
       res.status(500).json({ error: 'Internal Server Error', message: error.message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/webhooks/replay
+ * Replay a failed webhook from the dead-letter queue
+ */
+adminRouter.post(
+  '/webhooks/replay',
+  requirePermissions(IntegrationPermission.ADMIN_MANAGE_USERS),
+  async (req, res) => {
+    const { provider, eventId, payload } = req.body
+
+    if (!provider || !eventId || !payload) {
+      return res.status(400).json({ error: 'Missing required fields: provider, eventId, payload' })
+    }
+
+    if (provider !== 'razorpay') {
+      return res.status(400).json({ error: `Unsupported provider: ${provider}` })
+    }
+
+    try {
+      const entry = await getDeadLetter(provider, eventId)
+      if (!entry) {
+        return res.status(404).json({ error: 'Dead letter entry not found' })
+      }
+
+      let computedHash: string
+      try {
+        computedHash = computePayloadHash(payload)
+      } catch (err: any) {
+        if (err.message === 'Payload too large') {
+          return res.status(400).json({ error: 'Payload too large' })
+        }
+        throw err
+      }
+
+      if (computedHash !== entry.payload_hash) {
+        return res.status(400).json({ error: 'Payload hash mismatch' })
+      }
+
+      // Process the payload by invoking the handler
+      await handleRazorpayEvent(payload)
+
+      // On successful processing, clear/delete the DLQ entry
+      await deleteDeadLetter(provider, eventId)
+
+      return res.json({ status: 'ok', message: 'Replay successful, entry cleared' })
+    } catch (error: any) {
+      logger.error('Admin webhook replay failed', { provider, eventId, error })
+      return res.status(500).json({ error: 'Replay failed', message: error.message })
     }
   }
 )

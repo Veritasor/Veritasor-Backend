@@ -261,7 +261,7 @@ describe("Razorpay webhook integration", () => {
       .expect(200);
 
     expect(replay.body).toEqual({
-      status: "ok",
+      status: "duplicate",
       message: "Event evt_replayed_signed_raw_body already processed",
     });
   });
