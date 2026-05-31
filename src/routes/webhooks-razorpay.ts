@@ -4,7 +4,7 @@ import {
   handleRazorpayEvent,
   parseRazorpayEvent,
   RazorpayWebhookError,
-  verifyRazorpaySignature,
+  verifyRazorpaySignatureWithRotation,
 } from '../services/webhooks/razorpayHandler.js'
 import { logger } from '../utils/logger.js'
 
@@ -21,8 +21,8 @@ razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
       throw new RazorpayWebhookError('missing_signature', 400, 'Missing Razorpay signature header')
     }
 
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET
-    if (!secret) {
+    const primary = process.env.RAZORPAY_WEBHOOK_SECRET
+    if (!primary) {
       throw new RazorpayWebhookError('secret_not_configured', 500, 'Webhook secret not configured')
     }
 
@@ -30,10 +30,29 @@ razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
       throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
     }
 
-    const isValid = verifyRazorpaySignature(req.body, signature, secret)
-    if (!isValid) {
+    // Support overlapping primary + secondary secrets for zero-downtime rotation.
+    // RAZORPAY_WEBHOOK_SECRET_NEXT is optional; set it while Razorpay transitions
+    // to the new secret, then promote it to RAZORPAY_WEBHOOK_SECRET once stable.
+    const secondary = process.env.RAZORPAY_WEBHOOK_SECRET_NEXT || undefined
+    const { valid, keyLabel } = verifyRazorpaySignatureWithRotation(
+      req.body,
+      signature,
+      primary,
+      secondary,
+    )
+
+    if (!valid) {
       throw new RazorpayWebhookError('invalid_signature', 401, 'Invalid signature')
     }
+
+    // Log which key matched so rotation progress is observable without leaking secrets.
+    logger.info(
+      JSON.stringify({
+        type: 'razorpay_webhook_signature_verified',
+        keyLabel,
+        correlationId,
+      }),
+    )
 
     const event = parseRazorpayEvent(req.body)
     const result = handleRazorpayEvent(event)

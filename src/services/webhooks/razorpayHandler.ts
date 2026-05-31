@@ -80,6 +80,57 @@ export function verifyRazorpaySignature(
   return crypto.timingSafeEqual(expectedSignature, providedSignature)
 }
 
+/**
+ * Result of a rotation-aware signature verification attempt.
+ *
+ * @property valid   - Whether any candidate secret produced a matching signature.
+ * @property keyLabel - Which key matched: `'primary'` | `'secondary'` | `null` when no match.
+ *                      Never contains the secret value itself — safe to log.
+ */
+export interface VerifyWithRotationResult {
+  valid: boolean
+  keyLabel: 'primary' | 'secondary' | null
+}
+
+/**
+ * Verifies a Razorpay webhook signature against one or two candidate secrets,
+ * enabling zero-downtime secret rotation.
+ *
+ * Rotation workflow:
+ *   1. Generate the new secret in Razorpay and set it as `RAZORPAY_WEBHOOK_SECRET_NEXT`.
+ *   2. Deploy — both old (`RAZORPAY_WEBHOOK_SECRET`) and new secrets are accepted.
+ *   3. Once Razorpay has fully switched to the new secret, promote it:
+ *      set `RAZORPAY_WEBHOOK_SECRET=<new>` and unset `RAZORPAY_WEBHOOK_SECRET_NEXT`.
+ *
+ * Security properties:
+ *   - Each candidate is compared with `crypto.timingSafeEqual` to prevent timing attacks.
+ *   - The secondary is only tried when the primary fails, so the common path (primary match)
+ *     does not leak timing information about the secondary secret's existence.
+ *   - `keyLabel` in the return value is a fixed string (`'primary'` / `'secondary'`),
+ *     never the secret itself, so it is safe to include in structured logs.
+ *
+ * @param rawBody   - Raw request body bytes (must be the exact bytes Razorpay signed).
+ * @param signature - Hex-encoded HMAC-SHA256 from the `x-razorpay-signature` header.
+ * @param primary   - Value of `RAZORPAY_WEBHOOK_SECRET` (required).
+ * @param secondary - Value of `RAZORPAY_WEBHOOK_SECRET_NEXT` (optional, for rotation).
+ */
+export function verifyRazorpaySignatureWithRotation(
+  rawBody: Buffer | string,
+  signature: string,
+  primary: string,
+  secondary?: string,
+): VerifyWithRotationResult {
+  if (verifyRazorpaySignature(rawBody, signature, primary)) {
+    return { valid: true, keyLabel: 'primary' }
+  }
+
+  if (secondary && verifyRazorpaySignature(rawBody, signature, secondary)) {
+    return { valid: true, keyLabel: 'secondary' }
+  }
+
+  return { valid: false, keyLabel: null }
+}
+
 export function parseRazorpayEvent(
   rawBody: Buffer | string,
   options?: { nowMs?: number; maxFutureSkewMs?: number },
