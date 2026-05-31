@@ -5,6 +5,10 @@ import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import {
+  apiVersionMiddleware,
+  versionResponseMiddleware,
+} from "./middleware/apiVersion.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -21,34 +25,6 @@ import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
 } from "./startup/readiness.js";
-
-const apiVersionMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  const requestedVersion = req.headers['x-api-version'];
-  const supportedVersions = ['1', 'v1'];
-
-  if (!requestedVersion) {
-    res.setHeader('api-version', 'v1');
-    next();
-    return;
-  }
-
-  const versionStr = String(requestedVersion);
-  const isSupported = supportedVersions.some(v => v === versionStr);
-
-  if (!isSupported) {
-    res.setHeader('api-version', 'v1');
-    res.setHeader('api-version-fallback', 'true');
-  } else {
-    res.setHeader('api-version', 'v1');
-  }
-
-  next();
-};
-
-const versionResponseMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  res.setHeader('Vary', 'Accept, X-API-Version');
-  next();
-};
 
 // Security middleware to reject prototype pollution attempts
 const securityHeadersMiddleware = (req: Request, res: Response, next: NextFunction) => {
