@@ -1474,6 +1474,19 @@ describe("Security Considerations", () => {
  * Verifies that sensitive query params and headers are never written to logs.
  */
 describe("requestLogger redaction policy", () => {
+  function captureRequestQuery(arg: unknown, loggedQueries: Record<string, unknown>[]) {
+    const parsed = typeof arg === "string" ? JSON.parse(arg) : arg;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "type" in parsed &&
+      parsed.type === "request" &&
+      "query" in parsed
+    ) {
+      loggedQueries.push(parsed.query as Record<string, unknown>);
+    }
+  }
+
   it("REDACTED_QUERY_PARAMS covers expected sensitive keys", async () => {
     const { REDACTED_QUERY_PARAMS } = await import("../../src/middleware/requestLogger.js");
 
@@ -1504,10 +1517,9 @@ describe("requestLogger redaction policy", () => {
 
     // Capture log output by spying on logger
     const { logger } = await import("../../src/utils/logger.js");
-    const spy = vi.spyOn(logger, "info").mockImplementation((msg: string) => {
+    const spy = vi.spyOn(logger, "info").mockImplementation((msg: unknown) => {
       try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "request") loggedQueries.push(parsed.query);
+        captureRequestQuery(msg, loggedQueries);
       } catch {}
     });
 
@@ -1530,10 +1542,9 @@ describe("requestLogger redaction policy", () => {
     testApp.get("/probe", (_req, res) => res.json({ ok: true }));
 
     const { logger } = await import("../../src/utils/logger.js");
-    const spy = vi.spyOn(logger, "info").mockImplementation((msg: string) => {
+    const spy = vi.spyOn(logger, "info").mockImplementation((msg: unknown) => {
       try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "request") loggedQueries.push(parsed.query);
+        captureRequestQuery(msg, loggedQueries);
       } catch {}
     });
 
@@ -1559,10 +1570,9 @@ describe("requestLogger redaction policy", () => {
     testApp.get("/probe", (_req, res) => res.json({ ok: true }));
 
     const { logger } = await import("../../src/utils/logger.js");
-    const spy = vi.spyOn(logger, "info").mockImplementation((msg: string) => {
+    const spy = vi.spyOn(logger, "info").mockImplementation((msg: unknown) => {
       try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "request") loggedQueries.push(parsed.query);
+        captureRequestQuery(msg, loggedQueries);
       } catch {}
     });
 

@@ -38,6 +38,7 @@ import {
   isAppError,
   isValidationError,
 } from "../types/errors.js";
+import { logger } from "../utils/logger.js";
 
 type ErrorEnvelope = {
   status: "error";
@@ -248,8 +249,8 @@ export const errorHandler = (
   const statusCode = getStatusCode(err);
   
   // Log structured server-side context without leaking DB details or request bodies.
-  console.error("[Error]", {
-    level: "error",
+  logger.error({
+    type: "request_error",
     errorType: err instanceof Error ? err.name : typeof err,
     message: err instanceof Error ? err.message : "Non-Error throwable",
     stack: err instanceof Error ? err.stack : undefined,
@@ -262,7 +263,6 @@ export const errorHandler = (
     path: req.path,
     method: req.method,
     requestId,
-    timestamp: new Date().toISOString(),
   });
   
   // Create standardized error envelope
