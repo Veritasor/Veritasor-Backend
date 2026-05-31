@@ -163,7 +163,6 @@ export async function createBusiness(req: Request, res: Response) {
     // @dev email is taken from the authenticated user context (set by auth middleware)
     const business = await businessRepository.create({
       userId,
-      email: req.user?.email ?? '',
       name: normalizedData.name!,
       email: req.user!.email || '',
       industry: normalizedData.industry,

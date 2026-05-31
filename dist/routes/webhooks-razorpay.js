@@ -4,7 +4,7 @@ import { handleRazorpayEvent, parseRazorpayEvent, RazorpayWebhookError, verifyRa
 import { logger } from '../utils/logger.js';
 export const razorpayWebhookRouter = Router();
 razorpayWebhookRouter.use(express.raw({ type: 'application/json' }));
-razorpayWebhookRouter.post('/', (req, res) => {
+razorpayWebhookRouter.post('/', async (req, res) => {
     const correlationId = req.correlationId;
     try {
         const signature = req.headers['x-razorpay-signature'];
@@ -23,7 +23,7 @@ razorpayWebhookRouter.post('/', (req, res) => {
             throw new RazorpayWebhookError('invalid_signature', 401, 'Invalid signature');
         }
         const event = parseRazorpayEvent(req.body);
-        const result = handleRazorpayEvent(event);
+        const result = await handleRazorpayEvent(event);
         return res.status(200).json(result);
     }
     catch (error) {

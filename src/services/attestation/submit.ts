@@ -114,6 +114,7 @@ interface LogContext {
   error?: string;
   errorCode?: string;
   duration?: number;
+  delay?: number;
 }
 
 function log(level: 'info' | 'warn' | 'error', message: string, context: LogContext): void {
