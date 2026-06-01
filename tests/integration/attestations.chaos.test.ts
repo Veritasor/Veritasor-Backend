@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { rpc, Keypair, scValToNative, Account } from '@stellar/stellar-sdk';
-import fc from 'fast-check';
+import * as fc from 'fast-check';
 import { app } from '../../src/app.js';
 import { businessRepository } from '../../src/repositories/business.js';
 import * as attestationRepository from '../../src/repositories/attestationRepository.js';
@@ -64,15 +64,92 @@ const mockPreparedTx = {
   sign: () => {},
 };
 
+// Dynamic sequences and trackers for prototype method implementations
+let activePrepareSequence: string[] = [];
+let activeSendSequence: string[] = [];
+let activeConfirmSequence: string[] = [];
+
+let prepareIdx = 0;
+let sendIdx = 0;
+let confirmIdx = 0;
+
 // A targeted flag to bypass the 2000ms ledger confirmation poll delay ONLY when confirmation timeout is actively tested.
 // This prevents pg-pool (which has a matching default 2000ms connection timeout) from timing out.
 let mockPollDelay = false;
+
+// Compute expected response status and error codes using a deterministic oracle of Soroban execution rules
+function computeExpectedOutcome(
+  prepareSequence: string[],
+  sendSequence: string[],
+  confirmSequence: string[]
+): { status: number; code?: string; submissionStatus?: string } {
+  // 1. Simulate Phase (prepareTransaction)
+  let prepareSuccess = false;
+  for (let i = 0; i < 3; i++) {
+    const outcome = prepareSequence[i] || 'success';
+    if (outcome === 'success') {
+      prepareSuccess = true;
+      break;
+    }
+  }
+  if (!prepareSuccess) {
+    return { status: 502, code: 'SOROBAN_NETWORK_ERROR' };
+  }
+
+  // 2. Send Phase (sendTransaction)
+  let sendSuccess = false;
+  let lastSendError = '';
+  for (let i = 0; i < 3; i++) {
+    const outcome = sendSequence[i] || 'success';
+    if (outcome === 'success') {
+      sendSuccess = true;
+      break;
+    } else if (outcome === 'network_error') {
+      lastSendError = 'SOROBAN_NETWORK_ERROR';
+    } else if (outcome === 'try_again_later') {
+      lastSendError = 'SUBMIT_FAILED';
+    }
+  }
+  if (!sendSuccess) {
+    return { status: 502, code: lastSendError };
+  }
+
+  // 3. Confirm Phase (getTransaction)
+  let confirmStatus: 'confirmed' | 'pending' | null = null;
+  for (let j = 0; j < 15; j++) {
+    const outcome = confirmSequence[j] || 'success';
+    if (outcome === 'network_error') {
+      return { status: 502, code: 'SOROBAN_NETWORK_ERROR' };
+    }
+    if (outcome === 'failed') {
+      return { status: 502, code: 'CONFIRMATION_FAILED' };
+    }
+    if (outcome === 'success') {
+      confirmStatus = 'confirmed';
+      break;
+    }
+  }
+  if (confirmStatus === null) {
+    // NOT_FOUND all 15 times = CONFIRMATION_TIMEOUT.
+    // submitAttestation returns status: 'pending' (maps to HTTP 201).
+    confirmStatus = 'pending';
+  }
+  return { status: 201, submissionStatus: confirmStatus };
+}
 
 describe('POST /api/attestations - Soroban chaos testing', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
+
+    activePrepareSequence = [];
+    activeSendSequence = [];
+    activeConfirmSequence = [];
+    prepareIdx = 0;
+    sendIdx = 0;
+    confirmIdx = 0;
     mockPollDelay = false;
+
     process.env = { ...ORIGINAL_ENV };
     process.env.SOROBAN_SUBMIT_ENABLED = 'true';
     process.env.SOROBAN_SOURCE_PUBLIC_KEY = VALID_SOURCE_PUBLIC_KEY;
@@ -126,11 +203,44 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
 
     mockScValToNative.mockReturnValue({ merkle_root: 'abc123', timestamp: 1700000000 });
 
-    // Establish default success mocks for rpc.Server methods on the prototype
+    // Establish dynamic mocks for rpc.Server methods on the prototype
     vi.spyOn(rpc.Server.prototype, 'getAccount').mockResolvedValue(new Account(VALID_SOURCE_PUBLIC_KEY, '123'));
-    vi.spyOn(rpc.Server.prototype, 'prepareTransaction').mockResolvedValue(mockPreparedTx as any);
-    vi.spyOn(rpc.Server.prototype, 'sendTransaction').mockResolvedValue({ status: 'PENDING', hash: VALID_TX_HASH } as any);
-    vi.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({ status: 'SUCCESS', ledger: 100, returnValue: {} } as any);
+
+    vi.spyOn(rpc.Server.prototype, 'prepareTransaction').mockImplementation(async () => {
+      const outcome = activePrepareSequence[prepareIdx] || 'success';
+      prepareIdx++;
+      if (outcome === 'network_error') {
+        throw Object.assign(new Error('persistent socket error'), { code: 'ECONNRESET' });
+      }
+      return mockPreparedTx as any;
+    });
+
+    vi.spyOn(rpc.Server.prototype, 'sendTransaction').mockImplementation(async () => {
+      const outcome = activeSendSequence[sendIdx] || 'success';
+      sendIdx++;
+      if (outcome === 'network_error') {
+        throw Object.assign(new Error('persistent network error'), { code: 'ECONNRESET' });
+      }
+      if (outcome === 'try_again_later') {
+        return { status: 'TRY_AGAIN_LATER', hash: VALID_TX_HASH } as any;
+      }
+      return { status: 'PENDING', hash: VALID_TX_HASH } as any;
+    });
+
+    vi.spyOn(rpc.Server.prototype, 'getTransaction').mockImplementation(async () => {
+      const outcome = activeConfirmSequence[confirmIdx] || 'success';
+      confirmIdx++;
+      if (outcome === 'network_error') {
+        throw Object.assign(new Error('network offline'), { code: 'ECONNRESET' });
+      }
+      if (outcome === 'failed') {
+        return { status: 'FAILED' } as any;
+      }
+      if (outcome === 'not_found') {
+        return { status: 'NOT_FOUND' } as any;
+      }
+      return { status: 'SUCCESS', ledger: 100, returnValue: {} } as any;
+    });
 
     // Bypass confirmation poll delays (2000ms) only when requested, preserving standard setTimeout for db pools & timeouts
     const originalSetTimeout = setTimeout;
@@ -166,9 +276,7 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
   // =========================================================================
 
   it('Test 1: handles transient prepareTransaction (simulate) failure followed by success', async () => {
-    const prepareSpy = vi.spyOn(rpc.Server.prototype, 'prepareTransaction')
-      .mockRejectedValueOnce(Object.assign(new Error('temporary socket error'), { code: 'ECONNRESET' }))
-      .mockResolvedValueOnce(mockPreparedTx as any);
+    activePrepareSequence = ['network_error', 'success'];
 
     const res = await request(app)
       .post('/api/attestations')
@@ -176,21 +284,14 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
       .set('Idempotency-Key', 'chaos-reg-1')
       .send(VALID_SUBMIT);
 
-    if (res.status !== 201) {
-      console.log('DEBUG TEST 1 RES:', res.status, res.body);
-    }
-
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('success');
     expect(res.body.submission.status).toBe('confirmed');
-    expect(prepareSpy).toHaveBeenCalledTimes(2);
+    expect(prepareIdx).toBe(2);
   });
 
   it('Test 2: handles sendTransaction returning TRY_AGAIN_LATER twice, then PENDING', async () => {
-    const sendSpy = vi.spyOn(rpc.Server.prototype, 'sendTransaction')
-      .mockResolvedValueOnce({ status: 'TRY_AGAIN_LATER', hash: VALID_TX_HASH } as any)
-      .mockResolvedValueOnce({ status: 'TRY_AGAIN_LATER', hash: VALID_TX_HASH } as any)
-      .mockResolvedValueOnce({ status: 'PENDING', hash: VALID_TX_HASH } as any);
+    activeSendSequence = ['try_again_later', 'try_again_later', 'success'];
 
     const res = await request(app)
       .post('/api/attestations')
@@ -198,19 +299,14 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
       .set('Idempotency-Key', 'chaos-reg-2')
       .send(VALID_SUBMIT);
 
-    if (res.status !== 201) {
-      console.log('DEBUG TEST 2 RES:', res.status, res.body);
-    }
-
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('success');
     expect(res.body.submission.status).toBe('confirmed');
-    expect(sendSpy).toHaveBeenCalledTimes(3);
+    expect(sendIdx).toBe(3);
   });
 
   it('Test 3: handles sendTransaction returning TRY_AGAIN_LATER persistently (exhausted retries)', async () => {
-    const sendSpy = vi.spyOn(rpc.Server.prototype, 'sendTransaction')
-      .mockResolvedValue({ status: 'TRY_AGAIN_LATER', hash: VALID_TX_HASH } as any);
+    activeSendSequence = ['try_again_later', 'try_again_later', 'try_again_later'];
 
     const res = await request(app)
       .post('/api/attestations')
@@ -220,14 +316,12 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
 
     expect(res.status).toBe(502);
     expect(res.body.code).toBe('SUBMIT_FAILED');
-    expect(sendSpy).toHaveBeenCalledTimes(3); // Initial + 2 retries
+    expect(sendIdx).toBe(3); // Initial + 2 retries
     assertSecurityInvariants(res);
   });
 
   it('Test 4: handles getTransaction returning FAILED (on-chain reversion)', async () => {
-    vi.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
-      status: 'FAILED',
-    } as any);
+    activeConfirmSequence = ['failed'];
 
     const res = await request(app)
       .post('/api/attestations')
@@ -242,19 +336,13 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
 
   it('Test 5: handles getTransaction returning NOT_FOUND persistently (confirmation timeout)', async () => {
     mockPollDelay = true;
-    vi.spyOn(rpc.Server.prototype, 'getTransaction').mockResolvedValue({
-      status: 'NOT_FOUND',
-    } as any);
+    activeConfirmSequence = Array(15).fill('not_found');
 
     const res = await request(app)
       .post('/api/attestations')
       .set(AUTH)
       .set('Idempotency-Key', 'chaos-reg-5')
       .send(VALID_SUBMIT);
-
-    if (res.status !== 201) {
-      console.log('DEBUG TEST 5 RES:', res.status, res.body);
-    }
 
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('success');
@@ -269,103 +357,42 @@ describe('POST /api/attestations - Soroban chaos testing', () => {
     await fc.assert(
       fc.asyncProperty(
         fc.record({
-          faultStep: fc.constantFrom('none', 'simulate', 'send_try_again', 'send_network', 'confirm_failed', 'confirm_not_found', 'confirm_network'),
+          prepareSequence: fc.array(fc.constantFrom('success', 'network_error'), { minLength: 1, maxLength: 3 }),
+          sendSequence: fc.array(fc.constantFrom('success', 'try_again_later', 'network_error'), { minLength: 1, maxLength: 3 }),
+          confirmSequence: fc.array(fc.constantFrom('success', 'failed', 'not_found', 'network_error'), { minLength: 1, maxLength: 15 }),
+          idempotencyKey: fc.stringMatching(/^[0-9a-f]{16}$/),
         }),
         async (chaos) => {
-          // Reset spy state for each property run
-          vi.restoreAllMocks();
-          mockPollDelay = (chaos.faultStep === 'confirm_not_found');
-          vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(BUSINESS as any);
+          // Assign the active sequences and reset counters for this property iteration
+          activePrepareSequence = chaos.prepareSequence;
+          activeSendSequence = chaos.sendSequence;
+          activeConfirmSequence = chaos.confirmSequence;
+          prepareIdx = 0;
+          sendIdx = 0;
+          confirmIdx = 0;
+          mockPollDelay = chaos.confirmSequence.includes('not_found');
 
-          // Mock Attestation repository
-          vi.spyOn(attestationRepository, 'create').mockResolvedValue({
-            id: 'att_created_mock',
-            businessId: 'biz_1',
-            period: '2026-01',
-            merkleRoot: 'abc123',
-            txHash: VALID_TX_HASH,
-            status: 'submitted',
-            version: 1,
-            createdAt: new Date('2026-01-01T00:00:00.000Z'),
-            updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-          });
-
-          mockScValToNative.mockReturnValue({ merkle_root: 'abc123', timestamp: 1700000000 });
-
-          // Establish immediate timeouts for confirmation (2000ms) only when testing confirmation timeout
-          const originalSetTimeout = setTimeout;
-          vi.spyOn(global, 'setTimeout').mockImplementation((cb: any, ms: any) => {
-            if (ms === 2000 && mockPollDelay) {
-              cb();
-              return {} as any;
-            }
-            return originalSetTimeout(cb, ms);
-          });
-
-          // Configure default success path
-          vi.spyOn(rpc.Server.prototype, 'getAccount').mockResolvedValue(new Account(VALID_SOURCE_PUBLIC_KEY, '123'));
-
-          const prepareMock = vi.spyOn(rpc.Server.prototype, 'prepareTransaction')
-            .mockResolvedValue(mockPreparedTx as any);
-
-          const sendMock = vi.spyOn(rpc.Server.prototype, 'sendTransaction')
-            .mockResolvedValue({ status: 'PENDING', hash: VALID_TX_HASH } as any);
-
-          const confirmMock = vi.spyOn(rpc.Server.prototype, 'getTransaction')
-            .mockResolvedValue({ status: 'SUCCESS', ledger: 100, returnValue: {} } as any);
-
-          // Inject specific target fault type persistently
-          if (chaos.faultStep === 'simulate') {
-            prepareMock.mockRejectedValue(Object.assign(new Error('persistent socket error'), { code: 'ECONNRESET' }));
-          } else if (chaos.faultStep === 'send_try_again') {
-            sendMock.mockResolvedValue({ status: 'TRY_AGAIN_LATER', hash: VALID_TX_HASH } as any);
-          } else if (chaos.faultStep === 'send_network') {
-            sendMock.mockRejectedValue(Object.assign(new Error('persistent network error'), { code: 'ECONNRESET' }));
-          } else if (chaos.faultStep === 'confirm_failed') {
-            confirmMock.mockResolvedValue({ status: 'FAILED' } as any);
-          } else if (chaos.faultStep === 'confirm_not_found') {
-            confirmMock.mockResolvedValue({ status: 'NOT_FOUND' } as any);
-          } else if (chaos.faultStep === 'confirm_network') {
-            confirmMock.mockRejectedValue(Object.assign(new Error('network offline'), { code: 'ECONNRESET' }));
-          }
-
-          // Generate unique idempotency key for this run
-          const key = `chaos-prop-${Math.random()}`;
+          // Compute expected response shape using the deterministic Oracle
+          const expected = computeExpectedOutcome(
+            chaos.prepareSequence,
+            chaos.sendSequence,
+            chaos.confirmSequence
+          );
 
           const res = await request(app)
             .post('/api/attestations')
             .set(AUTH)
-            .set('Idempotency-Key', key)
+            .set('Idempotency-Key', `chaos-prop-${chaos.idempotencyKey}`)
             .send(VALID_SUBMIT);
 
-          // Assert the output outcomes perfectly match our mapped truth table oracle
-          if (chaos.faultStep === 'none') {
-            expect(res.status).toBe(201);
+          // Assert the actual status matches the Oracle
+          expect(res.status).toBe(expected.status);
+
+          if (expected.status === 201) {
             expect(res.body.status).toBe('success');
-            expect(res.body.submission.status).toBe('confirmed');
-          } else if (chaos.faultStep === 'simulate') {
-            expect(res.status).toBe(502);
-            expect(res.body.code).toBe('SOROBAN_NETWORK_ERROR');
-            assertSecurityInvariants(res);
-          } else if (chaos.faultStep === 'send_try_again') {
-            expect(res.status).toBe(502);
-            expect(res.body.code).toBe('SUBMIT_FAILED');
-            assertSecurityInvariants(res);
-          } else if (chaos.faultStep === 'send_network') {
-            expect(res.status).toBe(502);
-            expect(res.body.code).toBe('SOROBAN_NETWORK_ERROR');
-            assertSecurityInvariants(res);
-          } else if (chaos.faultStep === 'confirm_failed') {
-            expect(res.status).toBe(502);
-            expect(res.body.code).toBe('CONFIRMATION_FAILED');
-            assertSecurityInvariants(res);
-          } else if (chaos.faultStep === 'confirm_not_found') {
-            expect(res.status).toBe(201);
-            expect(res.body.status).toBe('success');
-            expect(res.body.submission.status).toBe('pending');
-          } else if (chaos.faultStep === 'confirm_network') {
-            expect(res.status).toBe(502);
-            expect(res.body.code).toBe('SOROBAN_NETWORK_ERROR');
+            expect(res.body.submission.status).toBe(expected.submissionStatus);
+          } else {
+            expect(res.body.code).toBe(expected.code);
             assertSecurityInvariants(res);
           }
         }
