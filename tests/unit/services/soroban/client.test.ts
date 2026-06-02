@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { rpc } from '@stellar/stellar-sdk'
 import {
+  CircuitBreakerState,
   SorobanRpcTimeoutError,
+  SorobanCircuitBreakerError,
   createSorobanRpcServer,
   executeSorobanRequest,
   getSorobanConfig,
@@ -24,6 +26,10 @@ describe('Soroban client retry and timeout policy', () => {
     delete process.env.SOROBAN_RPC_RETRY_JITTER_RATIO
     delete process.env.SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD
     delete process.env.SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   describe('getSorobanConfig', () => {
@@ -542,6 +548,138 @@ describe('Soroban client retry and timeout policy', () => {
       expect(server.getAccount).toBe(server.getAccount)
       expect(server.serverURL.toString()).toBe('http://127.0.0.1:8000/')
       expect(typeof server.toString).toBe('function')
+    })
+
+    it('probes in half-open after the reset timeout and closes on success', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-05-31T00:00:00.000Z'))
+
+      const onCircuitBreakerStateChange = vi.fn()
+      const getAccountSpy = vi
+        .spyOn(rpc.Server.prototype, 'getAccount')
+        .mockRejectedValueOnce(
+          Object.assign(new Error('temporary network issue'), {
+            code: 'ECONNRESET',
+          }),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error('temporary network issue'), {
+            code: 'ECONNRESET',
+          }),
+        )
+        .mockResolvedValueOnce({ id: 'account' } as never)
+
+      const server = createSorobanRpcServer(
+        'http://127.0.0.1:8000',
+        {
+          timeoutMs: 50,
+          maxRetries: 0,
+          retryBaseDelayMs: 1,
+          retryMaxDelayMs: 1,
+          retryJitterRatio: 0,
+          circuitBreakerThreshold: 2,
+          circuitBreakerResetMs: 1000,
+        },
+        { onCircuitBreakerStateChange },
+      )
+
+      await expect(server.getAccount('GTEST')).rejects.toThrow(
+        'temporary network issue',
+      )
+      await expect(server.getAccount('GTEST')).rejects.toThrow(
+        'temporary network issue',
+      )
+
+      await expect(server.getAccount('GTEST')).rejects.toBeInstanceOf(
+        SorobanCircuitBreakerError,
+      )
+      expect(getAccountSpy).toHaveBeenCalledTimes(2)
+
+      vi.advanceTimersByTime(1000)
+
+      await expect(server.getAccount('GTEST')).resolves.toEqual({
+        id: 'account',
+      })
+
+      expect(getAccountSpy).toHaveBeenCalledTimes(3)
+      expect(onCircuitBreakerStateChange).toHaveBeenNthCalledWith(
+        1,
+        CircuitBreakerState.CLOSED,
+        CircuitBreakerState.OPEN,
+      )
+      expect(onCircuitBreakerStateChange).toHaveBeenNthCalledWith(
+        2,
+        CircuitBreakerState.OPEN,
+        CircuitBreakerState.HALF_OPEN,
+      )
+      expect(onCircuitBreakerStateChange).toHaveBeenNthCalledWith(
+        3,
+        CircuitBreakerState.HALF_OPEN,
+        CircuitBreakerState.CLOSED,
+      )
+      expect(onCircuitBreakerStateChange).toHaveBeenCalledTimes(3)
+    })
+
+    it('reopens when the half-open probe fails and keeps rejecting while open', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-05-31T00:00:00.000Z'))
+
+      const onCircuitBreakerStateChange = vi.fn()
+      const getAccountSpy = vi
+        .spyOn(rpc.Server.prototype, 'getAccount')
+        .mockRejectedValueOnce(new Error('deterministic rpc failure'))
+        .mockRejectedValueOnce(new Error('deterministic rpc failure'))
+
+      const server = createSorobanRpcServer(
+        'http://127.0.0.1:8000',
+        {
+          timeoutMs: 50,
+          maxRetries: 0,
+          retryBaseDelayMs: 1,
+          retryMaxDelayMs: 1,
+          retryJitterRatio: 0,
+          circuitBreakerThreshold: 1,
+          circuitBreakerResetMs: 1000,
+        },
+        { onCircuitBreakerStateChange },
+      )
+
+      await expect(server.getAccount('GTEST')).rejects.toThrow(
+        'deterministic rpc failure',
+      )
+
+      await expect(server.getAccount('GTEST')).rejects.toMatchObject({
+        name: 'SorobanCircuitBreakerError',
+        state: CircuitBreakerState.OPEN,
+        operationName: 'getAccount',
+      })
+
+      vi.advanceTimersByTime(1000)
+
+      await expect(server.getAccount('GTEST')).rejects.toThrow(
+        'deterministic rpc failure',
+      )
+
+      await expect(server.getAccount('GTEST')).rejects.toBeInstanceOf(
+        SorobanCircuitBreakerError,
+      )
+      expect(getAccountSpy).toHaveBeenCalledTimes(2)
+      expect(onCircuitBreakerStateChange).toHaveBeenNthCalledWith(
+        1,
+        CircuitBreakerState.CLOSED,
+        CircuitBreakerState.OPEN,
+      )
+      expect(onCircuitBreakerStateChange).toHaveBeenNthCalledWith(
+        2,
+        CircuitBreakerState.OPEN,
+        CircuitBreakerState.HALF_OPEN,
+      )
+      expect(onCircuitBreakerStateChange).toHaveBeenNthCalledWith(
+        3,
+        CircuitBreakerState.HALF_OPEN,
+        CircuitBreakerState.OPEN,
+      )
+      expect(onCircuitBreakerStateChange).toHaveBeenCalledTimes(3)
     })
   })
 })
