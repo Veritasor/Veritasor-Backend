@@ -225,4 +225,13 @@ export const config = {
       token: parsedEnv.VAULT_TOKEN,
     },
   },
+  secretLoader: {
+    source: parsedEnv.SECRET_LOADER,
+    filePath: parsedEnv.SECRET_FILE_PATH,
+    vault: {
+      baseUrl: parsedEnv.VAULT_BASE_URL,
+      secretPath: parsedEnv.VAULT_SECRET_PATH,
+      token: parsedEnv.VAULT_TOKEN,
+    },
+  },
 } as const;

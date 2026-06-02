@@ -15,6 +15,10 @@ import { IntegrationPermission, ROLE_PERMISSIONS } from "../../src/types/permiss
 import { clearAll } from "../../src/repositories/integration.js";
 import { integrationRepository } from "../../src/repositories/integrations.js";
 import { logger } from "../../src/utils/logger.js";
+import { clearTenants, createIsolatedTenant, getAuthHeaders, getTenantByToken } from "../fixtures/tenant.js";
+import * as shopifyStore from "../../src/services/integrations/shopify/store.js";
+import { handleCallback } from "../../src/services/integrations/shopify/callback.js";
+import { computeShopifyHmac } from "../../src/services/integrations/shopify/utils.js";
 
 // Mock the business auth middleware to simulate different user roles
 vi.mock("../../src/middleware/requireBusinessAuth.js", () => ({
@@ -629,7 +633,10 @@ describe.skip("Integrations Granular Permission System", () => {
       expect(response.body.integrations[0].type).toBe('stripe');
       expect(response.body.integrations[0].externalId).toBe('stripe_biz_a');
     });
-  });
+
+    it("should reject unauthorized requests", async () => {
+      const response = await request(app)
+        .get("/api/integrations/connected")
         .expect(401);
 
       expect(response.body).toHaveProperty("error");
@@ -1248,7 +1255,6 @@ describe("handleCallback — state nonce validation", () => {
 
   it("state not in store returns Invalid or expired state", async () => {
     // Do NOT seed the store — state is absent
-    const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded");
     const params = makeValidParamsForShop("test-secret", "mystore.myshopify.com", "nonce-not-seeded"); // userId and integrationId are not passed here, but handleCallback will pass them
     const result = await handleCallback(params);
     expect(result).toEqual({ success: false, error: "Invalid or expired state" });
@@ -1757,7 +1763,6 @@ describe.skip("OAuth State Tampering", () => {
       const stripeState = stripeConnect.body.state;
 
       // Tamper: mutate the stored state to point to a different integration
-      const entry = oauthStateStore.find((s) => s.state === stripeState);
       const entry = oauthStateStore.find((s: any) => s.state === stripeState); // Cast to any for find
       if (entry) {
         entry.integrationId = "shopify";
@@ -2043,14 +2048,14 @@ describe("Razorpay Webhook Handler", () => {
     ).toThrowError("Invalid webhook timestamp");
   });
 
-  it("should keep direct handler processing idempotent for repeated events", () => {
+  it("should keep direct handler processing idempotent for repeated events", async () => {
     const event = parseRazorpayEvent(JSON.stringify(createValidEvent("evt_direct_handler")));
 
-    expect(handleRazorpayEvent(event)).toEqual({
+    expect(await handleRazorpayEvent(event)).toEqual({
       status: "ok",
       message: "Payment pay_test_456 captured successfully",
     });
-    expect(handleRazorpayEvent(event)).toEqual({
+    expect(await handleRazorpayEvent(event)).toEqual({
       status: "ok",
       message: "Event evt_direct_handler already processed",
     });

@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+vi.mock('../../../src/services/webhooks/deadLetterQueue.js', () => ({
+  saveDeadLetter: vi.fn(),
+}))
+
 import { handleRazorpayEvent, RazorpayWebhookError } from '../../../src/services/webhooks/razorpayHandler.js'
+import { saveDeadLetter } from '../../../src/services/webhooks/deadLetterQueue.js'
 
 const makeEvent = (overrides: any = {}) => ({
   id: 'evt_test_123',
@@ -35,7 +41,7 @@ describe('handleRazorpayEvent', () => {
     expect(result.message).toContain(id)
   })
 
-  it('rejects a replayed old event outside tolerance window', async () => {
+  it('rejects a replayed old event outside tolerance window and saves to DLQ', async () => {
     const staleEvent = makeEvent({
       id: 'evt_stale_' + Date.now(),
       created_at: Math.floor(Date.now() / 1000) - 600,
@@ -49,6 +55,7 @@ describe('handleRazorpayEvent', () => {
     expect(error).toBeDefined()
     expect(error).toBeInstanceOf(RazorpayWebhookError)
     expect(error.code).toBe('invalid_timestamp')
+    expect(saveDeadLetter).toHaveBeenCalledWith('razorpay', staleEvent.id, staleEvent, error)
   })
 
   it('handles missing event id by throwing', async () => {

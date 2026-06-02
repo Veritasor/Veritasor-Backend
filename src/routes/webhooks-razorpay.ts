@@ -13,7 +13,7 @@ export const razorpayWebhookRouter = Router()
 
 razorpayWebhookRouter.use(express.raw({ type: 'application/json' }))
 
-razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
+razorpayWebhookRouter.post('/', async (req: Request, res: Response) => {
   const correlationId = (req as Request & { correlationId?: string }).correlationId
 
   try {
@@ -68,7 +68,7 @@ razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
     )
 
     const event = parseRazorpayEvent(req.body)
-    const result = handleRazorpayEvent(event)
+    const result = await handleRazorpayEvent(event)
     return res.status(200).json(result)
   } catch (error) {
     if (error instanceof RazorpayWebhookError) {

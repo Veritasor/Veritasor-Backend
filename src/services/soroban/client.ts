@@ -521,10 +521,15 @@ export async function executeSorobanRequest<T>(
     hooks?.onRequestStart?.(options.operationName, attempt);
 
     try {
-      const result = await withSorobanTimeout(
+      const result = await traceSorobanRpcAttempt(
         options.operationName,
-        policy.timeoutMs,
-        options.execute,
+        attempt,
+        () =>
+          withSorobanTimeout(
+            options.operationName,
+            policy.timeoutMs,
+            options.execute,
+          ),
       );
 
       const duration = Date.now() - startTime;
