@@ -25,23 +25,57 @@ export const envSchema = z.object({
   SOROBAN_RPC_URL: z.string().url().default("https://soroban-testnet.stellar.org"),
   SOROBAN_CONTRACT_ID: z.string().default(""),
   SOROBAN_NETWORK_PASSPHRASE: z.string().default("Test SDF Network ; September 2015"),
+  SOROBAN_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
+  SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
+  SECRET_FILE_PATH: z.string().optional(),
+  VAULT_BASE_URL: z.string().url().optional(),
+  VAULT_SECRET_PATH: z.string().optional(),
+  VAULT_TOKEN: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
-    if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "ALLOWED_ORIGINS must be set in production",
-        path: ["ALLOWED_ORIGINS"]
-      });
+      if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "ALLOWED_ORIGINS must be set in production",
+          path: ["ALLOWED_ORIGINS"]
+        });
+      }
+
+      if (data.SECRET_LOADER === 'env') {
+        if (!data.JWT_SECRET || data.JWT_SECRET.length < 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "JWT_SECRET must be at least 32 characters in production",
+            path: ["JWT_SECRET"]
+          });
+        }
+      }
+
+      if (data.SECRET_LOADER === 'file' && !data.SECRET_FILE_PATH) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SECRET_FILE_PATH is required when SECRET_LOADER=file",
+          path: ["SECRET_FILE_PATH"]
+        });
+      }
+
+      if (data.SECRET_LOADER === 'vault') {
+        if (!data.VAULT_BASE_URL) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "VAULT_BASE_URL is required when SECRET_LOADER=vault",
+            path: ["VAULT_BASE_URL"]
+          });
+        }
+        if (!data.VAULT_SECRET_PATH) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "VAULT_SECRET_PATH is required when SECRET_LOADER=vault",
+            path: ["VAULT_SECRET_PATH"]
+          });
+        }
+      }
     }
-    if (!data.JWT_SECRET || data.JWT_SECRET.length < 32) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "JWT_SECRET must be at least 32 characters in production",
-        path: ["JWT_SECRET"]
-      });
-    }
-  }
 });
 
 const TRUE_VALUES = new Set(["true", "1", "yes", "on"]);
@@ -176,5 +210,28 @@ export const config = {
      * Mainnet:  'Public Global Stellar Network ; September 2015'
      */
     networkPassphrase: parsedEnv.SOROBAN_NETWORK_PASSPHRASE,
+    retryBudgetMaxRetries: parsePositiveIntEnv(
+      "SOROBAN_RETRY_BUDGET_MAX_RETRIES",
+      parsedEnv.SOROBAN_RETRY_BUDGET_MAX_RETRIES,
+      20,
+    ),
+  },
+  secretLoader: {
+    source: parsedEnv.SECRET_LOADER,
+    filePath: parsedEnv.SECRET_FILE_PATH,
+    vault: {
+      baseUrl: parsedEnv.VAULT_BASE_URL,
+      secretPath: parsedEnv.VAULT_SECRET_PATH,
+      token: parsedEnv.VAULT_TOKEN,
+    },
+  },
+  secretLoader: {
+    source: parsedEnv.SECRET_LOADER,
+    filePath: parsedEnv.SECRET_FILE_PATH,
+    vault: {
+      baseUrl: parsedEnv.VAULT_BASE_URL,
+      secretPath: parsedEnv.VAULT_SECRET_PATH,
+      token: parsedEnv.VAULT_TOKEN,
+    },
   },
 } as const;

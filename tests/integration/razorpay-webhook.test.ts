@@ -3,6 +3,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { app } from "../../src/app.js";
 import { resetProcessedRazorpayEvents } from "../../src/services/webhooks/razorpayHandler.js";
+import { secretLoader } from "../../src/utils/secret-loader.js";
 
 const WEBHOOK_PATH = "/api/webhooks/razorpay";
 const WEBHOOK_SECRET = "test_webhook_secret";
@@ -70,6 +71,35 @@ describe("Razorpay webhook integration", () => {
       status: "ok",
       message: "Payment pay_test_456 captured successfully",
     });
+  });
+
+  it("uses an updated webhook secret after reload", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = WEBHOOK_SECRET;
+    await secretLoader.reload();
+
+    const firstBody = rawEventBody("evt_reload_before");
+    await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sign(firstBody))
+      .use((req) => sendRawJson(req, firstBody))
+      .expect(200);
+
+    const newSecret = "updated_webhook_secret"
+    process.env.RAZORPAY_WEBHOOK_SECRET = newSecret;
+    await secretLoader.reload();
+
+    const secondBody = rawEventBody("evt_reload_after");
+    await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sign(secondBody, newSecret))
+      .use((req) => sendRawJson(req, secondBody))
+      .expect(200);
+
+    await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sign(secondBody, WEBHOOK_SECRET))
+      .use((req) => sendRawJson(req, secondBody))
+      .expect(401);
   });
 
   it("rejects a tampered raw body signed for different bytes", async () => {

@@ -16,3 +16,16 @@ export const rateLimitRejections = new Counter({
   labelNames: ["bucket"] as const,
   registers: [metricsRegistry],
 });
+
+export const sorobanRetryTotal = new Counter({
+  name: "soroban_retry_total",
+  help: "Total number of Soroban RPC retry attempts",
+  labelNames: ["operation"] as const,
+  registers: [metricsRegistry],
+});
+
+export const sorobanRetryBudgetExhaustedTotal = new Counter({
+  name: "soroban_retry_budget_exhausted_total",
+  help: "Total number of Soroban retry attempts refused because the retry budget was exhausted",
+  registers: [metricsRegistry],
+});
