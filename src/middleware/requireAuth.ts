@@ -10,7 +10,7 @@ declare global {
         id: string;
         userId: string;
         email?: string;
-        role: 'user' | 'admin' | 'business_admin';
+        role?: 'user' | 'admin' | 'business_admin';
       };
     }
   }

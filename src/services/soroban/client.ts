@@ -1,5 +1,10 @@
 import { Networks, rpc, StrKey } from "@stellar/stellar-sdk";
 import { logger } from "../../utils/logger.js";
+import { config } from "../../config/index.js";
+import {
+  SorobanRetryBudgetExceededError,
+  sorobanRetryBudget,
+} from "./retry-budget.js";
 
 export type SorobanClientConfig = {
   rpcUrl: string;
@@ -516,10 +521,15 @@ export async function executeSorobanRequest<T>(
     hooks?.onRequestStart?.(options.operationName, attempt);
 
     try {
-      const result = await withSorobanTimeout(
+      const result = await traceSorobanRpcAttempt(
         options.operationName,
-        policy.timeoutMs,
-        options.execute,
+        attempt,
+        () =>
+          withSorobanTimeout(
+            options.operationName,
+            policy.timeoutMs,
+            options.execute,
+          ),
       );
 
       const duration = Date.now() - startTime;
@@ -533,6 +543,16 @@ export async function executeSorobanRequest<T>(
       if (!shouldRetry) {
         return result;
       }
+
+      if (!sorobanRetryBudget.canRetry()) {
+        const currentRetryCount = sorobanRetryBudget.getRetryCount();
+        throw new SorobanRetryBudgetExceededError(
+          currentRetryCount,
+          config.soroban.retryBudgetMaxRetries,
+        );
+      }
+
+      sorobanRetryBudget.recordRetry(options.operationName);
 
       const delayMs = calculateRetryDelay(attempt, policy, random);
       hooks?.onRetry?.(options.operationName, attempt, delayMs, null);
@@ -558,6 +578,16 @@ export async function executeSorobanRequest<T>(
         hooks?.onRequestFailure?.(options.operationName, attempt, duration, error);
         throw error;
       }
+
+      if (!sorobanRetryBudget.canRetry()) {
+        const currentRetryCount = sorobanRetryBudget.getRetryCount();
+        throw new SorobanRetryBudgetExceededError(
+          currentRetryCount,
+          config.soroban.retryBudgetMaxRetries,
+        );
+      }
+
+      sorobanRetryBudget.recordRetry(options.operationName);
 
       const delayMs = calculateRetryDelay(attempt, policy, random);
       hooks?.onRetry?.(options.operationName, attempt, delayMs, error);

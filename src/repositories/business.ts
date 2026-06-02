@@ -1,4 +1,31 @@
 import crypto from 'crypto'
+import { db as dbClient } from '../db/client.js'
+
+type BusinessRow = {
+  id: string
+  user_id: string
+  name: string
+  email: string
+  industry: string | null
+  description: string | null
+  website: string | null
+  created_at: Date | string
+  updated_at: Date | string
+}
+
+function toBusiness(row: BusinessRow): Business {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    email: row.email,
+    industry: row.industry,
+    description: row.description,
+    website: row.website,
+    createdAt: typeof row.created_at === 'string' ? row.created_at : row.created_at.toISOString(),
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : row.updated_at.toISOString(),
+  }
+}
 
 export interface Business {
   id: string
@@ -110,7 +137,7 @@ export async function list(options: BusinessListOptions): Promise<PaginatedBusin
   values.push(limit + 1);
   const limitIdx = values.length;
   
-  const result = await dbClient.query<BusinessRow>(
+  const result = await dbClient.query(
     `
       SELECT id, user_id, name, email, industry, description, website, created_at, updated_at
       FROM businesses
@@ -122,7 +149,7 @@ export async function list(options: BusinessListOptions): Promise<PaginatedBusin
   );
   
   const hasMore = result.rows.length > limit;
-  const rowsToReturn = hasMore ? result.rows.slice(0, limit) : result.rows;
+  const rowsToReturn = hasMore ? (result.rows as BusinessRow[]).slice(0, limit) : (result.rows as BusinessRow[]);
   const items = rowsToReturn.map(toBusiness);
   
   let nextCursor: string | undefined;

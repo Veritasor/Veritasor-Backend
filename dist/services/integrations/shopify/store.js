@@ -19,13 +19,21 @@ export function normalizeShop(shop) {
 export function isValidShopHost(shop) {
     return SHOP_HOST_REGEX.test(shop);
 }
-export function setOAuthState(state, shop, userId, businessId) {
-    stateToShop.set(state, { shop: normalizeShop(shop), userId, businessId });
+export function setOAuthState(state, shop, userId, businessId, expiresAt) {
+    stateToShop.set(state, { shop: normalizeShop(shop), userId, businessId, expiresAt });
 }
 export function consumeOAuthState(state) {
-    const shop = stateToShop.get(state);
+    const record = stateToShop.get(state);
+    if (!record) {
+        return undefined;
+    }
+    // Delete immediately to enforce single-use
     stateToShop.delete(state);
-    return shop;
+    // Check expiry after deletion to prevent replay
+    if (Date.now() > record.expiresAt) {
+        return undefined;
+    }
+    return record;
 }
 export function saveToken(shop, accessToken) {
     shopTokens.set(normalizeShop(shop), accessToken);

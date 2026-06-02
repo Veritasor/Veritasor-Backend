@@ -30,6 +30,7 @@
  */
 import { z } from "zod";
 import { ErrorCodes, isAppError, isValidationError, } from "../types/errors.js";
+import { logger } from "../utils/logger.js";
 const CLIENT_SAFE_POSTGRES_CONFLICT_CODES = new Set([
     "23503", // foreign_key_violation
     "23505", // unique_violation
@@ -189,8 +190,8 @@ export const errorHandler = (err, req, res, next) => {
     const requestId = res.locals.requestId;
     const statusCode = getStatusCode(err);
     // Log structured server-side context without leaking DB details or request bodies.
-    console.error("[Error]", {
-        level: "error",
+    logger.error({
+        type: "request_error",
         errorType: err instanceof Error ? err.name : typeof err,
         message: err instanceof Error ? err.message : "Non-Error throwable",
         stack: err instanceof Error ? err.stack : undefined,
@@ -203,7 +204,6 @@ export const errorHandler = (err, req, res, next) => {
         path: req.path,
         method: req.method,
         requestId,
-        timestamp: new Date().toISOString(),
     });
     // Create standardized error envelope
     const errorEnvelope = createErrorEnvelope(err, requestId);

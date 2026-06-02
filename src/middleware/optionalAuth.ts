@@ -33,10 +33,10 @@ interface AuthLogContext {
 function logAuthEvent(context: AuthLogContext): void {
   const timestamp = new Date().toISOString();
   const logEntry = {
+    event: context.eventType,
     timestamp,
     level: context.eventType === AuthEventType.AUTH_SUCCESS ? 'info' : 'warn',
     service: 'optional-auth',
-    event: context.eventType,
     ...context,
   };
   
@@ -52,7 +52,7 @@ interface TokenExtractionResult {
 
 function extractAndClassifyToken(authHeader: string | undefined): TokenExtractionResult {
   // No header present
-  if (!authHeader) {
+  if (authHeader === undefined || authHeader === null) {
     return {
       token: null,
       eventType: AuthEventType.NO_TOKEN,
@@ -135,6 +135,7 @@ declare global {
         id: string;
         userId: string;
         email?: string;
+        role?: 'user' | 'admin' | 'business_admin';
       };
     }
   }
@@ -245,15 +246,19 @@ export async function optionalAuth(
   next: NextFunction,
 ): Promise<void> {
   const startTime = Date.now();
-  
-  // Extract request metadata for logging
-  const requestId = req.headers['x-request-id'] as string || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  const userAgent = req.headers['user-agent'] as string || 'unknown';
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  
+  let requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  let userAgent = 'unknown';
+  let ip = 'unknown';
+
   try {
+    // Extract request metadata for logging
+    const headers = req.headers ?? {};
+    requestId = (headers['x-request-id'] as string) || requestId;
+    userAgent = (headers['user-agent'] as string) || 'unknown';
+    ip = req.ip ?? req.connection?.remoteAddress ?? req.socket?.remoteAddress ?? 'unknown';
+
     // Extract Authorization header and classify token
-    const authHeader = req.headers.authorization;
+    const authHeader = headers.authorization as string | undefined;
     const extractionResult = extractAndClassifyToken(authHeader);
     
     // If no valid token, log and proceed without auth
