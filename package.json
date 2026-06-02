@@ -14,6 +14,9 @@
     "docs:openapi": "tsx scripts/generate-openapi.ts"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.57.2",
+    "@opentelemetry/sdk-node": "^0.57.2",
     "@stellar/stellar-sdk": "^14.5.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -23,6 +26,7 @@
     "nodemailer": "^6.9.16",
     "pg": "^8.13.1",
     "prom-client": "^15.1.3",
+    "tinypool": "^0.8.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {

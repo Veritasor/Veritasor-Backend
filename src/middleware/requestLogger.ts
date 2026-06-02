@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
 import { httpRequestDuration } from "../metrics.js";
+import { startHttpRequestSpan } from "../tracing.js";
 
 /**
  * Extended Express Request with correlation ID for request tracing.
@@ -126,6 +127,6 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       });
     });
 
-    next();
+    startHttpRequestSpan(req, res, correlationId, next);
   });
 }
