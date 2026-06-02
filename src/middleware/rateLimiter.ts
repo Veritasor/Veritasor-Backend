@@ -98,6 +98,7 @@ const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_MAX = 100;
 
 export const memoryStore = new MemoryStore();
+const slidingStore = new Map<string, number[]>();
 let storePromise: Promise<RateLimitStore> | null = null;
 
 export function getStore(): Promise<RateLimitStore> {

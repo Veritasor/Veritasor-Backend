@@ -104,7 +104,7 @@ export function requirePermissions(
       }
 
       // Extract user role from authenticated user or headers (fallback)
-      const role = req.user?.role || (req.headers['x-user-role'] as UserRole) || 'user';
+      const role = (req.user as any)?.role || (req.headers['x-user-role'] as UserRole) || 'user';
 
       // Create permission context
       const context = PermissionService.createContext(

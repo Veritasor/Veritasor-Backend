@@ -44,9 +44,9 @@ export function createCorsMiddleware() {
 
     const sharedOptions = {
       maxAge,
-      allowedHeaders: allowedHeaders as string[],
-      exposedHeaders: exposedHeaders as string[],
-      methods: methods as string[],
+      allowedHeaders: allowedHeaders as unknown as string[],
+      exposedHeaders: exposedHeaders as unknown as string[],
+      methods: methods as unknown as string[],
     };
 
     // No Origin header → same-origin or non-browser request → allow

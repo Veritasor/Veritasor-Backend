@@ -15,6 +15,7 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import adminRouter from "./routes/admin.js";
 import { runStartupDependencyReadinessChecks, } from "./startup/readiness.js";
 // Security middleware to reject prototype pollution attempts
 const securityHeadersMiddleware = (req, res, next) => {
@@ -64,6 +65,8 @@ export function createApp(readinessReport) {
     app.use("/api/integrations/shopify", integrationsShopifyRouter);
     app.use("/api/integrations/stripe", integrationsStripeRouter);
     app.use("/api/users", usersRouter);
+    app.use("/api/v1/admin", adminRouter);
+    app.use("/api/admin", adminRouter);
     // 5. Error Handling
     app.use(errorHandler);
     return app;
