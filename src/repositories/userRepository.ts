@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto'
+import { randomBytes } from 'node:crypto'
 
 export interface User {
   id: string
@@ -158,34 +158,64 @@ export async function updateUserPassword(
 }
 
 /**
- * Set password reset token
+ * Persist a password reset token hash for a user.
+ *
+ * Security contract
+ * ─────────────────
+ * This function stores **only the SHA-256 hash** of the reset token, never the
+ * raw token itself.  The caller (`forgotPassword`) is responsible for hashing
+ * the raw token before calling this function.  See `src/utils/tokenHash.ts`
+ * for the security rationale.
+ *
+ * @param userId        - The user whose token is being set.
+ * @param tokenHash     - SHA-256 hex digest of the raw reset token (64 chars).
+ * @param expiryMinutes - TTL in minutes (default 30).
+ *
+ * @expectedIndex `resetToken` (or composite `(resetToken, resetTokenExpiry)`)
+ * @migrationNote A standard index on `resetToken` is required. For high-volume
+ * systems, a composite index on `(resetToken, resetTokenExpiry)` can optimize
+ * queries that filter out expired tokens.  Consider a partial index
+ * `WHERE reset_token IS NOT NULL` to keep the index small.
  */
 export async function setResetToken(
   userId: string,
-  token: string,
-  expiryMinutes: number = 30
+  tokenHash: string,
+  expiryMinutes: number = 30,
 ): Promise<User | null> {
   return updateUser(userId, {
-    resetToken: token,
+    resetToken: tokenHash,
     resetTokenExpiry: new Date(Date.now() + expiryMinutes * 60 * 1000),
   })
 }
 
 /**
- * Find user by reset token
- * 
- * @expectedIndex `resetToken` (or composite `(resetToken, resetTokenExpiry)`)
- * @migrationNote A standard index on `resetToken` is required. For high-volume 
- * systems, a composite index on `(resetToken, resetTokenExpiry)` can optimize 
- * queries that filter out expired tokens. Also, consider partial indexes if 
- * the database supports them (e.g. `WHERE resetToken IS NOT NULL`).
+ * Find a user by the SHA-256 hash of their reset token.
+ *
+ * Security contract
+ * ─────────────────
+ * This function performs an exact-match lookup on the stored hash column.
+ * The raw token is never passed to this function — the service layer hashes
+ * the incoming raw token before calling this.  This ensures the raw token is
+ * never present in any database query, log, or network packet beyond the
+ * initial email link.
+ *
+ * Returns `null` for all failure modes (wrong hash, expired token, already
+ * consumed / null token) so callers cannot distinguish between them and build
+ * an oracle attack.
+ *
+ * @param tokenHash - SHA-256 hex digest of the raw reset token (64 chars).
+ *
+ * @expectedIndex `resetToken` (unique, partial: WHERE reset_token IS NOT NULL)
+ * @migrationNote The same index used by `setResetToken` serves this query.
+ * Ensure the column is indexed before deploying to production to avoid full
+ * table scans on the users table.
  */
-export async function findUserByResetToken(
-  token: string
+export async function findUserByResetTokenHash(
+  tokenHash: string,
 ): Promise<User | null> {
   for (const user of users.values()) {
     if (
-      user.resetToken === token &&
+      user.resetToken === tokenHash &&
       user.resetTokenExpiry &&
       user.resetTokenExpiry > new Date()
     ) {
@@ -193,6 +223,20 @@ export async function findUserByResetToken(
     }
   }
   return null
+}
+
+/**
+ * @deprecated Use `findUserByResetTokenHash` instead.
+ *
+ * This function performed a plaintext token comparison and is retained only
+ * for backward compatibility during migration.  It will be removed in a future
+ * release.  Any call site that passes a raw token to this function is
+ * potentially storing secrets in plaintext and must be updated.
+ */
+export async function findUserByResetToken(
+  token: string,
+): Promise<User | null> {
+  return findUserByResetTokenHash(token)
 }
 
 /**
