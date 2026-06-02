@@ -5,6 +5,10 @@ import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import {
+  apiVersionMiddleware,
+  versionResponseMiddleware,
+} from "./middleware/apiVersion.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -17,38 +21,14 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import adminRouter from "./routes/admin.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
 } from "./startup/readiness.js";
+import { initializeOpenTelemetry } from "./tracing.js";
 
-const apiVersionMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  const requestedVersion = req.headers['x-api-version'];
-  const supportedVersions = ['1', 'v1'];
-
-  if (!requestedVersion) {
-    res.setHeader('api-version', 'v1');
-    next();
-    return;
-  }
-
-  const versionStr = String(requestedVersion);
-  const isSupported = supportedVersions.some(v => v === versionStr);
-
-  if (!isSupported) {
-    res.setHeader('api-version', 'v1');
-    res.setHeader('api-version-fallback', 'true');
-  } else {
-    res.setHeader('api-version', 'v1');
-  }
-
-  next();
-};
-
-const versionResponseMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  res.setHeader('Vary', 'Accept, X-API-Version');
-  next();
-};
+export const telemetryReady = initializeOpenTelemetry();
 
 // Security middleware to reject prototype pollution attempts
 const securityHeadersMiddleware = (req: Request, res: Response, next: NextFunction) => {
@@ -106,6 +86,8 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/integrations/shopify", integrationsShopifyRouter);
   app.use("/api/integrations/stripe", integrationsStripeRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/v1/admin", adminRouter);
+  app.use("/api/admin", adminRouter);
 
   // 5. Error Handling
   app.use(errorHandler);
@@ -127,6 +109,8 @@ export const app = createApp({ ready: true, checks: [] });
  * @returns A promise that resolves to the started HTTP server.
  */
 export async function startServer(port: number): Promise<Server> {
+  await telemetryReady;
+
   // Switch to the persistent DB-backed token store for production deployments.
   // This must happen before any refresh requests are handled so that rotation
   // protection is shared across all instances and survives restarts.

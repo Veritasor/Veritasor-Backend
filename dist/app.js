@@ -14,6 +14,7 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import adminRouter from "./routes/admin.js";
 import { runStartupDependencyReadinessChecks, } from "./startup/readiness.js";
 const apiVersionMiddleware = (req, res, next) => {
     const requestedVersion = req.headers['x-api-version'];
@@ -62,6 +63,7 @@ const securityHeadersMiddleware = (req, res, next) => {
 };
 export function createApp(readinessReport) {
     const app = express();
+    app.use(requestLogger);
     app.use(securityHeadersMiddleware);
     app.use(apiVersionMiddleware);
     app.use(versionResponseMiddleware);
@@ -69,7 +71,6 @@ export function createApp(readinessReport) {
     // 3. Body Parsing
     app.use(express.json());
     app.use(createCorsMiddleware());
-    app.use(requestLogger);
     if (process.env.METRICS_ENABLED === "true") {
         app.get("/metrics", async (_req, res) => {
             res.set("Content-Type", metricsRegistry.contentType);
@@ -86,6 +87,8 @@ export function createApp(readinessReport) {
     app.use("/api/integrations/shopify", integrationsShopifyRouter);
     app.use("/api/integrations/stripe", integrationsStripeRouter);
     app.use("/api/users", usersRouter);
+    app.use("/api/v1/admin", adminRouter);
+    app.use("/api/admin", adminRouter);
     // 5. Error Handling
     app.use(errorHandler);
     return app;

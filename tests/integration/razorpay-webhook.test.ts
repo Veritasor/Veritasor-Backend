@@ -261,7 +261,7 @@ describe("Razorpay webhook integration", () => {
       .expect(200);
 
     expect(replay.body).toEqual({
-      status: "ok",
+      status: "duplicate",
       message: "Event evt_replayed_signed_raw_body already processed",
     });
   });
@@ -315,5 +315,160 @@ describe("Razorpay webhook integration", () => {
 
     vi.doUnmock("../../src/services/webhooks/razorpayHandler.js");
     vi.resetModules();
+  });
+});
+
+// ─── Secret rotation tests ────────────────────────────────────────────────────
+
+describe("Razorpay webhook — secret rotation", () => {
+  const PRIMARY_SECRET = "primary_webhook_secret";
+  const SECONDARY_SECRET = "secondary_webhook_secret";
+
+  const originalPrimary = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const originalSecondary = process.env.RAZORPAY_WEBHOOK_SECRET_NEXT;
+
+  beforeEach(() => {
+    resetProcessedRazorpayEvents();
+  });
+
+  afterEach(() => {
+    resetProcessedRazorpayEvents();
+
+    if (originalPrimary === undefined) {
+      delete process.env.RAZORPAY_WEBHOOK_SECRET;
+    } else {
+      process.env.RAZORPAY_WEBHOOK_SECRET = originalPrimary;
+    }
+
+    if (originalSecondary === undefined) {
+      delete process.env.RAZORPAY_WEBHOOK_SECRET_NEXT;
+    } else {
+      process.env.RAZORPAY_WEBHOOK_SECRET_NEXT = originalSecondary;
+    }
+  });
+
+  // ── only primary set ────────────────────────────────────────────────────────
+
+  it("accepts a request signed with the primary secret when no secondary is set", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = PRIMARY_SECRET;
+    delete process.env.RAZORPAY_WEBHOOK_SECRET_NEXT;
+
+    const body = rawEventBody("evt_rotation_primary_only");
+    const sig = sign(body, PRIMARY_SECRET);
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(200);
+
+    expect(response.body.status).toBe("ok");
+  });
+
+  it("rejects a request signed with an unknown secret when only primary is set", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = PRIMARY_SECRET;
+    delete process.env.RAZORPAY_WEBHOOK_SECRET_NEXT;
+
+    const body = rawEventBody("evt_rotation_primary_only_bad_sig");
+    const sig = sign(body, "completely_wrong_secret");
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(401);
+
+    expect(response.body).toMatchObject({ code: "invalid_signature" });
+  });
+
+  // ── both set, primary wins ──────────────────────────────────────────────────
+
+  it("accepts a request signed with the primary secret when both secrets are set", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = PRIMARY_SECRET;
+    process.env.RAZORPAY_WEBHOOK_SECRET_NEXT = SECONDARY_SECRET;
+
+    const body = rawEventBody("evt_rotation_both_primary_wins");
+    const sig = sign(body, PRIMARY_SECRET);
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(200);
+
+    expect(response.body.status).toBe("ok");
+  });
+
+  // ── both set, secondary wins ────────────────────────────────────────────────
+
+  it("accepts a request signed with the secondary secret when both secrets are set", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = PRIMARY_SECRET;
+    process.env.RAZORPAY_WEBHOOK_SECRET_NEXT = SECONDARY_SECRET;
+
+    const body = rawEventBody("evt_rotation_both_secondary_wins");
+    const sig = sign(body, SECONDARY_SECRET);
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(200);
+
+    expect(response.body.status).toBe("ok");
+  });
+
+  // ── neither matches ─────────────────────────────────────────────────────────
+
+  it("rejects a request when the signature matches neither primary nor secondary", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = PRIMARY_SECRET;
+    process.env.RAZORPAY_WEBHOOK_SECRET_NEXT = SECONDARY_SECRET;
+
+    const body = rawEventBody("evt_rotation_neither_matches");
+    const sig = sign(body, "completely_wrong_secret");
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(401);
+
+    expect(response.body).toMatchObject({ code: "invalid_signature" });
+  });
+
+  // ── post-rotation: secondary promoted to primary ────────────────────────────
+
+  it("accepts a request after rotation completes (secondary promoted, old primary removed)", async () => {
+    // Simulate the final rotation step: NEXT becomes the only secret
+    process.env.RAZORPAY_WEBHOOK_SECRET = SECONDARY_SECRET;
+    delete process.env.RAZORPAY_WEBHOOK_SECRET_NEXT;
+
+    const body = rawEventBody("evt_rotation_post_rotation");
+    const sig = sign(body, SECONDARY_SECRET);
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(200);
+
+    expect(response.body.status).toBe("ok");
+  });
+
+  // ── empty string secondary is treated as absent ─────────────────────────────
+
+  it("treats an empty RAZORPAY_WEBHOOK_SECRET_NEXT as if it were unset", async () => {
+    process.env.RAZORPAY_WEBHOOK_SECRET = PRIMARY_SECRET;
+    process.env.RAZORPAY_WEBHOOK_SECRET_NEXT = "";
+
+    const body = rawEventBody("evt_rotation_empty_secondary");
+    const sig = sign(body, PRIMARY_SECRET);
+
+    const response = await request(app)
+      .post(WEBHOOK_PATH)
+      .set("x-razorpay-signature", sig)
+      .use((req) => sendRawJson(req, body))
+      .expect(200);
+
+    expect(response.body.status).toBe("ok");
   });
 });

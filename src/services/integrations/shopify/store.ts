@@ -11,6 +11,7 @@ export interface ShopifyOAuthState {
   shop: string
   userId: string
   businessId: string
+  expiresAt: number
 }
 
 const SHOP_HOST_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.myshopify\.com$/
@@ -32,14 +33,26 @@ export function isValidShopHost(shop: string): boolean {
   return SHOP_HOST_REGEX.test(shop)
 }
 
-export function setOAuthState(state: string, shop: string, userId: string, businessId: string): void {
-  stateToShop.set(state, { shop: normalizeShop(shop), userId, businessId })
+export function setOAuthState(state: string, shop: string, userId: string, businessId: string, expiresAt: number): void {
+  stateToShop.set(state, { shop: normalizeShop(shop), userId, businessId, expiresAt })
 }
 
 export function consumeOAuthState(state: string): ShopifyOAuthState | undefined {
-  const shop = stateToShop.get(state)
+  const record = stateToShop.get(state)
+  
+  if (!record) {
+    return undefined
+  }
+  
+  // Delete immediately to enforce single-use
   stateToShop.delete(state)
-  return shop
+  
+  // Check expiry after deletion to prevent replay
+  if (Date.now() > record.expiresAt) {
+    return undefined
+  }
+  
+  return record
 }
 
 export function saveToken(shop: string, accessToken: string): void {
