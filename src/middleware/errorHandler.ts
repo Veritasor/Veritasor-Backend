@@ -48,6 +48,7 @@ type ErrorEnvelope = {
   requestId?: string;
   details?: unknown;
   errors?: unknown;
+  error?: string;
 };
 
 type PostgresError = Error & {

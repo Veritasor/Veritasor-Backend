@@ -7,12 +7,13 @@ import {
   verifyRazorpaySignatureWithRotation,
 } from '../services/webhooks/razorpayHandler.js'
 import { logger } from '../utils/logger.js'
+import { secretLoader, SecretNotFoundError } from '../utils/secret-loader.js'
 
 export const razorpayWebhookRouter = Router()
 
 razorpayWebhookRouter.use(express.raw({ type: 'application/json' }))
 
-razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
+razorpayWebhookRouter.post('/', async (req: Request, res: Response) => {
   const correlationId = (req as Request & { correlationId?: string }).correlationId
 
   try {
@@ -21,19 +22,31 @@ razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
       throw new RazorpayWebhookError('missing_signature', 400, 'Missing Razorpay signature header')
     }
 
-    const primary = process.env.RAZORPAY_WEBHOOK_SECRET
-    if (!primary) {
-      throw new RazorpayWebhookError('secret_not_configured', 500, 'Webhook secret not configured')
+    let primary: string
+    try {
+      primary = secretLoader.get('RAZORPAY_WEBHOOK_SECRET')
+    } catch (error) {
+      if (error instanceof SecretNotFoundError) {
+        throw new RazorpayWebhookError('secret_not_configured', 500, 'Webhook secret not configured')
+      }
+      throw error
     }
 
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
       throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
     }
 
-    // Support overlapping primary + secondary secrets for zero-downtime rotation.
-    // RAZORPAY_WEBHOOK_SECRET_NEXT is optional; set it while Razorpay transitions
-    // to the new secret, then promote it to RAZORPAY_WEBHOOK_SECRET once stable.
-    const secondary = process.env.RAZORPAY_WEBHOOK_SECRET_NEXT || undefined
+    let secondary: string | undefined
+    try {
+      const secondaryCandidate = secretLoader.get('RAZORPAY_WEBHOOK_SECRET_NEXT')
+      secondary = secondaryCandidate || undefined
+    } catch (error) {
+      if (!(error instanceof SecretNotFoundError)) {
+        throw error
+      }
+      secondary = undefined
+    }
+
     const { valid, keyLabel } = verifyRazorpaySignatureWithRotation(
       req.body,
       signature,
@@ -55,7 +68,7 @@ razorpayWebhookRouter.post('/', (req: Request, res: Response) => {
     )
 
     const event = parseRazorpayEvent(req.body)
-    const result = handleRazorpayEvent(event)
+    const result = await handleRazorpayEvent(event)
     return res.status(200).json(result)
   } catch (error) {
     if (error instanceof RazorpayWebhookError) {

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { SignOptions, JwtPayload, VerifyOptions} from 'jsonwebtoken'
+import { secretLoader, SecretNotFoundError } from './secret-loader.js'
 import { config } from '../config/index.js'
 import { randomUUID } from 'crypto'
 import { logger } from './logger.js'
@@ -8,11 +9,6 @@ import { logger } from './logger.js'
 // CONFIGURATION
 // ===========================================================================
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-key'
-const JWT_REFRESH_SECRET =
-  process.env.JWT_REFRESH_SECRET ?? 'dev-refresh-secret-key'
-
-// Clock skew tolerance in seconds (default: 10s)
 const JWT_CLOCK_SKEW_SECONDS = parseInt(
   process.env.JWT_CLOCK_SKEW_SECONDS ?? '10',
   10
@@ -167,36 +163,43 @@ export { JWT_ISSUER, JWT_AUDIENCE, JWT_REFRESH_AUDIENCE }
  * @returns JWT secret string.
  * @throws {Error} If secret is missing in production.
  */
-function getSecret(): string {
-  // Check config.jwtSecret first
-  if (config.jwtSecret) {
-    return config.jwtSecret
-  }
+function getPrimaryJwtSecret(): string {
+  try {
+    return secretLoader.get('JWT_SECRET')
+  } catch (error) {
+    if (error instanceof SecretNotFoundError) {
+      if (config.jwtSecret) {
+        return config.jwtSecret
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        return 'dev-secret-key'
+      }
+      throw new Error('JWT secret is required in production')
+    }
 
-  // Fallback to JWT_SECRET environment variable
-  if (process.env.JWT_SECRET) {
-    return process.env.JWT_SECRET
+    throw error
   }
-
-  // In production, throw error if no secret is configured
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'JWT secret is required in production. Set JWT_SECRET environment variable or config.jwtSecret'
-    )
-  }
-
-  // In development, return default secret
-  return 'dev-secret-key'
 }
 
-// ---------------------------------------------------------------------------
-// Token payload type
-// ---------------------------------------------------------------------------
+function getRefreshJwtSecret(): string {
+  try {
+    return secretLoader.get('JWT_REFRESH_SECRET')
+  } catch (error) {
+    if (error instanceof SecretNotFoundError) {
+      if (process.env.JWT_REFRESH_SECRET) {
+        return process.env.JWT_REFRESH_SECRET
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        return 'dev-refresh-secret-key'
+      }
 
-export interface TokenPayload {
-  userId: string
-  email: string
+      return getPrimaryJwtSecret()
+    }
+
+    throw error
+  }
 }
+
 
 // ---------------------------------------------------------------------------
 // High-level token generation / verification
@@ -214,7 +217,7 @@ export interface TokenPayload {
  * const token = generateToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateToken(payload: TokenPayload): string {
-  const secret = getSecret()
+  const secret = getPrimaryJwtSecret()
   return jwt.sign(
     { ...payload, jti: randomUUID() },
     secret,
@@ -241,7 +244,7 @@ export function generateToken(payload: TokenPayload): string {
  * const refreshToken = generateRefreshToken({ userId: 'abc', email: 'user@example.com' })
  */
 export function generateRefreshToken(payload: TokenPayload): string {
-  const secret = process.env.JWT_REFRESH_SECRET || getSecret()
+  const secret = getRefreshJwtSecret()
   return jwt.sign(
     { ...payload, jti: randomUUID() },
     secret,
@@ -272,7 +275,7 @@ export function generateRefreshToken(payload: TokenPayload): string {
  */
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    const secret = getSecret()
+    const secret = getPrimaryJwtSecret()
     const decoded = jwt.verify(token, secret, {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
@@ -299,7 +302,7 @@ export function verifyToken(token: string): TokenPayload | null {
  */
 export function verifyRefreshToken(token: string): TokenPayload | null {
   try {
-    const secret = process.env.JWT_REFRESH_SECRET || getSecret()
+    const secret = getRefreshJwtSecret()
     const decoded = jwt.verify(token, secret, {
       issuer: JWT_ISSUER,
       audience: JWT_REFRESH_AUDIENCE,
@@ -335,7 +338,7 @@ export function sign(
   payload: string | object | Buffer,
   options?: SignOptions
 ): string {
-  const secret = getSecret()
+  const secret = getPrimaryJwtSecret()
   return jwt.sign(payload, secret, options)
 }
 
@@ -365,7 +368,7 @@ export function verify(
   token: string,
   options?: VerifyOptions
 ): string | object | jwt.JwtPayload {
-  const secret = getSecret()
+  const secret = getPrimaryJwtSecret()
   return jwt.verify(token, secret, options)
 }
 
@@ -393,7 +396,7 @@ export function generateAccessToken(
     type: 'access',
   }
 
-  return jwt.sign(tokenPayload, JWT_SECRET, {
+  return jwt.sign(tokenPayload, getPrimaryJwtSecret(), {
     expiresIn: JWT_ACCESS_TOKEN_TTL,
     algorithm: 'HS256',
   } as SignOptions)
@@ -422,7 +425,7 @@ export function generateRefreshTokenWithFamily(
     type: 'refresh',
   }
 
-  return jwt.sign(tokenPayload, JWT_REFRESH_SECRET, {
+  return jwt.sign(tokenPayload, getRefreshJwtSecret(), {
     expiresIn: JWT_REFRESH_TOKEN_TTL,
     algorithm: 'HS256',
   } as SignOptions)
@@ -450,7 +453,7 @@ export function generateTokenPair(payload: TokenPayload, familyId?: string) {
  */
 export function verifyAccessToken(token: string): EnhancedTokenPayload {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET, {
+    const decoded = jwt.verify(token, getPrimaryJwtSecret(), {
       clockTimestamp: Math.floor(Date.now() / 1000),
       clockTolerance: JWT_CLOCK_SKEW_SECONDS,
     }) as any
@@ -487,7 +490,7 @@ export function verifyRefreshTokenRotationAware(
   token: string
 ): EnhancedTokenPayload {
   try {
-    const decoded = jwt.verify(token, JWT_REFRESH_SECRET, {
+    const decoded = jwt.verify(token, getRefreshJwtSecret(), {
       clockTimestamp: Math.floor(Date.now() / 1000),
       clockTolerance: JWT_CLOCK_SKEW_SECONDS,
     }) as any

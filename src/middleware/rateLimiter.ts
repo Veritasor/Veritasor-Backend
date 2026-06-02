@@ -98,6 +98,7 @@ const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_MAX = 100;
 
 export const memoryStore = new MemoryStore();
+const slidingStore = new Map<string, number[]>();
 let storePromise: Promise<RateLimitStore> | null = null;
 
 export function getStore(): Promise<RateLimitStore> {
@@ -229,7 +230,7 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
     if (!process.env.REDIS_URL) {
       try {
         const record = memoryStore.increment(key, windowMs);
-        applyRateLimitHeaders(res, bucket, max, record, now);
+        applyRateLimitHeaders(res, bucket, max, record.count, record.resetTime, now);
 
         if (record.count > max) {
           logger.warn(
@@ -264,7 +265,7 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
         return memoryStore.increment(key, windowMs);
       })
       .then((record) => {
-        applyRateLimitHeaders(res, bucket, max, record, now);
+        applyRateLimitHeaders(res, bucket, max, record.count, record.resetTime, now);
 
         if (record.count > max) {
           logger.warn(

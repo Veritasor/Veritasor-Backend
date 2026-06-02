@@ -12,6 +12,7 @@ declare global {
         id: string;
         userId: string;
         email?: string;
+        role?: 'user' | 'admin' | 'business_admin';
       };
       business?: {
         id: string;

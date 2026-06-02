@@ -267,6 +267,8 @@ Unit tests in `tests/unit/middleware/validate.test.ts` cover `validateBody` and 
 
 All application logs flow through `src/utils/logger.ts`, which emits one structured JSON object per line and automatically merges the request-scoped `correlationId` into logs written during the request, including auth, attestation, and webhook handlers.
 
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, `requestLogger` also starts an OpenTelemetry server span for the request. The span uses the active async context so Soroban RPC attempt spans are attached as children during downstream calls. Tracing remains a no-op when the endpoint is unset.
+
 `requestLogger` never writes sensitive values to logs. The policy is enforced via two exported sets in `src/middleware/requestLogger.ts`:
 
 | Set                     | Members                                                                                                    |
