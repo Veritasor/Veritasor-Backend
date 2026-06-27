@@ -1,0 +1,44 @@
+# Production overrides for veritasor-backend.
+global:
+  environment: production
+
+replicaCount: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  targetLatencyMilliseconds: 300
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: api.veritasor.io
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - api.veritasor.io
+      secretName: veritasor-api-tls
+
+config:
+  NODE_ENV: production
+  METRICS_ENABLED: "true"
+  STELLAR_NETWORK: public
+  SOROBAN_NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015"
+  SOROBAN_RPC_URL: https://soroban-rpc.stellar.org

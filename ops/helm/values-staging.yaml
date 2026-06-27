@@ -1,0 +1,26 @@
+# Staging overrides for veritasor-backend.
+global:
+  environment: staging
+
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  targetLatencyMilliseconds: 500
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+config:
+  NODE_ENV: staging
+  METRICS_ENABLED: "true"
+  SOROBAN_RPC_URL: https://soroban-testnet.stellar.org

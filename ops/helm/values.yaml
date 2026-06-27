@@ -1,0 +1,125 @@
+# Default values for veritasor-backend.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# ── Global ──────────────────────────────────────────────────────────────────
+global:
+  environment: staging
+
+replicaCount: 2
+
+# ── Image ───────────────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/veritasor/veritasor-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ── Service ─────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+  metricsPort: 3000
+
+# ── Ingress ─────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: api.veritasor.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ── Resources ───────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# ── Horizontal Pod Autoscaler ───────────────────────────────────────────────
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # Custom metric targeting request latency (p99 latency from Prometheus).
+  # Requires a Prometheus adapter configured with the metric below.
+  targetLatencyMilliseconds: 500
+  latencyMetricName: http_requests_duration_seconds
+
+# ── NetworkPolicy ───────────────────────────────────────────────────────────
+networkPolicy:
+  enabled: true
+  # CIDR blocks and namespace labels for allowed ingress traffic
+  ingressCIDRs: []
+  # e.g.:
+  # ingressCIDRs:
+  #   - 10.0.0.0/8
+  #   - 172.16.0.0/12
+  monitoringNamespaceLabels:
+    app.kubernetes.io/name: prometheus
+  # Allow egress to PostgreSQL
+  allowPostgresEgress: true
+  postgresCIDRs: []
+  # e.g.:
+  # postgresCIDRs:
+  #   - 10.0.0.0/8
+
+# ── Pod Security ────────────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  privileged: false
+
+# ── ServiceAccount ──────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── ConfigMap / Environment ─────────────────────────────────────────────────
+config:
+  NODE_ENV: staging
+  PORT: "3000"
+  STELLAR_NETWORK: testnet
+  SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+  SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+  METRICS_ENABLED: "true"
+  SOROBAN_RPC_TIMEOUT_MS: "5000"
+  SOROBAN_RPC_MAX_RETRIES: "2"
+  SOROBAN_RPC_RETRY_BASE_DELAY_MS: "200"
+  SOROBAN_RPC_RETRY_MAX_DELAY_MS: "1500"
+  SOROBAN_RPC_RETRY_JITTER_RATIO: "0.2"
+  SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD: "5"
+  SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS: "30000"
+  SOROBAN_RETRY_BUDGET_MAX_RETRIES: "20"
+
+# Secrets must be provided externally (SealedSecret, ExternalSecret, Vault, etc.)
+# Placeholder keys expected in the secret:
+#   - jwt-secret
+#   - database-url
+#   - razorpay-webhook-secret
+#   - shopify-client-id
+#   - shopify-client-secret
+existingSecret: ""

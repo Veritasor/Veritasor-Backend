@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "veritasor.fullname" . }}
+  labels:
+    {{- include "veritasor.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.config.NODE_ENV | quote }}
+  PORT: {{ .Values.config.PORT | quote }}
+  STELLAR_NETWORK: {{ .Values.config.STELLAR_NETWORK | quote }}
+  SOROBAN_RPC_URL: {{ .Values.config.SOROBAN_RPC_URL | quote }}
+  SOROBAN_NETWORK_PASSPHRASE: {{ .Values.config.SOROBAN_NETWORK_PASSPHRASE | quote }}
+  METRICS_ENABLED: {{ .Values.config.METRICS_ENABLED | quote }}
+  SOROBAN_RPC_TIMEOUT_MS: {{ .Values.config.SOROBAN_RPC_TIMEOUT_MS | quote }}
+  SOROBAN_RPC_MAX_RETRIES: {{ .Values.config.SOROBAN_RPC_MAX_RETRIES | quote }}
+  SOROBAN_RPC_RETRY_BASE_DELAY_MS: {{ .Values.config.SOROBAN_RPC_RETRY_BASE_DELAY_MS | quote }}
+  SOROBAN_RPC_RETRY_MAX_DELAY_MS: {{ .Values.config.SOROBAN_RPC_RETRY_MAX_DELAY_MS | quote }}
+  SOROBAN_RPC_RETRY_JITTER_RATIO: {{ .Values.config.SOROBAN_RPC_RETRY_JITTER_RATIO | quote }}
+  SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD: {{ .Values.config.SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD | quote }}
+  SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS: {{ .Values.config.SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS | quote }}
+  SOROBAN_RETRY_BUDGET_MAX_RETRIES: {{ .Values.config.SOROBAN_RETRY_BUDGET_MAX_RETRIES | quote }}
+  SOROBAN_BACKOFF_BASE_MS: {{ .Values.config.SOROBAN_RPC_RETRY_BASE_DELAY_MS | quote }}
+  SOROBAN_BACKOFF_MAX_MS: {{ .Values.config.SOROBAN_RPC_RETRY_MAX_DELAY_MS | quote }}
+  ALLOWED_ORIGINS: {{ .Values.config.ALLOWED_ORIGINS | default "" | quote }}
+  PGPOOL_MAX: {{ .Values.config.PGPOOL_MAX | default "10" | quote }}
+  PG_IDLE_TIMEOUT_MS: {{ .Values.config.PG_IDLE_TIMEOUT_MS | default "30000" | quote }}
+  PG_CONN_TIMEOUT_MS: {{ .Values.config.PG_CONN_TIMEOUT_MS | default "2000" | quote }}

@@ -1,0 +1,18 @@
+Thank you for installing {{ .Chart.Name }} {{ .Chart.Version }}.
+
+**Verify the deployment:**
+  kubectl get pods -l "app.kubernetes.io/name={{ include "veritasor.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }}
+
+**Check the health endpoint:**
+  kubectl port-forward svc/{{ include "veritasor.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+  curl http://localhost:{{ .Values.service.port }}/api/health
+
+**Configuration:**
+  Helm values are documented in ops/helm/values.yaml.
+  Sensitive values (database URLs, API keys) should be provided via a Secret
+  referenced by the `existingSecret` value.
+
+**Security notes:**
+  - Pod runs with restricted securityContext (runAsNonRoot, seccomp, drop-all-capabilities)
+  - Default-deny NetworkPolicy is active (if enabled)
+  - ServiceAccount token is not automounted

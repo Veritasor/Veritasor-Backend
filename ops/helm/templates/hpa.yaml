@@ -1,0 +1,38 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "veritasor.fullname" . }}
+  labels:
+    {{- include "veritasor.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "veritasor.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    # Custom metric: average request latency over a rolling 1-minute window.
+    # Requires a Prometheus adapter exporting http_requests_duration_seconds
+    # as a custom.metrics.k8s.io resource.
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .Values.autoscaling.latencyMetricName }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.targetLatencyMilliseconds }}m
+{{- end }}

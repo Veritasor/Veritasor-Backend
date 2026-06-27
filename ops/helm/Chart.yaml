@@ -1,0 +1,17 @@
+apiVersion: v2
+name: veritasor-backend
+description: Helm chart for Veritasor Backend — attestation service and API gateway
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - veritasor
+  - attestation
+  - stellar
+  - soroban
+home: https://github.com/Veritasor/Veritasor-Backend
+sources:
+  - https://github.com/Veritasor/Veritasor-Backend
+maintainers:
+  - name: Veritasor Team
+    url: https://github.com/Veritasor
