@@ -178,6 +178,7 @@ export async function traceSorobanRpcAttempt<T>(
         "rpc.system": "soroban",
         "rpc.method": operationName,
         "soroban.rpc.attempt": attempt,
+        "retry.attempt": attempt,
       },
     },
     async (span) => {
