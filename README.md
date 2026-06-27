@@ -37,7 +37,22 @@ Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to
 
 Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.
 
-## Scripts
+## Attestation Reminders
+
+The `attestationReminderJob` (`src/jobs/attestationReminder.ts`) sends attestation reminders aligned to each business's reporting calendar rather than on a fixed interval.
+
+**How it works:**
+
+- Each business has a `reportingPeriod` (`weekly` | `monthly`) and a `reportingTimezone` (IANA, e.g. `America/New_York`).
+- The job computes the *next period boundary* since the last send using `Intl.DateTimeFormat` for DST-safe local-date decomposition.
+- A reminder fires only when `now >= nextBoundary`. After sending, `lastReminderSentAt` is persisted to prevent double-firing within the same period.
+- The job accepts an injectable `now: Date` parameter for deterministic testing without `vi.useFakeTimers()`.
+
+**DST safety:** Period boundaries are computed by reading the local calendar date via `Intl`, then constructing a UTC instant via `Date.UTC`. This avoids the spring-forward / fall-back hazards that arise from using JS local-time methods directly.
+
+**Schema changes:** See migration `20260627_001_add_businesses_reminder_columns.sql` which adds `reporting_period`, `reporting_timezone`, and `last_reminder_sent_at` to the `businesses` table.
+
+
 
 | Command          | Description                    |
 |------------------|--------------------------------|
