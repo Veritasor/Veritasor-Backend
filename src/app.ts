@@ -19,6 +19,7 @@ import integrationsRouter from "./routes/integrations.js";
 import integrationsRazorpayRouter from "./routes/integrations-razorpay.js";
 import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
+import { publicAttestationsRouter } from "./routes/publicAttestations.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import adminRouter from "./routes/admin.js";
@@ -77,6 +78,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   }
 
   app.use("/api/analytics", analyticsRouter);
+  app.use("/api/v1/public/attestations", publicAttestationsRouter);
   app.use("/api/attestations", attestationsRouter);
   app.use("/api/auth", authRouter);
   app.use("/api/businesses", businessRoutes);
