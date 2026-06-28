@@ -23,6 +23,7 @@ import { AppError } from '../types/errors.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
+import { broadcaster } from '../ws/attestationStream.js';
 
 type RouteAttestation = {
   id: string;
@@ -519,6 +520,15 @@ attestationsRouter.post(
     };
 
     const saved = await saveAttestation(record);
+
+    broadcaster.publish({
+      type: 'attestation.submitted',
+      businessId,
+      attestationId: saved.id,
+      period: saved.period,
+      txHash: onChain.txHash,
+      timestamp: new Date().toISOString(),
+    });
 
     res.status(201).json({
       status: 'success',
