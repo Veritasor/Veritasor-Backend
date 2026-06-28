@@ -1,4 +1,9 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  context,
+  createContextKey,
+  isSpanContextValid,
+  trace,
+} from "@opentelemetry/api";
 
 /**
  * Structured logger utility with request-scoped context.
@@ -15,7 +20,8 @@ export type LogContext = Record<string, unknown>;
 type LogLevel = "info" | "warn" | "error";
 
 const REDACTED = "[REDACTED]";
-const loggerContext = new AsyncLocalStorage<LogContext>();
+const LOGGER_CONTEXT_KEY = createContextKey("veritasor.logger.context");
+const loggerContextStack: LogContext[] = [];
 
 export const SENSITIVE_LOG_FIELDS = new Set([
   "authorization",
@@ -39,12 +45,35 @@ export const SENSITIVE_LOG_FIELDS = new Set([
   "email",
 ]);
 
-export function runWithLoggerContext<T>(context: LogContext, callback: () => T): T {
-  return loggerContext.run(sanitizeLogValue(context) as LogContext, callback);
+export function runWithLoggerContext<T>(
+  logContext: LogContext,
+  callback: () => T,
+): T {
+  const parentContext = context.active();
+  const currentLogContext = getLoggerContext(parentContext);
+  const mergedLogContext = {
+    ...currentLogContext,
+    ...(sanitizeLogValue(logContext) as LogContext),
+  };
+
+  loggerContextStack.push(mergedLogContext);
+
+  try {
+    return context.with(
+      parentContext.setValue(LOGGER_CONTEXT_KEY, mergedLogContext),
+      callback,
+    );
+  } finally {
+    loggerContextStack.pop();
+  }
 }
 
-export function getLoggerContext(): LogContext {
-  return loggerContext.getStore() ?? {};
+export function getLoggerContext(activeContext = context.active()): LogContext {
+  return (
+    (activeContext.getValue(LOGGER_CONTEXT_KEY) as LogContext | undefined) ??
+    loggerContextStack[loggerContextStack.length - 1] ??
+    {}
+  );
 }
 
 export const logger = {
@@ -71,20 +100,29 @@ function writeLog(level: LogLevel, args: unknown[]): void {
 }
 
 export function buildLogEntry(level: LogLevel, args: unknown[]): LogContext {
-  const { message, context } = normalizeLogArgs(args);
+  const { message, context: entryContext } = normalizeLogArgs(args);
   const scopedContext = sanitizeLogValue(getLoggerContext()) as LogContext;
-  const structuredContext = sanitizeLogValue(context) as LogContext;
+  const traceContext = getActiveTraceCorrelation();
+  const structuredContext = sanitizeLogValue(entryContext) as LogContext;
 
-  return {
+  const entry = {
     ...scopedContext,
+    ...traceContext,
     ...structuredContext,
     ...(message ? { message: sanitizeString(message) } : {}),
     timestamp: new Date().toISOString(),
     level,
   };
+
+  assertTraceCorrelation(entry, traceContext);
+
+  return entry;
 }
 
-function normalizeLogArgs(args: unknown[]): { message?: string; context: LogContext } {
+function normalizeLogArgs(args: unknown[]): {
+  message?: string;
+  context: LogContext;
+} {
   const context: LogContext = {};
   const messages: string[] = [];
 
@@ -132,6 +170,42 @@ function tryParseJsonObject(value: string): LogContext | undefined {
     return isPlainRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function getActiveTraceCorrelation(): LogContext {
+  const activeSpan = trace.getActiveSpan();
+  const spanContext = activeSpan?.spanContext();
+
+  if (!spanContext || !isSpanContextValid(spanContext)) {
+    return {};
+  }
+
+  return {
+    trace_id: spanContext.traceId,
+    span_id: spanContext.spanId,
+  };
+}
+
+function assertTraceCorrelation(
+  entry: LogContext,
+  traceContext: LogContext,
+): void {
+  if (process.env.NODE_ENV !== "test") {
+    return;
+  }
+
+  if (!traceContext.trace_id || !traceContext.span_id) {
+    return;
+  }
+
+  if (
+    entry.trace_id !== traceContext.trace_id ||
+    entry.span_id !== traceContext.span_id
+  ) {
+    throw new Error(
+      "Log entry is missing active OpenTelemetry trace correlation fields while a span is active.",
+    );
   }
 }
 
