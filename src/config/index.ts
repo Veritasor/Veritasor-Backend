@@ -36,6 +36,7 @@ export const envSchema = z.object({
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
+  ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -169,10 +170,10 @@ export const config = {
     ssl: parseBooleanEnv("PGSSL", parsedEnv.PGSSL, false)
       ? {
           rejectUnauthorized: parseBooleanEnv(
-            "PGSSL_REJECT_UNAUTHORIZED",
-            parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
-            true,
-          ),
+              "PGSSL_REJECT_UNAUTHORIZED",
+              parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
+              true,
+            ),
         }
       : undefined,
   },
@@ -182,7 +183,7 @@ export const config = {
   cors: {
     /** Resolved origin allowlist (string[] in production, "*" in dev). */
     origin: getAllowedOrigins(),
-    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode. */
+    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode). */
     credentials: true,
     /** Preflight cache duration in seconds (24 hours). */
     maxAge: 86_400,
@@ -203,6 +204,17 @@ export const config = {
       // Run every minute
       schedule: "*/1 * * * *",
     },
+    expiredRolePromotionRequests: {
+      // Run every 5 minutes
+      schedule: "*/5 * * * *",
+    },
+  },
+  rolePromotion: {
+    ttlMinutes: parsePositiveIntEnv(
+      "ROLE_PROMOTION_TTL_MINUTES",
+      parsedEnv.ROLE_PROMOTION_TTL_MINUTES,
+      1440 // 24 hours
+    ),
   },
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */
@@ -229,5 +241,12 @@ export const config = {
       secretPath: parsedEnv.VAULT_SECRET_PATH,
       token: parsedEnv.VAULT_TOKEN,
     },
+  },
+  redis: {
+    /** Single-node Redis URL (redis[s]://...). Ignored when clusterNodes is set. */
+    url: parsedEnv.REDIS_URL,
+    /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
+    clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
+    tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
   },
 } as const;

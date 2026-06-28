@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../utils/logger.js";
 import { rateLimitRejections } from "../metrics.js";
+import { getRedisClient, hashTag } from "../redis.js";
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
@@ -67,25 +68,24 @@ export class MemoryStore implements RateLimitStore {
 }
 
 export class RedisStore implements RateLimitStore {
-  constructor(private client: any) {}
+  constructor(private client: ReturnType<typeof getRedisClient>) {}
 
   async increment(key: string, windowMs: number): Promise<RateLimitRecord> {
     const now = Date.now();
-    
-    // Execute atomic Lua script
-    const [count, pttl] = await this.client.eval(
+
+    // ioredis eval: (script, numkeys, ...keys, ...args)
+    const result = await (this.client as any).eval(
       `local current = redis.call('INCR', KEYS[1])
        if current == 1 then
          redis.call('PEXPIRE', KEYS[1], ARGV[1])
        end
        return {current, redis.call('PTTL', KEYS[1])}`,
-      {
-        keys: [key],
-        arguments: [windowMs.toString()],
-      }
-    );
+      1,           // numkeys
+      key,         // KEYS[1]
+      windowMs     // ARGV[1]
+    ) as [number, number];
 
-    // Calculate resetTime from the actual TTL returned by Redis
+    const [count, pttl] = result;
     const remainingTtl = pttl > 0 ? pttl : windowMs;
     return {
       count: Number(count),
@@ -104,20 +104,18 @@ let storePromise: Promise<RateLimitStore> | null = null;
 export function getStore(): Promise<RateLimitStore> {
   if (!storePromise) {
     storePromise = (async () => {
-      const redisUrl = process.env.REDIS_URL;
-      if (!redisUrl) {
+      const hasRedis = process.env.REDIS_URL || process.env.REDIS_CLUSTER_NODES;
+      if (!hasRedis) {
         return memoryStore;
       }
       try {
-        // @ts-expect-error redis is an optional dependency
-        const redisModule = await import("redis");
-        const client = redisModule.createClient({ url: redisUrl });
-        
-        client.on("error", (err: any) => {
-          logger.error("Redis connection error in rate limiter store:", err);
+        const client = getRedisClient();
+        // Wait for ready before serving traffic
+        await new Promise<void>((resolve, reject) => {
+          if ((client as any).status === "ready") return resolve();
+          client.once("ready", resolve);
+          client.once("error", reject);
         });
-
-        await client.connect();
         logger.info("Rate limiter initialized with Redis store.");
         return new RedisStore(client);
       } catch (err) {
@@ -227,7 +225,7 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
     const now = Date.now();
 
     // Check synchronously if we are using the in-memory store
-    if (!process.env.REDIS_URL) {
+    if (!process.env.REDIS_URL && !process.env.REDIS_CLUSTER_NODES) {
       try {
         const record = memoryStore.increment(key, windowMs);
         applyRateLimitHeaders(res, bucket, max, record.count, record.resetTime, now);
