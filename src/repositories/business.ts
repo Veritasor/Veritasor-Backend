@@ -1,6 +1,8 @@
 import crypto from 'crypto'
 import { decodeCursor, encodeCursor } from '../utils/pagination.js'
 
+export type ReportingPeriod = 'weekly' | 'monthly'
+
 export interface Business {
   id: string
   userId: string
@@ -9,6 +11,12 @@ export interface Business {
   industry?: string | null
   description?: string | null
   website?: string | null
+  /** Calendar granularity for attestation reminder alignment. Defaults to 'monthly'. */
+  reportingPeriod: ReportingPeriod
+  /** IANA timezone for computing period boundaries, e.g. 'America/New_York'. Defaults to 'UTC'. */
+  reportingTimezone: string
+  /** ISO-8601 timestamp of the last time a reminder was sent. Null if never sent. */
+  lastReminderSentAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -20,6 +28,8 @@ export type CreateBusinessData = {
   industry?: string | null
   description?: string | null
   website?: string | null
+  reportingPeriod?: ReportingPeriod
+  reportingTimezone?: string
 }
 
 export type UpdateBusinessData = Partial<Omit<CreateBusinessData, 'userId'>>
@@ -37,6 +47,9 @@ export async function create(data: CreateBusinessData): Promise<Business> {
     industry: data.industry ?? null,
     description: data.description ?? null,
     website: data.website ?? null,
+    reportingPeriod: data.reportingPeriod ?? 'monthly',
+    reportingTimezone: data.reportingTimezone ?? 'UTC',
+    lastReminderSentAt: null,
     createdAt: now,
     updatedAt: now,
   }
@@ -152,6 +165,18 @@ export function clearAll(): void {
   businesses.clear()
 }
 
+/**
+ * Persist the last reminder sent timestamp for a business.
+ * Returns false if the business was not found.
+ */
+export async function setLastReminderSentAt(id: string, sentAt: string): Promise<boolean> {
+  const business = businesses.get(id)
+  if (!business) return false
+  business.lastReminderSentAt = sentAt
+  business.updatedAt = new Date().toISOString()
+  return true
+}
+
 export const businessRepository = {
   create,
   getById,
@@ -159,6 +184,7 @@ export const businessRepository = {
   getAll,
   list,
   update,
+  setLastReminderSentAt,
   findById: getById,
   findByUserId: getByUserId,
   clearAll,

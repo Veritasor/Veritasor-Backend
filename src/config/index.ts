@@ -31,6 +31,11 @@ export const envSchema = z.object({
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
+  MTLS_ENABLED: z.string().optional(),
+  MTLS_CA_PATH: z.string().optional(),
+  MTLS_CERT_PATH: z.string().optional(),
+  MTLS_KEY_PATH: z.string().optional(),
+  MTLS_CN_ALLOWLIST: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -164,10 +169,10 @@ export const config = {
     ssl: parseBooleanEnv("PGSSL", parsedEnv.PGSSL, false)
       ? {
           rejectUnauthorized: parseBooleanEnv(
-            "PGSSL_REJECT_UNAUTHORIZED",
-            parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
-            true,
-          ),
+              "PGSSL_REJECT_UNAUTHORIZED",
+              parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
+              true,
+            ),
         }
       : undefined,
   },
@@ -177,7 +182,7 @@ export const config = {
   cors: {
     /** Resolved origin allowlist (string[] in production, "*" in dev). */
     origin: getAllowedOrigins(),
-    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode. */
+    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode). */
     credentials: true,
     /** Preflight cache duration in seconds (24 hours). */
     maxAge: 86_400,
@@ -224,5 +229,14 @@ export const config = {
       secretPath: parsedEnv.VAULT_SECRET_PATH,
       token: parsedEnv.VAULT_TOKEN,
     },
+  },
+  mtls: {
+    enabled: parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false),
+    caPath: parsedEnv.MTLS_CA_PATH,
+    certPath: parsedEnv.MTLS_CERT_PATH,
+    keyPath: parsedEnv.MTLS_KEY_PATH,
+    cnAllowlist: parsedEnv.MTLS_CN_ALLOWLIST
+      ? parsedEnv.MTLS_CN_ALLOWLIST.split(",").map(s => s.trim()).filter(Boolean)
+      : [],
   },
 } as const;
