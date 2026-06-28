@@ -22,7 +22,11 @@ let sdkStartPromise: Promise<OpenTelemetrySdk | undefined> | undefined;
 const HTTP_HEADER_GETTER = {
   get(carrier: Request["headers"], key: string) {
     const value = carrier[key.toLowerCase()];
-    return Array.isArray(value) ? value : value === undefined ? undefined : [value];
+    return Array.isArray(value)
+      ? value
+      : value === undefined
+        ? undefined
+        : [value];
   },
   keys(carrier: Request["headers"]) {
     return Object.keys(carrier);
@@ -33,7 +37,9 @@ export function isOpenTelemetryEnabled(): boolean {
   return Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
 }
 
-export async function initializeOpenTelemetry(): Promise<OpenTelemetrySdk | undefined> {
+export async function initializeOpenTelemetry(): Promise<
+  OpenTelemetrySdk | undefined
+> {
   if (!isOpenTelemetryEnabled()) {
     return undefined;
   }
@@ -105,8 +111,12 @@ export function startHttpRequestSpan(
   res: Response,
   correlationId: string,
   next: () => void,
+  onFinish?: () => void,
 ): void {
   if (!isOpenTelemetryEnabled()) {
+    if (onFinish) {
+      res.once("finish", onFinish);
+    }
     next();
     return;
   }
@@ -128,6 +138,7 @@ export function startHttpRequestSpan(
         },
       },
       (span) => {
+        const spanExecutionContext = context.active();
         let ended = false;
         const endSpan = () => {
           if (ended) {
@@ -143,8 +154,15 @@ export function startHttpRequestSpan(
           span.end();
         };
 
-        res.once("finish", endSpan);
-        res.once("close", endSpan);
+        res.once("finish", () => {
+          context.with(spanExecutionContext, () => {
+            onFinish?.();
+            endSpan();
+          });
+        });
+        res.once("close", () => {
+          context.with(spanExecutionContext, endSpan);
+        });
 
         try {
           next();

@@ -58,7 +58,9 @@ export function sanitizeCorrelationId(value: unknown): string | undefined {
 function redactQuery(query: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(query)) {
-    result[key] = REDACTED_QUERY_PARAMS.has(key.toLowerCase()) ? REDACTED : value;
+    result[key] = REDACTED_QUERY_PARAMS.has(key.toLowerCase())
+      ? REDACTED
+      : value;
   }
   return result;
 }
@@ -98,35 +100,43 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
   res.setHeader("X-Request-ID", correlationId);
 
   return runWithLoggerContext({ correlationId }, () => {
-    logger.info({
-      type: "request",
-      method: req.method,
-      path: req.path,
-      query: redactQuery(req.query as Record<string, unknown>),
-      ip: req.ip,
-      userAgent: req.headers["user-agent"],
-    });
+    startHttpRequestSpan(
+      req,
+      res,
+      correlationId,
+      () => {
+        logger.info({
+          type: "request",
+          correlationId,
+          method: req.method,
+          path: req.path,
+          query: redactQuery(req.query as Record<string, unknown>),
+          ip: req.ip,
+          userAgent: req.headers["user-agent"],
+        });
 
-    res.on("finish", () => {
-      const [sec, nano] = process.hrtime(start);
-      const durationMs = sec * 1e3 + nano / 1e6;
-      const durationSec = sec + nano / 1e9;
+        next();
+      },
+      () => {
+        const [sec, nano] = process.hrtime(start);
+        const durationMs = sec * 1e3 + nano / 1e6;
+        const durationSec = sec + nano / 1e9;
 
-      const route = (req.route?.path as string | undefined) ?? req.path;
-      httpRequestDuration.observe(
-        { method: req.method, route, status_code: String(res.statusCode) },
-        durationSec,
-      );
+        const route = (req.route?.path as string | undefined) ?? req.path;
+        httpRequestDuration.observe(
+          { method: req.method, route, status_code: String(res.statusCode) },
+          durationSec,
+        );
 
-      logger.info({
-        type: "response",
-        method: req.method,
-        path: req.path,
-        statusCode: res.statusCode,
-        durationMs: parseFloat(durationMs.toFixed(3)),
-      });
-    });
-
-    startHttpRequestSpan(req, res, correlationId, next);
+        logger.info({
+          type: "response",
+          correlationId,
+          method: req.method,
+          path: req.path,
+          statusCode: res.statusCode,
+          durationMs: parseFloat(durationMs.toFixed(3)),
+        });
+      },
+    );
   });
 }
