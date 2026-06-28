@@ -31,6 +31,7 @@ export const envSchema = z.object({
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
+  ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -198,6 +199,17 @@ export const config = {
       // Run every minute
       schedule: "*/1 * * * *",
     },
+    expiredRolePromotionRequests: {
+      // Run every 5 minutes
+      schedule: "*/5 * * * *",
+    },
+  },
+  rolePromotion: {
+    ttlMinutes: parsePositiveIntEnv(
+      "ROLE_PROMOTION_TTL_MINUTES",
+      parsedEnv.ROLE_PROMOTION_TTL_MINUTES,
+      1440 // 24 hours
+    ),
   },
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */

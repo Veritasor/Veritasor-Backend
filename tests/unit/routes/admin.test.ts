@@ -5,12 +5,14 @@ import adminRouter from '../../../src/routes/admin.js';
 import * as userRepository from '../../../src/repositories/userRepository.js';
 import * as auditLogRepository from '../../../src/repositories/auditLogRepository.js';
 import * as attestationRepository from '../../../src/repositories/attestationRepository.js';
+import * as rolePromotionRepository from '../../../src/repositories/rolePromotionRequestRepository.js';
 import { IntegrationPermission } from '../../../src/types/permissions.js';
 
 // Mock repositories
 vi.mock('../../../src/repositories/userRepository.js');
 vi.mock('../../../src/repositories/auditLogRepository.js');
 vi.mock('../../../src/repositories/attestationRepository.js');
+vi.mock('../../../src/repositories/rolePromotionRequestRepository.js');
 vi.mock('../../../src/db/client.js', () => ({
   db: { query: vi.fn() }
 }));
@@ -205,6 +207,164 @@ describe('Admin Routes', () => {
       expect(response.body.data).toHaveLength(2);
       expect(response.body.nextCursor).toBeNull();
       expect(response.body.hasMore).toBe(false);
+    });
+  });
+
+  describe('POST /role-requests', () => {
+    it('should create a new role promotion request', async () => {
+      const mockTargetUser = { id: 'target-123', email: 'target@test.com' };
+      vi.mocked(userRepository.findUserById).mockResolvedValue(mockTargetUser as any);
+      vi.mocked(rolePromotionRepository.findPendingRolePromotionRequestsForTarget).mockResolvedValue([]);
+      const mockRequest = {
+        id: 'req-123',
+        targetUserId: 'target-123',
+        requestedRole: 'admin',
+        requestedByAdminId: 'admin-123',
+        status: 'pending',
+        createdAt: new Date(),
+        expiresAt: new Date(),
+      };
+      vi.mocked(rolePromotionRepository.createRolePromotionRequest).mockResolvedValue(mockRequest as any);
+
+      const response = await request(app)
+        .post('/api/v1/admin/role-requests')
+        .send({ targetUserId: 'target-123', role: 'admin' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.id).toBe('req-123');
+      expect(auditLogRepository.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'CREATE_ROLE_PROMOTION_REQUEST' }),
+        expect.anything()
+      );
+    });
+
+    it('should return 404 if target user not found', async () => {
+      vi.mocked(userRepository.findUserById).mockResolvedValue(null);
+
+      const response = await request(app)
+        .post('/api/v1/admin/role-requests')
+        .send({ targetUserId: 'non-existent', role: 'admin' });
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 409 if pending request for role already exists', async () => {
+      const mockTargetUser = { id: 'target-123', email: 'target@test.com' };
+      vi.mocked(userRepository.findUserById).mockResolvedValue(mockTargetUser as any);
+      vi.mocked(rolePromotionRepository.findPendingRolePromotionRequestsForTarget).mockResolvedValue([
+        { requestedRole: 'admin' } as any,
+      ]);
+
+      const response = await request(app)
+        .post('/api/v1/admin/role-requests')
+        .send({ targetUserId: 'target-123', role: 'admin' });
+
+      expect(response.status).toBe(409);
+    });
+
+    it('should return 403 for non-admin', async () => {
+      const response = await request(app)
+        .post('/api/v1/admin/role-requests')
+        .set('x-user-role', 'user')
+        .send({ targetUserId: 'target-123', role: 'admin' });
+
+      expect(response.status).toBe(403);
+    });
+  });
+
+  describe('POST /role-requests/:id/approve', () => {
+    it('should approve a pending request and update user role', async () => {
+      const mockRequest = {
+        id: 'req-123',
+        targetUserId: 'target-123',
+        requestedRole: 'admin',
+        requestedByAdminId: 'admin-456', // Different from requester
+        status: 'pending',
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 3600000),
+      };
+      vi.mocked(rolePromotionRepository.findRolePromotionRequestById).mockResolvedValue(mockRequest as any);
+      vi.mocked(userRepository.findUserById).mockResolvedValue({ id: 'target-123' } as any);
+      vi.mocked(rolePromotionRepository.updateRolePromotionRequest).mockResolvedValue({
+        ...mockRequest,
+        status: 'approved',
+        approvedByAdminId: 'admin-123',
+        approvedAt: new Date(),
+      } as any);
+
+      const response = await request(app).post('/api/v1/admin/role-requests/req-123/approve');
+
+      expect(response.status).toBe(200);
+      expect(userRepository.updateUser).toHaveBeenCalledWith('target-123', { role: 'admin' });
+      expect(auditLogRepository.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'APPROVE_ROLE_PROMOTION_REQUEST' }),
+        expect.anything()
+      );
+    });
+
+    it('should return 403 for self-approval', async () => {
+      const mockRequest = {
+        id: 'req-123',
+        targetUserId: 'target-123',
+        requestedRole: 'admin',
+        requestedByAdminId: 'admin-123', // Same as requester
+        status: 'pending',
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 3600000),
+      };
+      vi.mocked(rolePromotionRepository.findRolePromotionRequestById).mockResolvedValue(mockRequest as any);
+
+      const response = await request(app).post('/api/v1/admin/role-requests/req-123/approve');
+
+      expect(response.status).toBe(403);
+      expect(auditLogRepository.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ 
+          action: 'APPROVE_ROLE_PROMOTION_REQUEST',
+          metadata: expect.objectContaining({ outcome: 'forbidden_self_approval' })
+        })
+      );
+    });
+
+    it('should return 409 if request is already approved', async () => {
+      const mockRequest = {
+        id: 'req-123',
+        targetUserId: 'target-123',
+        requestedRole: 'admin',
+        requestedByAdminId: 'admin-456',
+        status: 'approved',
+        createdAt: new Date(),
+        expiresAt: new Date(),
+      };
+      vi.mocked(rolePromotionRepository.findRolePromotionRequestById).mockResolvedValue(mockRequest as any);
+
+      const response = await request(app).post('/api/v1/admin/role-requests/req-123/approve');
+
+      expect(response.status).toBe(409);
+    });
+
+    it('should return 409 if request is expired', async () => {
+      const mockRequest = {
+        id: 'req-123',
+        targetUserId: 'target-123',
+        requestedRole: 'admin',
+        requestedByAdminId: 'admin-456',
+        status: 'pending',
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() - 3600000), // Expired
+      };
+      vi.mocked(rolePromotionRepository.findRolePromotionRequestById).mockResolvedValue(mockRequest as any);
+
+      const response = await request(app).post('/api/v1/admin/role-requests/req-123/approve');
+
+      expect(response.status).toBe(409);
+    });
+
+    it('should return 404 if request not found', async () => {
+      vi.mocked(rolePromotionRepository.findRolePromotionRequestById).mockResolvedValue(null);
+
+      const response = await request(app).post('/api/v1/admin/role-requests/non-existent/approve');
+
+      expect(response.status).toBe(404);
     });
   });
 });
