@@ -1,54 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { generateOpenApiSpec } from '../../../src/utils/openapi.js';
 import type { RouteInfo } from '../../../src/utils/routeMap.js';
-
-// ─── Fixtures ─────────────────────────────────────────────────────────────────
-
-const AUTH_ROUTES: RouteInfo[] = [
-  { method: 'POST', path: '/api/auth/login' },
-  { method: 'POST', path: '/api/auth/signup' },
-  { method: 'POST', path: '/api/auth/refresh' },
-  { method: 'POST', path: '/api/auth/forgot-password' },
-  { method: 'POST', path: '/api/auth/reset-password' },
-  { method: 'GET',  path: '/api/auth/me' },
-  { method: 'GET',  path: '/api/auth/signup/availability' },
-];
-
-const HEALTH_ROUTES: RouteInfo[] = [
-  { method: 'GET', path: '/api/health' },
-];
-
-const ANALYTICS_ROUTES: RouteInfo[] = [
-  { method: 'GET', path: '/api/analytics/periods' },
-  { method: 'GET', path: '/api/analytics/revenue' },
-];
-
-const ATTESTATIONS_ROUTES: RouteInfo[] = [
-  { method: 'GET',  path: '/api/attestations' },
-  { method: 'POST', path: '/api/attestations' },
-  { method: 'GET',  path: '/api/attestations/:id' },
-  { method: 'POST', path: '/api/attestations/:id/revoke' },
-];
-
-const BUSINESSES_ROUTES: RouteInfo[] = [
-  { method: 'POST',  path: '/api/businesses' },
-  { method: 'GET',   path: '/api/businesses/me' },
-  { method: 'PATCH', path: '/api/businesses/me' },
-  { method: 'GET',   path: '/api/businesses/:id' },
-];
-
-const WEBHOOK_ROUTES: RouteInfo[] = [
-  { method: 'POST', path: '/api/webhooks/razorpay' },
-];
-
-const ALL_ROUTES: RouteInfo[] = [
-  ...AUTH_ROUTES,
-  ...HEALTH_ROUTES,
-  ...ANALYTICS_ROUTES,
-  ...ATTESTATIONS_ROUTES,
-  ...BUSINESSES_ROUTES,
-  ...WEBHOOK_ROUTES,
-];
+import {
+  AUTH_ROUTES,
+  HEALTH_ROUTES,
+  ANALYTICS_ROUTES,
+  ATTESTATIONS_ROUTES,
+  BUSINESSES_ROUTES,
+  WEBHOOK_ROUTES,
+  ALL_ROUTES,
+} from '../../openapi/fixtures/routes.js';
 
 // ─── Top-level structure ───────────────────────────────────────────────────────
 
