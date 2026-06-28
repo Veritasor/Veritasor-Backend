@@ -34,6 +34,7 @@ export const envSchema = z.object({
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
+  ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -167,10 +168,10 @@ export const config = {
     ssl: parseBooleanEnv("PGSSL", parsedEnv.PGSSL, false)
       ? {
           rejectUnauthorized: parseBooleanEnv(
-            "PGSSL_REJECT_UNAUTHORIZED",
-            parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
-            true,
-          ),
+              "PGSSL_REJECT_UNAUTHORIZED",
+              parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
+              true,
+            ),
         }
       : undefined,
   },
@@ -180,7 +181,7 @@ export const config = {
   cors: {
     /** Resolved origin allowlist (string[] in production, "*" in dev). */
     origin: getAllowedOrigins(),
-    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode. */
+    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode). */
     credentials: true,
     /** Preflight cache duration in seconds (24 hours). */
     maxAge: 86_400,
@@ -201,6 +202,17 @@ export const config = {
       // Run every minute
       schedule: "*/1 * * * *",
     },
+    expiredRolePromotionRequests: {
+      // Run every 5 minutes
+      schedule: "*/5 * * * *",
+    },
+  },
+  rolePromotion: {
+    ttlMinutes: parsePositiveIntEnv(
+      "ROLE_PROMOTION_TTL_MINUTES",
+      parsedEnv.ROLE_PROMOTION_TTL_MINUTES,
+      1440 // 24 hours
+    ),
   },
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */

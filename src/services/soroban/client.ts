@@ -5,6 +5,7 @@ import {
   SorobanRetryBudgetExceededError,
   sorobanRetryBudget,
 } from "./retry-budget.js";
+import { traceSorobanRpcAttempt } from "../../tracing.js";
 
 export type SorobanClientConfig = {
   rpcUrl: string;
@@ -301,14 +302,24 @@ export function getSorobanRetryPolicy(
       MAX_RETRIES,
     ),
     retryBaseDelayMs: parseIntegerEnv(
-      "SOROBAN_RPC_RETRY_BASE_DELAY_MS",
-      DEFAULT_RETRY_POLICY.retryBaseDelayMs,
+      "SOROBAN_BACKOFF_BASE_MS",
+      parseIntegerEnv(
+        "SOROBAN_RPC_RETRY_BASE_DELAY_MS",
+        DEFAULT_RETRY_POLICY.retryBaseDelayMs,
+        MIN_DELAY_MS,
+        MAX_DELAY_MS,
+      ),
       MIN_DELAY_MS,
       MAX_DELAY_MS,
     ),
     retryMaxDelayMs: parseIntegerEnv(
-      "SOROBAN_RPC_RETRY_MAX_DELAY_MS",
-      DEFAULT_RETRY_POLICY.retryMaxDelayMs,
+      "SOROBAN_BACKOFF_MAX_MS",
+      parseIntegerEnv(
+        "SOROBAN_RPC_RETRY_MAX_DELAY_MS",
+        DEFAULT_RETRY_POLICY.retryMaxDelayMs,
+        MIN_DELAY_MS,
+        MAX_DELAY_MS,
+      ),
       MIN_DELAY_MS,
       MAX_DELAY_MS,
     ),
@@ -352,24 +363,29 @@ function sleep(delayMs: number): Promise<void> {
   });
 }
 
+/**
+ * Full-jitter exponential backoff.
+ *
+ * Implements the "Full Jitter" algorithm from the AWS Exponential Backoff
+ * blog post: delay = random(0, min(cap, base * 2^attempt)).
+ * This completely avoids thundering-herd problems because every retrying
+ * client picks a uniformly distributed delay within the window.
+ *
+ * @param attemptNumber - 1-based retry attempt number
+ * @param policy        - retry policy (base, cap)
+ * @param random        - PRNG returning values in [0, 1)
+ */
 function calculateRetryDelay(
   attemptNumber: number,
   policy: SorobanRetryPolicy,
   random: RandomFn,
 ): number {
-  const exponentialDelay = Math.min(
-    policy.retryBaseDelayMs * 2 ** (attemptNumber - 1),
+  const temp = Math.min(
     policy.retryMaxDelayMs,
+    policy.retryBaseDelayMs * 2 ** attemptNumber,
   );
-
-  if (policy.retryJitterRatio === 0) {
-    return exponentialDelay;
-  }
-
-  const jitterWindow = exponentialDelay * policy.retryJitterRatio;
-  const jitterOffset = (random() * 2 - 1) * jitterWindow;
-  const delayWithJitter = Math.round(exponentialDelay + jitterOffset);
-  return Math.max(MIN_DELAY_MS, delayWithJitter);
+  const delay = Math.round(random() * temp);
+  return Math.max(MIN_DELAY_MS, delay);
 }
 
 function isAbortError(error: unknown): boolean {
