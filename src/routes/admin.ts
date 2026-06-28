@@ -10,7 +10,7 @@ import * as attestationRepository from '../repositories/attestationRepository.js
 import { db } from '../db/client.js'
 import { getDeadLetter, deleteDeadLetter, computePayloadHash } from '../services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../services/webhooks/razorpayHandler.js'
-import { logger } from '../utils/logger.js'
+import { createRolePromotionRequest, findRolePromotionRequestById, updateRolePromotionRequest, findPendingRolePromotionRequestsForTarget } from '../repositories/rolePromotionRequestRepository.js'
 
 const adminRouter = Router()
 
@@ -343,7 +343,12 @@ adminRouter.delete(
  * GET /api/v1/admin/audit-logs
  * List all audit logs
  */
-const ALLOWED_AUDIT_ACTIONS = ['UPDATE_USER', 'PROMOTE_USER_ROLE', 'DELETE_USER'] as const
+const ALLOWED_AUDIT_ACTIONS = ['UPDATE_USER', 'PROMOTE_USER_ROLE', 'DELETE_USER', 'CREATE_ROLE_PROMOTION_REQUEST', 'APPROVE_ROLE_PROMOTION_REQUEST'] as const;
+
+const createRolePromotionRequestSchema = z.object({
+  targetUserId: z.string(),
+  role: z.enum(['user', 'business_admin', 'admin']),
+});
 
 const auditLogsQuerySchema = z.object({
   actorId: z.string().optional(),
@@ -401,5 +406,126 @@ adminRouter.get(
     }
   }
 )
+
+/**
+ * POST /api/v1/admin/role-requests
+ * Create a role promotion request
+ */
+adminRouter.post(
+  '/role-requests',
+  requirePermissions(IntegrationPermission.ADMIN_MANAGE_USERS),
+  async (req, res) => {
+    const parsed = createRolePromotionRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Bad Request', message: parsed.error.message });
+    }
+
+    const { targetUserId, role } = parsed.data;
+    const actorId = req.user!.id;
+
+    try {
+      const targetUser = await findUserById(targetUserId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'Not Found', message: 'Target user not found' });
+      }
+
+      const pendingRequests = await findPendingRolePromotionRequestsForTarget(targetUserId);
+      if (pendingRequests.some(r => r.requestedRole === role)) {
+        return res.status(409).json({ error: 'Conflict', message: 'Pending request for this role already exists' });
+      }
+
+      const request = await createRolePromotionRequest(targetUserId, role, actorId);
+      
+      await createAuditLog({
+        userId: actorId,
+        action: 'CREATE_ROLE_PROMOTION_REQUEST',
+        resource: 'role_promotion_request',
+        resourceId: request.id,
+        metadata: { targetUserId, requestedRole: role }
+      }, request);
+
+      return res.status(201).json(request);
+    } catch (error: any) {
+      logger.error(error);
+      return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+  }
+);
+
+/**
+ * POST /api/v1/admin/role-requests/:id/approve
+ * Approve a role promotion request
+ */
+adminRouter.post(
+  '/role-requests/:id/approve',
+  requirePermissions(IntegrationPermission.ADMIN_MANAGE_USERS),
+  async (req, res) => {
+    const { id } = req.params;
+    const actorId = req.user!.id;
+
+    try {
+      const request = await findRolePromotionRequestById(id);
+      if (!request) {
+        return res.status(404).json({ error: 'Not Found', message: 'Role promotion request not found' });
+      }
+
+      if (request.status !== 'pending') {
+        return res.status(409).json({ error: 'Conflict', message: `Request is already ${request.status}` });
+      }
+
+      if (request.expiresAt < new Date()) {
+        await updateRolePromotionRequest(id, { status: 'expired' });
+        return res.status(409).json({ error: 'Conflict', message: 'Role promotion request has expired' });
+      }
+
+      if (request.requestedByAdminId === actorId) {
+        await createAuditLog({
+          userId: actorId,
+          action: 'APPROVE_ROLE_PROMOTION_REQUEST',
+          resource: 'role_promotion_request',
+          resourceId: id,
+          metadata: { outcome: 'forbidden_self_approval', requestId: id }
+        });
+
+        return res.status(403).json({ error: 'Forbidden', message: 'Self-approval is not allowed' });
+      }
+
+      const targetUser = await findUserById(request.targetUserId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'Not Found', message: 'Target user no longer exists' });
+      }
+
+      const updatedRequest = await updateRolePromotionRequest(id, {
+        status: 'approved',
+        approvedByAdminId: actorId,
+        approvedAt: new Date()
+      });
+
+      if (!updatedRequest) {
+        return res.status(500).json({ error: 'Internal Server Error', message: 'Failed to update request' });
+      }
+
+      await updateUser(request.targetUserId, { role: request.requestedRole });
+      
+      await createAuditLog({
+        userId: actorId,
+        action: 'APPROVE_ROLE_PROMOTION_REQUEST',
+        resource: 'role_promotion_request',
+        resourceId: id,
+        metadata: {
+          outcome: 'success',
+          targetUserId: request.targetUserId,
+          requestedRole: request.requestedRole,
+          requestedByAdminId: request.requestedByAdminId
+        }
+      }, updatedRequest);
+
+      return res.json(updatedRequest);
+    } catch (error: any) {
+      logger.error(error);
+      return res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+  }
+);
 
 export default adminRouter

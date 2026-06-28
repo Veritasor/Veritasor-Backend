@@ -120,6 +120,32 @@ describe('Soroban client retry and timeout policy', () => {
         'Invalid SOROBAN_RPC_TIMEOUT_MS. Expected an integer between 100 and 60000.',
       )
     })
+
+    it('reads backoff base from SOROBAN_BACKOFF_BASE_MS (new env name)', () => {
+      process.env.SOROBAN_BACKOFF_BASE_MS = '300'
+      process.env.SOROBAN_RPC_RETRY_BASE_DELAY_MS = '999'
+
+      expect(getSorobanRetryPolicy().retryBaseDelayMs).toBe(300)
+    })
+
+    it('reads backoff max from SOROBAN_BACKOFF_MAX_MS (new env name)', () => {
+      process.env.SOROBAN_BACKOFF_MAX_MS = '5000'
+      process.env.SOROBAN_RPC_RETRY_MAX_DELAY_MS = '9999'
+
+      expect(getSorobanRetryPolicy().retryMaxDelayMs).toBe(5000)
+    })
+
+    it('falls back to SOROBAN_RPC_RETRY_BASE_DELAY_MS when SOROBAN_BACKOFF_BASE_MS is unset', () => {
+      process.env.SOROBAN_RPC_RETRY_BASE_DELAY_MS = '150'
+
+      expect(getSorobanRetryPolicy().retryBaseDelayMs).toBe(150)
+    })
+
+    it('falls back to SOROBAN_RPC_RETRY_MAX_DELAY_MS when SOROBAN_BACKOFF_MAX_MS is unset', () => {
+      process.env.SOROBAN_RPC_RETRY_MAX_DELAY_MS = '2500'
+
+      expect(getSorobanRetryPolicy().retryMaxDelayMs).toBe(2500)
+    })
   })
 
   describe('isRetryableSorobanError', () => {
@@ -181,6 +207,7 @@ describe('Soroban client retry and timeout policy', () => {
           retryJitterRatio: 0,
         },
         sleep,
+        random: () => 1,
       })
 
       expect(result).toBe('ok')
@@ -189,7 +216,7 @@ describe('Soroban client retry and timeout policy', () => {
       expect(sleep).toHaveBeenCalledWith(5)
     })
 
-    it('applies jittered backoff while keeping the delay bounded', async () => {
+    it('applies full-jitter exponential backoff while keeping the delay bounded', async () => {
       const execute = vi
         .fn()
         .mockRejectedValueOnce(
@@ -212,7 +239,47 @@ describe('Soroban client retry and timeout policy', () => {
         random: () => 1,
       })
 
-      expect(sleep).toHaveBeenCalledWith(15)
+      // Full-jitter: delay = random(0, min(cap, base * 2^attempt))
+      // With attempt=1, base=10, cap=10: temp = min(10, 20) = 10, random=1 => 10
+      expect(sleep).toHaveBeenCalledWith(10)
+    })
+
+    it('produces deterministic full-jitter delays with a controlled random sequence', async () => {
+      const random = vi
+        .fn()
+        .mockReturnValueOnce(0.25)
+        .mockReturnValueOnce(0.75)
+      const execute = vi
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('network error'), { code: 'ETIMEDOUT' }),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error('network error'), { code: 'ETIMEDOUT' }),
+        )
+        .mockResolvedValueOnce('ok')
+      const sleep = vi.fn(async () => undefined)
+
+      await executeSorobanRequest({
+        operationName: 'simulateTransaction',
+        execute,
+        policy: {
+          timeoutMs: 100,
+          maxRetries: 2,
+          retryBaseDelayMs: 100,
+          retryMaxDelayMs: 1000,
+          retryJitterRatio: 0,
+        },
+        sleep,
+        random,
+      })
+
+      // Full-jitter: delay = round(random * min(cap, base * 2^attempt))
+      // attempt=1: temp = min(1000, 200) = 200, random=0.25 => 50
+      // attempt=2: temp = min(1000, 400) = 400, random=0.75 => 300
+      expect(sleep).toHaveBeenCalledTimes(2)
+      expect(sleep).toHaveBeenNthCalledWith(1, 50)
+      expect(sleep).toHaveBeenNthCalledWith(2, 300)
     })
 
     it('retries a TRY_AGAIN_LATER response and returns the eventual success response', async () => {
@@ -240,6 +307,7 @@ describe('Soroban client retry and timeout policy', () => {
           retryJitterRatio: 0,
         },
         sleep,
+        random: () => 1,
       })
 
       expect(result).toEqual({

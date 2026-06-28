@@ -115,6 +115,7 @@ describe("OpenTelemetry tracing helpers", () => {
       "rpc.system": "soroban",
       "rpc.method": "simulateTransaction",
       "soroban.rpc.attempt": 2,
+      "retry.attempt": 2,
       "error.type": "Error",
     });
     expect(JSON.stringify(spans[0].exceptions)).toContain("redacted");

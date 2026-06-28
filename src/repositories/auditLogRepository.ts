@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto'
 import { decodeCursor, encodeCursor } from '../utils/pagination.js'
+import { computePayloadHash } from '../services/webhooks/deadLetterQueue.js'
 
 export interface AuditLog {
   id: string
@@ -8,6 +9,7 @@ export interface AuditLog {
   resource: string
   resourceId?: string
   metadata?: any
+  contentHash?: string
   timestamp: Date
 }
 
@@ -16,11 +18,15 @@ const auditLogs: AuditLog[] = []
 /**
  * Create a new audit log entry
  */
-export async function createAuditLog(log: Omit<AuditLog, 'id' | 'timestamp'>): Promise<AuditLog> {
+export async function createAuditLog(
+  log: Omit<AuditLog, 'id' | 'timestamp'>,
+  content?: any
+): Promise<AuditLog> {
   const newLog: AuditLog = {
     ...log,
     id: randomBytes(16).toString('hex'),
     timestamp: new Date(),
+    contentHash: content ? computePayloadHash(content) : log.contentHash,
   }
   auditLogs.push(newLog)
   return newLog
