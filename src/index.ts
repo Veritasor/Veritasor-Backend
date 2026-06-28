@@ -18,6 +18,7 @@ import { startServer } from './app.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
+import { jwksManager } from './utils/jwks.js';
 import { createShutdownOrchestrator } from './shutdown.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -29,6 +30,7 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 async function bootstrap(): Promise<void> {
   // Load secrets before the server starts accepting traffic
   await secretLoader.reload();
+  await jwksManager.reload();
 
   // Start the HTTP server; `startServer` returns the `http.Server` instance
   const server = await startServer(PORT);
@@ -66,6 +68,7 @@ process.on('SIGHUP', async () => {
 
   try {
     await secretLoader.reload();
+    await jwksManager.reload();
     logger.info({ event: 'secret_reload_succeeded', key: 'all' });
   } catch (error) {
     logger.error({
