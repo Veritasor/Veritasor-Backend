@@ -165,10 +165,10 @@ export const config = {
     ssl: parseBooleanEnv("PGSSL", parsedEnv.PGSSL, false)
       ? {
           rejectUnauthorized: parseBooleanEnv(
-            "PGSSL_REJECT_UNAUTHORIZED",
-            parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
-            true,
-          ),
+              "PGSSL_REJECT_UNAUTHORIZED",
+              parsedEnv.PGSSL_REJECT_UNAUTHORIZED,
+              true,
+            ),
         }
       : undefined,
   },
@@ -178,7 +178,7 @@ export const config = {
   cors: {
     /** Resolved origin allowlist (string[] in production, "*" in dev). */
     origin: getAllowedOrigins(),
-    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode. */
+    /** Allow credentials (cookies, Authorization header). Forced false in wildcard mode). */
     credentials: true,
     /** Preflight cache duration in seconds (24 hours). */
     maxAge: 86_400,
@@ -236,5 +236,14 @@ export const config = {
       secretPath: parsedEnv.VAULT_SECRET_PATH,
       token: parsedEnv.VAULT_TOKEN,
     },
+  },
+  mtls: {
+    enabled: parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false),
+    caPath: parsedEnv.MTLS_CA_PATH,
+    certPath: parsedEnv.MTLS_CERT_PATH,
+    keyPath: parsedEnv.MTLS_KEY_PATH,
+    cnAllowlist: parsedEnv.MTLS_CN_ALLOWLIST
+      ? parsedEnv.MTLS_CN_ALLOWLIST.split(",").map(s => s.trim()).filter(Boolean)
+      : [],
   },
 } as const;
