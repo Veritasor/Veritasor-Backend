@@ -128,11 +128,13 @@ export async function startServer(port: number): Promise<Server> {
   }
 
   const application = createApp(readinessReport);
+  const { attachAttestationStream } = await import("./ws/attestationStream.js");
 
   return new Promise((resolve) => {
     const server = application.listen(port, () => {
       console.log(`[Server] Veritasor Backend listening on port ${port}`);
       resolve(server);
     });
+    attachAttestationStream(server);
   });
 }
