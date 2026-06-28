@@ -1,0 +1,191 @@
+rule_files:
+  - backend.rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  # ── WebhookDlqDepthWarning ─────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'webhook_dlq_depth{provider="razorpay"}'
+        values: "0 0 0 60 60 60 60 60"   # crosses 50 at minute 3, holds for 5m
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: WebhookDlqDepthWarning
+        exp_alerts: []                    # not yet — needs 5m for
+      - eval_time: 8m
+        alertname: WebhookDlqDepthWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: backend
+              provider: razorpay
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
+
+  - interval: 1m
+    input_series:
+      - series: 'webhook_dlq_depth{provider="razorpay"}'
+        values: "0 0 0 0 0"              # stays below threshold
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WebhookDlqDepthWarning
+        exp_alerts: []
+
+  # ── WebhookDlqDepthCritical ────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'webhook_dlq_depth{provider="razorpay"}'
+        values: "0 210 210 210"          # crosses 200 at minute 1
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: WebhookDlqDepthCritical
+        exp_alerts: []                   # 2m for not met yet
+      - eval_time: 3m
+        alertname: WebhookDlqDepthCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: backend
+              provider: razorpay
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
+
+  # ── PgPoolHighUtilization ──────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'pg_pool_active_connections'
+        values: "9 9 9 9 9"             # 9/10 = 90%
+      - series: 'pg_pool_max_connections'
+        values: "10 10 10 10 10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PgPoolHighUtilization
+        exp_alerts: []                   # 3m for not met yet
+      - eval_time: 4m
+        alertname: PgPoolHighUtilization
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: backend
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgpoolhighutilization--pgpoolsaturated"
+
+  - interval: 1m
+    input_series:
+      - series: 'pg_pool_active_connections'
+        values: "7 7 7 7 7"             # 7/10 = 70% — below threshold
+      - series: 'pg_pool_max_connections'
+        values: "10 10 10 10 10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PgPoolHighUtilization
+        exp_alerts: []
+
+  # ── PgPoolSaturated ────────────────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'pg_pool_active_connections'
+        values: "10 10 10"              # 10/10 = 100%
+      - series: 'pg_pool_max_connections'
+        values: "10 10 10"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PgPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: backend
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgpoolhighutilization--pgpoolsaturated"
+
+  - interval: 1m
+    input_series:
+      - series: 'pg_pool_active_connections'
+        values: "8 8 8"                 # 8/10 = 80% — warning only, not critical
+      - series: 'pg_pool_max_connections'
+        values: "10 10 10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PgPoolSaturated
+        exp_alerts: []
+
+  # ── SorobanSubmitLagHigh ───────────────────────────────────────────────────
+  # Simulate histogram buckets: all observations fall in the >60s bucket
+  - interval: 1m
+    input_series:
+      # bucket le="60" stays 0 (no observations complete within 60s)
+      - series: 'soroban_submit_lag_seconds_bucket{le="60"}'
+        values: "0 0 0 0 0 0 0 0 0 0 0 0"
+      - series: 'soroban_submit_lag_seconds_bucket{le="120"}'
+        values: "0+5x11"               # 5 observations/min land in 60-120s bucket
+      - series: 'soroban_submit_lag_seconds_bucket{le="+Inf"}'
+        values: "0+5x11"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SorobanSubmitLagHigh
+        exp_alerts: []                  # 5m for not met yet
+      - eval_time: 11m
+        alertname: SorobanSubmitLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: backend
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
+
+  # All observations complete within 15s — no alert
+  - interval: 1m
+    input_series:
+      - series: 'soroban_submit_lag_seconds_bucket{le="15"}'
+        values: "0+5x11"
+      - series: 'soroban_submit_lag_seconds_bucket{le="+Inf"}'
+        values: "0+5x11"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: SorobanSubmitLagHigh
+        exp_alerts: []
+
+  # ── SorobanSubmitLagCritical ───────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'soroban_submit_lag_seconds_bucket{le="180"}'
+        values: "0 0 0 0 0 0 0 0 0 0 0 0"
+      - series: 'soroban_submit_lag_seconds_bucket{le="+Inf"}'
+        values: "0+5x11"               # all obs > 180s
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SorobanSubmitLagCritical
+        exp_alerts: []                  # only 1m pending, for:2m not met yet
+      - eval_time: 11m
+        alertname: SorobanSubmitLagCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: backend
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
+
+  # ── SorobanRetryBudgetExhausted ────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'soroban_retry_budget_exhausted_total'
+        values: "0 4 8 12"             # 4 exhaustions/min
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SorobanRetryBudgetExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: backend
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
+
+  - interval: 1m
+    input_series:
+      - series: 'soroban_retry_budget_exhausted_total'
+        values: "0 0 0 1"             # 1 exhaustion total — extrapolated increase stays << 3
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SorobanRetryBudgetExhausted
+        exp_alerts: []

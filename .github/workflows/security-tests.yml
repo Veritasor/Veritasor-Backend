@@ -1,0 +1,37 @@
+name: Security tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  multitenant-fuzz:
+    name: Multi-tenant authorization fuzz tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+        timeout-minutes: 10
+
+      - name: Run multi-tenant fuzz tests
+        run: npx vitest run tests/security/multitenant.fuzz.spec.ts --reporter=verbose
+        timeout-minutes: 10
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgres://localhost:5432/test_db
+          JWT_SECRET: supersecretjwttokenthatisfortycharacterslong!!
+          SOROBAN_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM

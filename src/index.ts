@@ -18,7 +18,9 @@ import { startServer } from './app.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
+import { jwksManager } from './utils/jwks.js';
 import { createShutdownOrchestrator } from './shutdown.js';
+import { createRevenueConsumer } from './services/revenue/kafkaConsumer.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -29,9 +31,22 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 async function bootstrap(): Promise<void> {
   // Load secrets before the server starts accepting traffic
   await secretLoader.reload();
+  await jwksManager.reload();
 
   // Start the HTTP server; `startServer` returns the `http.Server` instance
   const server = await startServer(PORT);
+
+  // ── Kafka revenue consumer (opt-in via KAFKA_ENABLED=true) ──────────────
+  const kafkaConsumer = createRevenueConsumer(async (entry) => {
+    // Placeholder: wire to your persistence layer or broadcast.
+    // The normalized entry is ready for storage or downstream processing.
+    logger.info("[kafka] revenue entry received", { id: entry.id, source: entry.source });
+  });
+
+  if (kafkaConsumer) {
+    await kafkaConsumer.start();
+    logger.info({ event: 'kafka_consumer_started' });
+  }
 
   // ── Graceful shutdown ────────────────────────────────────────────────────
   //
@@ -47,7 +62,10 @@ async function bootstrap(): Promise<void> {
   // If the drain exceeds the deadline the process force-exits with code 1.
   // A repeated SIGTERM/SIGINT during an active shutdown triggers immediate exit.
 
-  const shutdown = createShutdownOrchestrator({ pool });
+  const shutdown = createShutdownOrchestrator({
+    pool,
+    onCleanup: kafkaConsumer ? () => kafkaConsumer.stop() : undefined,
+  });
   shutdown.register(server);
 
   logger.info({
@@ -66,6 +84,7 @@ process.on('SIGHUP', async () => {
 
   try {
     await secretLoader.reload();
+    await jwksManager.reload();
     logger.info({ event: 'secret_reload_succeeded', key: 'all' });
   } catch (error) {
     logger.error({

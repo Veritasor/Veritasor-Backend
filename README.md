@@ -37,7 +37,22 @@ Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to
 
 Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.
 
-## Scripts
+## Attestation Reminders
+
+The `attestationReminderJob` (`src/jobs/attestationReminder.ts`) sends attestation reminders aligned to each business's reporting calendar rather than on a fixed interval.
+
+**How it works:**
+
+- Each business has a `reportingPeriod` (`weekly` | `monthly`) and a `reportingTimezone` (IANA, e.g. `America/New_York`).
+- The job computes the *next period boundary* since the last send using `Intl.DateTimeFormat` for DST-safe local-date decomposition.
+- A reminder fires only when `now >= nextBoundary`. After sending, `lastReminderSentAt` is persisted to prevent double-firing within the same period.
+- The job accepts an injectable `now: Date` parameter for deterministic testing without `vi.useFakeTimers()`.
+
+**DST safety:** Period boundaries are computed by reading the local calendar date via `Intl`, then constructing a UTC instant via `Date.UTC`. This avoids the spring-forward / fall-back hazards that arise from using JS local-time methods directly.
+
+**Schema changes:** See migration `20260627_001_add_businesses_reminder_columns.sql` which adds `reporting_period`, `reporting_timezone`, and `last_reminder_sent_at` to the `businesses` table.
+
+
 
 | Command          | Description                    |
 |------------------|--------------------------------|
@@ -56,7 +71,35 @@ This repository includes a GitHub Actions workflow at `.github/workflows/securit
 - `scripts/check-audit.ts` to enforce `.audit-allowlist.json` for temporary, expiring exceptions.
 - A CycloneDX SBOM generation step that uploads `sbom/cyclonedx-sbom.xml` as a workflow artifact.
 
-Allowlist entries must include:
+## Security Tests
+
+[![Security Tests](https://github.com/Veritasor/Veritasor-Backend/actions/workflows/security-tests.yml/badge.svg)](https://github.com/Veritasor/Veritasor-Backend/actions/workflows/security-tests.yml)
+
+Multi-tenant authorization fuzz tests live in `tests/security/multitenant.fuzz.spec.ts`. They use [fast-check](https://github.com/dubzzz/fast-check) property-based testing to generate randomized cross-tenant scenarios and assert `requireBusinessAuth` rejects every off-tenant request, including nested resources (attestations under integrations).
+
+Run the security tests in isolation:
+
+```bash
+npx vitest run tests/security/multitenant.fuzz.spec.ts
+```
+
+**What is fuzz-tested:**
+
+| Scenario | Property | Expected outcome |
+|---|---|---|
+| Tenant A claims Tenant B's business | `requestingUser.id ≠ business.userId` | 403 `BUSINESS_NOT_FOUND` |
+| Spoofed `X-Business-Id` header | Non-existent or foreign business ID | 403 `BUSINESS_NOT_FOUND` |
+| Nested attestation access | Attacker requests route protected by foreign business | 403 `BUSINESS_NOT_FOUND` |
+| Suspended business (own owner) | `business.suspended = true` | 403 `BUSINESS_SUSPENDED` |
+| Injection characters in business ID | IDs outside `[a-zA-Z0-9\-_]{1,50}` | 400 `MISSING_BUSINESS_ID` |
+| DB failure during ownership check | `getById` throws | 403 `BUSINESS_NOT_FOUND` (never 500) |
+| Error response data | Any rejection path | No secrets, stack traces, or sensitive fields leaked |
+
+fast-check's shrinking automatically narrows any failing case to the minimal counterexample.
+
+## Security audit allowlist
+
+
 
 - `id`: Advisory identifier
 - `package`: npm package name
@@ -65,6 +108,15 @@ Allowlist entries must include:
 - `expires`: ISO 8601 expiration timestamp
 
 Expired allowlist entries are rejected.
+
+## Performance testing
+
+Peak-load k6 scenarios for `/api/v1/attestations` live in `ops/k6/`.
+
+- Local entrypoint: `npm run perf:k6:attestations`
+- Scenario docs: `ops/k6/README.md`
+- Nightly workflow: `.github/workflows/nightly-k6-attestations.yml`
+- Grafana dashboard: `ops/k6/grafana/peak-attestation-dashboard.json`
 
 ## API Versioning
 

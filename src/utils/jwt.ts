@@ -3,7 +3,9 @@ import { SignOptions, JwtPayload, VerifyOptions} from 'jsonwebtoken'
 import { secretLoader, SecretNotFoundError } from './secret-loader.js'
 import { config } from '../config/index.js'
 import { randomUUID } from 'crypto'
+import crypto from 'node:crypto'
 import { logger } from './logger.js'
+import { jwksManager } from './jwks.js'
 
 // ===========================================================================
 // CONFIGURATION
@@ -216,20 +218,47 @@ function getRefreshJwtSecret(): string {
  * @example
  * const token = generateToken({ userId: 'abc', email: 'user@example.com' })
  */
+function getSigningKeyBundle() {
+  return jwksManager.getSigningKey()
+}
+
+function getVerificationKeyInfo(token: string): { publicKey: crypto.KeyObject; alg: 'RS256' | 'EdDSA' } | { publicKey: null; hasKid: boolean } {
+  const decoded = jwt.decode(token, { complete: true }) as { header?: Record<string, unknown> } | null
+  const kid = decoded?.header?.kid
+  if (!kid || typeof kid !== 'string') {
+    return { publicKey: null, hasKid: false }
+  }
+
+  const bundle = jwksManager.getVerificationKey(kid)
+  if (!bundle) {
+    return { publicKey: null, hasKid: true }
+  }
+
+  return { publicKey: bundle.publicKey, alg: bundle.alg }
+}
+
 export function generateToken(payload: TokenPayload): string {
-  const secret = getPrimaryJwtSecret()
-  return jwt.sign(
-    { ...payload, jti: randomUUID() },
-    secret,
-    {
+  const signingKey = getSigningKeyBundle()
+  const tokenPayload = { ...payload, jti: randomUUID() }
+
+  if (signingKey?.privateKey) {
+    return jwt.sign(tokenPayload, signingKey.privateKey, {
       expiresIn: '1h',
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
-    } as SignOptions
-  )
+      algorithm: signingKey.alg,
+      keyid: signingKey.kid,
+    } as SignOptions)
+  }
+
+  const secret = getPrimaryJwtSecret()
+  return jwt.sign(tokenPayload, secret, {
+    expiresIn: '1h',
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+    algorithm: 'HS256',
+  } as SignOptions)
 }
-
-
 
 /**
  * @notice Generates a long-lived JWT refresh token for session rotation.
@@ -252,22 +281,19 @@ export function generateRefreshToken(payload: TokenPayload): string {
       expiresIn: '7d',
       issuer: JWT_ISSUER,
       audience: JWT_REFRESH_AUDIENCE,
+      algorithm: 'HS256',
     } as SignOptions
   )
 }
 
-
-
 /**
  * @notice Verifies an access token and returns its payload if valid.
- * @dev Passes `{ issuer: JWT_ISSUER, audience: JWT_AUDIENCE }` to `jwt.verify`,
- *      which causes the library to throw `JsonWebTokenError` if either claim is
- *      absent or does not match. A refresh token will be rejected here because
- *      its `aud` claim is `JWT_REFRESH_AUDIENCE`, not `JWT_AUDIENCE`.
+ * @dev Supports JWKS-signed tokens with a `kid` header and falls back to the
+ *      legacy HMAC secret path when no `kid` is present.
  *      All verification errors are caught and collapsed to `null`.
  * @param token - The raw JWT string from the `Authorization: Bearer` header.
  * @returns Decoded `TokenPayload`, or `null` if verification fails for any reason
- *          (wrong secret, expired, wrong issuer, wrong audience, malformed).
+ *          (wrong key, expired, wrong issuer, wrong audience, malformed).
  *
  * @example
  * const payload = verifyToken(req.headers.authorization?.slice(7) ?? '')
@@ -275,17 +301,33 @@ export function generateRefreshToken(payload: TokenPayload): string {
  */
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    const secret = getPrimaryJwtSecret()
-    const decoded = jwt.verify(token, secret, {
+    const verification = getVerificationKeyInfo(token)
+    const options: VerifyOptions = {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
+    }
+
+    if (verification.publicKey) {
+      return jwt.verify(token, verification.publicKey, {
+        ...options,
+        algorithms: [verification.alg],
+      } as VerifyOptions) as TokenPayload
+    }
+
+    if (verification.hasKid) {
+      return null
+    }
+
+    const secret = getPrimaryJwtSecret()
+    const decoded = jwt.verify(token, secret, {
+      ...options,
+      algorithms: ['HS256'],
     } as VerifyOptions)
     return decoded as TokenPayload
   } catch {
     return null
   }
 }
-
 
 /**
  * @notice Verifies a refresh token and returns its payload if valid.
@@ -306,6 +348,7 @@ export function verifyRefreshToken(token: string): TokenPayload | null {
     const decoded = jwt.verify(token, secret, {
       issuer: JWT_ISSUER,
       audience: JWT_REFRESH_AUDIENCE,
+      algorithms: ['HS256'],
     } as VerifyOptions)
     return decoded as TokenPayload
   } catch {

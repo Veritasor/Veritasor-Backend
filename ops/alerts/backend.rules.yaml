@@ -1,0 +1,112 @@
+groups:
+  - name: veritasor_backend_capacity
+    interval: 30s
+    rules:
+      # ── Webhook DLQ depth ────────────────────────────────────────────────────
+      - alert: WebhookDlqDepthWarning
+        expr: webhook_dlq_depth > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Webhook DLQ backlog growing ({{ $labels.provider }})"
+          description: >
+            Dead-letter queue for provider {{ $labels.provider }} has
+            {{ $value }} unprocessed entries for the last 5 minutes.
+            This may indicate a downstream webhook consumer is degraded.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
+
+      - alert: WebhookDlqDepthCritical
+        expr: webhook_dlq_depth > 200
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Webhook DLQ critically overloaded ({{ $labels.provider }})"
+          description: >
+            Dead-letter queue for provider {{ $labels.provider }} exceeds 200 entries.
+            SLO breach imminent — investigate consumer failures immediately.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
+
+      # ── DB connection pool utilisation ───────────────────────────────────────
+      - alert: PgPoolHighUtilization
+        expr: >
+          (pg_pool_active_connections / pg_pool_max_connections) > 0.80
+        for: 3m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "PostgreSQL pool utilisation above 80 %"
+          description: >
+            Pool is {{ $value | humanizePercentage }} utilized
+            ({{ $labels.instance }}). New requests may queue or time out if
+            utilisation reaches 100 %.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgpoolhighutilization--pgpoolsaturated"
+
+      - alert: PgPoolSaturated
+        expr: >
+          (pg_pool_active_connections / pg_pool_max_connections) > 0.95
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "PostgreSQL pool is saturated (> 95 %)"
+          description: >
+            Pool utilisation is {{ $value | humanizePercentage }} on
+            {{ $labels.instance }}. Connection timeouts are likely occurring.
+            Scale PGPOOL_MAX or reduce query concurrency.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgpoolhighutilization--pgpoolsaturated"
+
+      # ── Soroban submit lag ───────────────────────────────────────────────────
+      - alert: SorobanSubmitLagHigh
+        expr: >
+          histogram_quantile(0.95,
+            rate(soroban_submit_lag_seconds_bucket[10m])
+          ) > 60
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Soroban submit p95 lag above 60 s"
+          description: >
+            95th-percentile on-chain confirmation time is
+            {{ $value | humanizeDuration }} over the last 10 minutes.
+            Stellar network congestion or RPC node degradation may be the cause.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
+
+      - alert: SorobanSubmitLagCritical
+        expr: >
+          histogram_quantile(0.95,
+            rate(soroban_submit_lag_seconds_bucket[10m])
+          ) > 180
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Soroban submit p95 lag above 3 min — SLO breach"
+          description: >
+            95th-percentile confirmation lag is {{ $value | humanizeDuration }}.
+            Attestation SLO (< 180 s p95) is breached. Check Soroban RPC health
+            and retry-budget exhaustion rate.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
+
+      - alert: SorobanRetryBudgetExhausted
+        expr: >
+          increase(soroban_retry_budget_exhausted_total[5m]) > 3
+        for: 0m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Soroban retry budget exhausted multiple times"
+          description: >
+            {{ $value }} retry-budget exhaustions in the last 5 minutes.
+            Submissions are being dropped. Check RPC connectivity and
+            SOROBAN_RETRY_BUDGET_MAX_RETRIES configuration.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"

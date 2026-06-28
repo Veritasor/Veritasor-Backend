@@ -173,6 +173,11 @@ function buildOperation(method: string, path: string): OpenApiOperation {
     return buildBusinessesOperation(httpMethod, openApiPath, pathParams);
   }
 
+  // Admin routes
+  if (tag === 'admin') {
+    return buildAdminOperation(httpMethod, path, pathParams);
+  }
+
   // Default operation for all other routes
   return buildDefaultOperation(httpMethod, openApiPath, tag, pathParams);
 }
@@ -547,6 +552,70 @@ function buildBusinessesOperation(
   return {
     summary: known.summary ?? `${method.toUpperCase()} ${path}`,
     tags: ['businesses'],
+    security: [{ bearerAuth: [] }],
+    parameters: [...pathParams, ...(known.parameters ?? [])],
+    requestBody: known.requestBody,
+    responses: known.responses ?? {
+      '200': { description: 'Success' },
+      '401': UNAUTHORIZED_RESPONSE,
+      '429': RATE_LIMIT_RESPONSE,
+    },
+  };
+}
+
+function buildAdminOperation(
+  method: string,
+  path: string,
+  pathParams: OpenApiParameter[],
+): OpenApiOperation {
+  const operationMap: Record<string, Partial<OpenApiOperation>> = {
+    '/api/admin/role-requests': {
+      summary: 'Create role promotion request',
+      description: 'Create a new request to promote a user to a different role',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['targetUserId', 'role'],
+              properties: {
+                targetUserId: { type: 'string', description: 'ID of user to promote' },
+                role: { type: 'string', enum: ['user', 'business_admin', 'admin'], description: 'New role for user' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '201': { description: 'Promotion request created', content: { 'application/json': { schema: { type: 'object' } } } },
+        '400': { description: 'Invalid input', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '401': UNAUTHORIZED_RESPONSE,
+        '403': { description: 'Forbidden', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '404': { description: 'Target user not found', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '409': { description: 'Pending request for same role already exists', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '429': RATE_LIMIT_RESPONSE,
+      },
+    },
+    '/api/admin/role-requests/{id}/approve': {
+      summary: 'Approve role promotion request',
+      description: 'Approve a pending role promotion request (must be a different admin than requester)',
+      responses: {
+        '200': { description: 'Promotion request approved and role updated', content: { 'application/json': { schema: { type: 'object' } } } },
+        '401': UNAUTHORIZED_RESPONSE,
+        '403': { description: 'Self-approval is not allowed', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '404': { description: 'Promotion request not found', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '409': { description: 'Request not pending or already expired', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '429': RATE_LIMIT_RESPONSE,
+      },
+    },
+  };
+
+  const known = operationMap[path.replace(/:([^/]+)/g, '{$1}')] ?? {};
+  return {
+    summary: known.summary ?? `${method.toUpperCase()} ${path}`,
+    description: known.description,
+    tags: ['admin'],
     security: [{ bearerAuth: [] }],
     parameters: [...pathParams, ...(known.parameters ?? [])],
     requestBody: known.requestBody,

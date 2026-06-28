@@ -1,4 +1,4 @@
-import { Registry, Histogram, Counter } from "prom-client";
+import { Registry, Histogram, Counter, Gauge } from "prom-client";
 
 export const metricsRegistry = new Registry();
 
@@ -27,5 +27,12 @@ export const sorobanRetryTotal = new Counter({
 export const sorobanRetryBudgetExhaustedTotal = new Counter({
   name: "soroban_retry_budget_exhausted_total",
   help: "Total number of Soroban retry attempts refused because the retry budget was exhausted",
+  registers: [metricsRegistry],
+});
+
+export const submissionReplayProgress = new Gauge({
+  name: "submission_replay_progress",
+  help: "Progress of failed Soroban submission replay (0 = not started, 1 = completed)",
+  labelNames: ["phase"] as const,
   registers: [metricsRegistry],
 });

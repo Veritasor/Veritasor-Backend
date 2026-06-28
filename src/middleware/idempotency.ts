@@ -126,6 +126,37 @@ export interface IdempotencyOptions {
 }
 
 // ============================================================================
+// Redis Store Implementation
+// ============================================================================
+
+/**
+ * Redis-backed idempotency store. Works with both single-node and cluster
+ * clients from `src/redis.ts`. Keys are stored as JSON strings with a TTL
+ * set via PEXPIRE so no background sweep is needed.
+ */
+export class RedisIdempotencyStore implements IdempotencyStore {
+  constructor(private client: { get(key: string): Promise<string | null>; set(key: string, value: string, px: 'PX', ms: number): Promise<unknown>; del(key: string): Promise<unknown> }) {}
+
+  async get(key: string): Promise<IdempotencyEntry | undefined> {
+    const raw = await this.client.get(key);
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as IdempotencyEntry;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async set(key: string, entry: IdempotencyEntry, ttlMs: number): Promise<void> {
+    await this.client.set(key, JSON.stringify(entry), 'PX', ttlMs);
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.client.del(key);
+  }
+}
+
+// ============================================================================
 // In-Memory Store Implementation
 // ============================================================================
 

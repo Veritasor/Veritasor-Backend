@@ -19,14 +19,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Enable pnpm via Corepack
+        run: corepack enable
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
           cache: 'pnpm'
-
-      - name: Enable pnpm via Corepack
-        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -39,7 +39,7 @@ jobs:
       - name: Generate CycloneDX SBOM
         run: |
           mkdir -p sbom
-          pnpm exec cyclonedx-npm --output-format cyclonedx --output-file sbom/cyclonedx-sbom.xml
+          pnpm exec cyclonedx-npm --output-format XML --output-file sbom/cyclonedx-sbom.xml
         timeout-minutes: 10
 
       - name: Upload SBOM artifact

@@ -8,13 +8,16 @@
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",
+    "perf:k6:attestations": "k6 run ops/k6/peak-attestation.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:mutation": "stryker run",
     "migrate": "tsx src/db/migrate.ts",
     "migrate:rollback": "tsx src/db/migrate.ts rollback",
     "docs:routes": "tsx scripts/generate-routes.ts",
     "docs:openapi": "tsx scripts/generate-openapi.ts",
-    "audit:ci": "pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts"
+    "audit:ci": "pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts",
+    "rebuild:indexer": "tsx scripts/rebuild-indexer.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
@@ -22,19 +25,25 @@
     "@opentelemetry/sdk-node": "^0.57.2",
     "@stellar/stellar-sdk": "^14.5.0",
     "bcryptjs": "^2.4.3",
+    "commander": "^15.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "ioredis": "5.3.2",
     "jsonwebtoken": "^9.0.2",
+    "kafkajs": "2.2.4",
     "nodemailer": "^8.0.10",
     "pg": "^8.13.1",
     "prom-client": "^15.1.3",
     "tinypool": "^0.8.4",
+    "ws": "8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@cyclonedx/cyclonedx-npm": "^4.2.1",
     "@jest/globals": "^29.7.0",
+    "@stryker-mutator/core": "^9.6.1",
+    "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/helmet": "^0.0.48",
@@ -44,6 +53,7 @@
     "@types/nodemailer": "^6.4.16",
     "@types/pg": "^8.11.6",
     "@types/supertest": "^6.0.3",
+    "@types/ws": "8.5.13",
     "@vitest/coverage-v8": "^1.6.1",
     "eslint": "^9.15.0",
     "fast-check": "^4.6.0",
@@ -54,6 +64,7 @@
     "ts-jest": "^29.4.6",
     "tsx": "^4.19.2",
     "typescript": "~5.6.2",
+    "vite": "^8.1.0",
     "vitest": "^4.1.7"
   }
 }
