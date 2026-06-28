@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: veritasor
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: veritasor_test
+    ports:
+      - "5433:5432" # Direct access for setup
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474" # API
+      - "5432:5432" # Proxied Postgres
+      - "6379:6379" # Proxied Redis
+      - "8000:8000" # Proxied Soroban
+    command: -host 0.0.0.0
+    depends_on:
+      - postgres
+      - redis

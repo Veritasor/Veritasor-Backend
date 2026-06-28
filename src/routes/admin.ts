@@ -10,6 +10,7 @@ import * as attestationRepository from '../repositories/attestationRepository.js
 import { db } from '../db/client.js'
 import { getDeadLetter, deleteDeadLetter, computePayloadHash } from '../services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../services/webhooks/razorpayHandler.js'
+import { revokeBatchAttestations } from '../services/attestation/revokeBatch.js'
 import { logger } from '../utils/logger.js'
 
 const adminRouter = Router()
@@ -58,6 +59,31 @@ adminRouter.get(
       res.json(stats)
     } catch (error: any) {
       res.status(500).json({ error: 'Internal Server Error', message: error.message })
+    }
+  }
+)
+
+/**
+ * POST /api/v1/admin/attestations/revoke-batch
+ * Revoke multiple attestations in one call
+ */
+adminRouter.post(
+  '/attestations/revoke-batch',
+  requirePermissions(IntegrationPermission.ADMIN_MANAGE_USERS),
+  async (req, res) => {
+    const schema = z.object({
+      attestationIds: z.array(z.string()).max(500)
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Invalid attestationIds array' });
+    }
+
+    try {
+      const revoked = await revokeBatchAttestations(parsed.data.attestationIds, req.user!.id);
+      res.json({ message: 'Batch revoked successfully', count: revoked.length });
+    } catch (error: any) {
+      res.status(500).json({ error: 'Internal Server Error', message: error.message });
     }
   }
 )

@@ -9,6 +9,7 @@ import {
   apiVersionMiddleware,
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
+import { securityHeaders } from "./middleware/securityHeaders.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -59,6 +60,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
 
   app.use(requestLogger);
+  app.use(securityHeaders);
   app.use(securityHeadersMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
