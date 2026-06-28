@@ -45,6 +45,7 @@ export type DependencyName =
   | "config/jwt"
   | "config/soroban"
   | "config/stripe"
+  | "config/mtls"
   | "database"
 
 /**
@@ -111,7 +112,10 @@ export async function runStartupDependencyReadinessChecks(): Promise<StartupRead
   // 3. Stripe Config check
   checks.push(checkStripeConfig(isProduction))
 
-  // 4. Database check
+  // 4. mTLS Config check
+  checks.push(checkMtlsConfig(isProduction))
+
+  // 5. Database check
   if (process.env.DATABASE_URL?.trim()) {
     checks.push(await checkDatabase())
   }
@@ -122,6 +126,31 @@ export async function runStartupDependencyReadinessChecks(): Promise<StartupRead
     ready: allReady,
     checks,
   }
+}
+
+/**
+ * Validate mTLS configuration.
+ *
+ * If MTLS_ENABLED=true requires MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH.
+ */
+function checkMtlsConfig(isProduction: boolean): DependencyReadinessResult {
+  const mtlsEnabled = process.env.MTLS_ENABLED?.trim().toLowerCase() === "true"
+  
+  if (mtlsEnabled) {
+    const caPath = process.env.MTLS_CA_PATH?.trim()
+    const certPath = process.env.MTLS_CERT_PATH?.trim()
+    const keyPath = process.env.MTLS_KEY_PATH?.trim()
+
+    if (!caPath || !certPath || !keyPath) {
+      return {
+        dependency: "config/mtls",
+        ready: false,
+        reason: "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true",
+      }
+    }
+  }
+
+  return { dependency: "config/mtls", ready: true }
 }
 
 

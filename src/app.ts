@@ -1,6 +1,8 @@
 import express, { type Express } from "express";
 import type { Server } from "node:http";
+import type { Server as HttpsServer } from "node:https";
 import type { Request, Response, NextFunction } from "express";
+import fs from "node:fs/promises";
 import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -9,6 +11,7 @@ import {
   apiVersionMiddleware,
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
+import { mtlsMiddleware } from "./middleware/mtls.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -19,6 +22,7 @@ import integrationsRouter from "./routes/integrations.js";
 import integrationsRazorpayRouter from "./routes/integrations-razorpay.js";
 import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
+import { publicAttestationsRouter } from "./routes/publicAttestations.js";
 import usersRouter from "./routes/users.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import adminRouter from "./routes/admin.js";
@@ -60,6 +64,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
 
   app.use(requestLogger);
   app.use(securityHeadersMiddleware);
+  app.use(mtlsMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
 
@@ -77,6 +82,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   }
 
   app.use("/api/analytics", analyticsRouter);
+  app.use("/api/v1/public/attestations", publicAttestationsRouter);
   app.use("/api/attestations", attestationsRouter);
   app.use("/api/auth", authRouter);
   app.use("/api/businesses", businessRoutes);
@@ -106,9 +112,9 @@ export const app = createApp({ ready: true, checks: [] });
  * Runs readiness checks before starting the listener.
  * 
  * @param port - Port to listen on.
- * @returns A promise that resolves to the started HTTP server.
+ * @returns A promise that resolves to the started HTTP/HTTPS server.
  */
-export async function startServer(port: number): Promise<Server> {
+export async function startServer(port: number): Promise<Server | HttpsServer> {
   await telemetryReady;
 
   // Switch to the persistent DB-backed token store for production deployments.
@@ -129,9 +135,36 @@ export async function startServer(port: number): Promise<Server> {
 
   const application = createApp(readinessReport);
 
-  return new Promise((resolve) => {
-    const server = application.listen(port, () => {
-      console.log(`[Server] Veritasor Backend listening on port ${port}`);
+  return new Promise(async (resolve) => {
+    let server: Server | HttpsServer;
+
+    if (config.mtls.enabled) {
+      // Load mTLS certificates
+      const [ca, cert, key] = await Promise.all([
+        fs.readFile(config.mtls.caPath!),
+        fs.readFile(config.mtls.certPath!),
+        fs.readFile(config.mtls.keyPath!),
+      ]);
+
+      // Create HTTPS server with mTLS
+      const https = await import("node:https");
+      server = https.createServer(
+        {
+          ca,
+          cert,
+          key,
+          requestCert: true,
+          rejectUnauthorized: false, // We handle rejection in middleware
+        },
+        application
+      );
+    } else {
+      // Create regular HTTP server
+      server = application.listen(port);
+    }
+
+    server.listen(port, () => {
+      console.log(`[Server] Veritasor Backend listening on port ${port} (mTLS: ${config.mtls.enabled})`);
       resolve(server);
     });
   });
