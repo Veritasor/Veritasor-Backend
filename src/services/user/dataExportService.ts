@@ -53,11 +53,19 @@ export async function getExportStatus(exportId: string): Promise<ExportResponse 
     const exportJob = await getDataExport(exportId)
     if (!exportJob) return null
 
+    // Handle dates from Redis (they come as strings from JSON.parse)
+    const expiresAt = typeof exportJob.expiresAt === 'string'
+      ? exportJob.expiresAt
+      : exportJob.expiresAt.toISOString()
+    const createdAt = typeof exportJob.createdAt === 'string'
+      ? exportJob.createdAt
+      : exportJob.createdAt.toISOString()
+
     let response: ExportResponse = {
       exportId: exportJob.id,
       status: exportJob.status,
-      expiresAt: exportJob.expiresAt.toISOString(),
-      createdAt: exportJob.createdAt.toISOString(),
+      expiresAt,
+      createdAt,
     }
 
     // If completed, generate download token
