@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
-import { metricsRegistry, httpRequestDuration, rateLimitRejections } from "../src/metrics.js";
+import { metricsRegistry, httpRequestDuration, rateLimitRejections, sorobanBatchSize } from "../src/metrics.js";
 import { requestLogger } from "../src/middleware/requestLogger.js";
 import { rateLimiter, resetRateLimiterStore } from "../src/middleware/rateLimiter.js";
 import { createApp } from "../src/app.js";
@@ -26,6 +26,13 @@ describe("metrics registry", () => {
   it("output is valid Prometheus text format (starts with # HELP)", async () => {
     const output = await metricsRegistry.metrics();
     expect(output).toMatch(/^# HELP /m);
+  });
+
+  it("exposes soroban_batch_size histogram", async () => {
+    sorobanBatchSize.observe({ reason: "size" }, 5);
+    const output = await metricsRegistry.metrics();
+    expect(output).toContain("soroban_batch_size");
+    expect(output).toContain('reason="size"');
   });
 });
 

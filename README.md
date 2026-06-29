@@ -37,6 +37,31 @@ Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to
 
 Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.
 
+### Soroban submission batching
+
+When traffic spikes, attestation submissions are coalesced into multi-operation Soroban transactions via `BatchingQueue` (`src/services/soroban/batchingQueue.ts`). The queue is enabled by default (`SOROBAN_BATCHING_ENABLED=true`).
+
+**Flush triggers**
+
+| Trigger | Condition | Metric label (`soroban_batch_size.reason`) |
+|---------|-----------|---------------------------------------------|
+| Size | Queue depth reaches `SOROBAN_BATCH_MAX_SIZE` (default 20) | `size` |
+| Latency | Adaptive flush window expires since the first queued item | `latency` |
+| Backpressure | Queue depth reaches `SOROBAN_BATCH_BACKPRESSURE_THRESHOLD` (default 100) | `backpressure` |
+| Shutdown | Graceful shutdown drains pending items | `shutdown` |
+
+**Adaptive flush window**
+
+The latency window starts at `SOROBAN_BATCH_MAX_FLUSH_MS` (default 500 ms) when idle and shrinks toward `SOROBAN_BATCH_MIN_FLUSH_MS` (default 50 ms) as arrivals per second increase. Tune these values alongside the `soroban_batch_size` histogram exposed at `/metrics`.
+
+**Partial replay**
+
+Batched submissions are attempted as a single Soroban transaction. If the batch transaction fails, each leaf is retried individually so a single failing attestation does not roll back successful entries. Per-item outcomes are surfaced to callers independently; failed leaves remain eligible for audit-log replay (`replayFailedSubmissions`).
+
+**Direct submission**
+
+Replay jobs and unsigned (`submit:false`) flows bypass the queue and call `submitAttestationDirect`. Disable batching globally with `SOROBAN_BATCHING_ENABLED=false`.
+
 ## Attestation Reminders
 
 The `attestationReminderJob` (`src/jobs/attestationReminder.ts`) sends attestation reminders aligned to each business's reporting calendar rather than on a fixed interval.

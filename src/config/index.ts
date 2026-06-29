@@ -27,6 +27,11 @@ export const envSchema = z.object({
   SOROBAN_NETWORK_PASSPHRASE: z.string().default("Test SDF Network ; September 2015"),
   SOROBAN_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
   SOROBAN_REPLAY_MAX_AGE_DAYS: z.string().optional(),
+  SOROBAN_BATCHING_ENABLED: z.string().optional(),
+  SOROBAN_BATCH_MAX_SIZE: z.string().optional(),
+  SOROBAN_BATCH_MIN_FLUSH_MS: z.string().optional(),
+  SOROBAN_BATCH_MAX_FLUSH_MS: z.string().optional(),
+  SOROBAN_BATCH_BACKPRESSURE_THRESHOLD: z.string().optional(),
   SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
   SECRET_FILE_PATH: z.string().optional(),
   VAULT_BASE_URL: z.string().url().optional(),
@@ -233,6 +238,33 @@ export const config = {
       parsedEnv.SOROBAN_REPLAY_MAX_AGE_DAYS,
       7,
     ),
+    batching: {
+      enabled: parseBooleanEnv(
+        "SOROBAN_BATCHING_ENABLED",
+        parsedEnv.SOROBAN_BATCHING_ENABLED,
+        true,
+      ),
+      maxBatchSize: parsePositiveIntEnv(
+        "SOROBAN_BATCH_MAX_SIZE",
+        parsedEnv.SOROBAN_BATCH_MAX_SIZE,
+        20,
+      ),
+      minFlushMs: parsePositiveIntEnv(
+        "SOROBAN_BATCH_MIN_FLUSH_MS",
+        parsedEnv.SOROBAN_BATCH_MIN_FLUSH_MS,
+        50,
+      ),
+      maxFlushMs: parsePositiveIntEnv(
+        "SOROBAN_BATCH_MAX_FLUSH_MS",
+        parsedEnv.SOROBAN_BATCH_MAX_FLUSH_MS,
+        500,
+      ),
+      backpressureThreshold: parsePositiveIntEnv(
+        "SOROBAN_BATCH_BACKPRESSURE_THRESHOLD",
+        parsedEnv.SOROBAN_BATCH_BACKPRESSURE_THRESHOLD,
+        100,
+      ),
+    },
   },
   secretLoader: {
     source: parsedEnv.SECRET_LOADER,

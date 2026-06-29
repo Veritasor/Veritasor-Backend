@@ -64,7 +64,20 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = createShutdownOrchestrator({
     pool,
-    onCleanup: kafkaConsumer ? () => kafkaConsumer.stop() : undefined,
+    onCleanup: kafkaConsumer
+      ? async () => {
+          const { drainSorobanSubmissionQueue } = await import(
+            "./services/soroban/submissionQueue.js"
+          );
+          await drainSorobanSubmissionQueue();
+          await kafkaConsumer.stop();
+        }
+      : async () => {
+          const { drainSorobanSubmissionQueue } = await import(
+            "./services/soroban/submissionQueue.js"
+          );
+          await drainSorobanSubmissionQueue();
+        },
   });
   shutdown.register(server);
 

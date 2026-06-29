@@ -19,7 +19,7 @@ vi.mock("../../../src/repositories/auditLogRepository.js", () => ({
 }));
 
 vi.mock("../../../src/services/soroban/submitAttestation.js", () => ({
-  submitAttestation: mockSubmitAttestation,
+  submitAttestationDirect: mockSubmitAttestation,
 }));
 
 vi.mock("../../../src/services/soroban/retry-budget.js", () => ({

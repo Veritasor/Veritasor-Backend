@@ -205,7 +205,7 @@ export function validateConfirmedResult(
   return { merkleRoot: onChainRoot, timestamp: onChainTimestamp };
 }
 
-export async function submitAttestation(params: SubmitAttestationParams): Promise<SubmitAttestationResult> {
+export async function submitAttestationDirect(params: SubmitAttestationParams): Promise<SubmitAttestationResult> {
   const { contractId, networkPassphrase, rpcUrl } = getSorobanConfig();
   const server = createSorobanRpcServer(rpcUrl);
 
@@ -312,4 +312,13 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
       error,
     );
   }
+}
+
+/**
+ * Submits an attestation to Soroban, using the adaptive batching queue when enabled.
+ * Set `SOROBAN_BATCHING_ENABLED=false` or pass `submit:false` for direct submission.
+ */
+export async function submitAttestation(params: SubmitAttestationParams): Promise<SubmitAttestationResult> {
+  const { submitAttestationQueued } = await import('./submissionQueue.js');
+  return submitAttestationQueued(params);
 }

@@ -36,3 +36,18 @@ export const submissionReplayProgress = new Gauge({
   labelNames: ["phase"] as const,
   registers: [metricsRegistry],
 });
+
+export const sorobanBatchSize = new Histogram({
+  name: "soroban_batch_size",
+  help: "Number of attestation submissions flushed in each Soroban batch",
+  labelNames: ["reason"] as const,
+  buckets: [1, 2, 5, 10, 20, 50, 100],
+  registers: [metricsRegistry],
+});
+
+export const sorobanBatchPartialReplayTotal = new Counter({
+  name: "soroban_batch_partial_replay_total",
+  help: "Partial replay attempts after a batched Soroban submission failure",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});

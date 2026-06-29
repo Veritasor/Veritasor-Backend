@@ -1,5 +1,5 @@
 import { queryAuditLogs } from "../repositories/auditLogRepository.js";
-import { submitAttestation } from "../services/soroban/submitAttestation.js";
+import { submitAttestationDirect } from "../services/soroban/submitAttestation.js";
 import { sorobanRetryBudget } from "../services/soroban/retry-budget.js";
 import { submissionReplayProgress } from "../metrics.js";
 import { config } from "../config/index.js";
@@ -169,7 +169,7 @@ export async function replayFailedSubmissions(
     summary.attempted++;
 
     try {
-      await submitAttestation({
+      await submitAttestationDirect({
         business: params.business,
         period: params.period,
         merkleRoot: params.merkleRoot,

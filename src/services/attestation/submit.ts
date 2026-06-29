@@ -200,6 +200,40 @@ async function submitToSoroban(
 }
 
 /**
+ * Submits a Merkle root to Soroban, using the adaptive batching queue when enabled.
+ */
+async function submitMerkleRootToSoroban(
+  merkleRoot: string,
+  businessId: string,
+  period: string,
+  context: LogContext,
+): Promise<string> {
+  const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
+  const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === "true";
+
+  if (submissionEnabled && sourcePublicKey) {
+    const { submitAttestationQueued } = await import(
+      "../soroban/submissionQueue.js"
+    );
+    const result = await submitAttestationQueued({
+      business: businessId,
+      period,
+      merkleRoot,
+      timestamp: Date.now(),
+      version: "1.0.0",
+      sourcePublicKey,
+    });
+    log("info", "Soroban submission successful", {
+      ...context,
+      duration: 0,
+    });
+    return result.txHash;
+  }
+
+  return submitToSorobanWithRetry(merkleRoot, businessId, period, context);
+}
+
+/**
  * Enhanced Soroban submission with retry logic and error taxonomy.
  */
 async function submitToSorobanWithRetry(
@@ -364,7 +398,7 @@ export async function submitAttestation(
     
     let txHash: string;
     try {
-      txHash = await submitToSorobanWithRetry(root, businessId, period, context);
+      txHash = await submitMerkleRootToSoroban(root, businessId, period, context);
     } catch (err: any) {
       // Already handled by submitToSorobanWithRetry with proper error taxonomy
       throw err;
