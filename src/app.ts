@@ -12,6 +12,7 @@ import {
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
+import { compressionMiddleware } from "./middleware/compression.js";
 import { mtlsMiddleware } from "./middleware/mtls.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
@@ -77,6 +78,10 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   // 3. Body Parsing
   app.use(express.json());
   app.use(createCorsMiddleware());
+
+  // Response compression (brotli preferred, gzip fallback) with a BREACH guard
+  // that refuses to compress responses carrying CSRF tokens or session cookies.
+  app.use(compressionMiddleware());
 
   if (process.env.METRICS_ENABLED === "true") {
     app.get("/metrics", async (_req: Request, res: Response) => {
