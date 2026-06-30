@@ -1,190 +1,183 @@
 /**
- * Error Types for Veritasor Backend
- * 
- * Provides standardized error classes for consistent error handling
- * across the application. All errors follow the global error envelope
- * standard for API responses.
- * 
+ * Error Types for Veritasor Backend with VRT-XXXX Taxonomy System
+ *
+ * Provides standardized error classes with machine-readable VRT-XXXX codes
+ * for consistent error handling across the application.
+ *
  * @module errors
  */
 
 /**
- * ValidationError - Used when request validation fails
- * 
- * Assumptions:
- * - Status code is always 400
- * - Details contains array of validation issues
- * - Used by express-validator or custom validation logic
+ * Error Taxonomy System Codes
  */
-export class ValidationError extends Error {
-  public status: number;
-  public details: any[];
+export const VRTErrorCodes = {
+  // Generic Internal Errors
+  VRT_0001: "VRT-0001", // Unauthorized/Authentication Error
+  VRT_0002: "VRT-0002", // Validation Error
+  VRT_0003: "VRT-0003", // Authorization Error
+  VRT_0004: "VRT-0004", // Not Found
+  VRT_0005: "VRT-0005", // Conflict
+  VRT_0006: "VRT-0006", // Rate Limit Exceeded
+  VRT_0007: "VRT-0007", // Database Error
+  VRT_0008: "VRT-0008", // External Service Error
+  VRT_9999: "VRT-9999", // Internal Server Error (Fallback)
+} as const;
 
-  constructor(details: any[]) {
-    super("Validation Error");
-    this.name = "ValidationError";
-    this.status = 400;
-    this.details = details;
-  }
-}
+export type VRTErrorCode = typeof VRTErrorCodes[keyof typeof VRTErrorCodes];
 
 /**
- * AppError - Base application error class
- * 
- * Assumptions:
- * - Default status is 500 for server errors
- * - Default code is INTERNAL_SERVER_ERROR
- * - Can be extended for specific error types
- * 
- * @param message - Human-readable error message
- * @param status - HTTP status code
- * @param code - Machine-readable error code
+ * Base Application Error
+ *
+ * All custom errors extend this base class which includes:
+ * - statusCode: HTTP status code
+ * - vrtCode: Machine-readable VRT-XXXX taxonomy code
+ * - context: Optional context payload for debugging
  */
 export class AppError extends Error {
   public status: number;
-  public code: string;
+  public vrtCode: VRTErrorCode;
+  public context?: Record<string, unknown>;
 
-  constructor(message: string, status: number = 500, code: string = 'INTERNAL_SERVER_ERROR') {
+  constructor(
+    message: string,
+    status: number = 500,
+    vrtCode: VRTErrorCode = VRTErrorCodes.VRT_9999,
+    context?: Record<string, unknown>
+  ) {
     super(message);
-    this.name = 'AppError';
+    this.name = "AppError";
     this.status = status;
-    this.code = code;
+    this.vrtCode = vrtCode;
+    this.context = context;
+    Object.setPrototypeOf(this, AppError.prototype);
   }
 }
 
 /**
- * AuthenticationError - Used for auth-related errors (401)
- * 
- * Assumptions:
- * - Status code is always 401
- * - Used for invalid credentials, expired tokens, etc.
+ * ValidationError - Used when request validation fails
  */
-export class AuthenticationError extends AppError {
-  constructor(message: string = 'Authentication required') {
-    super(message, 401, 'AUTHENTICATION_ERROR');
-    this.name = 'AuthenticationError';
+export class ValidationError extends Error {
+  public status: number;
+  public vrtCode: VRTErrorCode;
+  public details: any[];
+  public context?: Record<string, unknown>;
+
+  constructor(details: any[], context?: Record<string, unknown>) {
+    super("Validation Error");
+    this.name = "ValidationError";
+    this.status = 400;
+    this.vrtCode = VRTErrorCodes.VRT_0002;
+    this.details = details;
+    this.context = context;
+  }
+}
+
+/**
+ * UnauthorizedError - Used for auth-related errors (401)
+ */
+export class UnauthorizedError extends AppError {
+  constructor(
+    message: string = "Authentication required",
+    context?: Record<string, unknown>
+  ) {
+    super(message, 401, VRTErrorCodes.VRT_0001, context);
+    this.name = "UnauthorizedError";
+  }
+}
+
+/**
+ * AuthenticationError - Alias for UnauthorizedError (backward compatibility)
+ *
+ * @deprecated Use UnauthorizedError instead
+ */
+export class AuthenticationError extends UnauthorizedError {
+  constructor(
+    message: string = "Authentication required",
+    context?: Record<string, unknown>
+  ) {
+    super(message, context);
+    this.name = "AuthenticationError";
   }
 }
 
 /**
  * AuthorizationError - Used when user lacks permissions (403)
- * 
- * Assumptions:
- * - Status code is always 403
- * - User is authenticated but not authorized for the resource
  */
 export class AuthorizationError extends AppError {
-  constructor(message: string = 'Access denied') {
-    super(message, 403, 'AUTHORIZATION_ERROR');
-    this.name = 'AuthorizationError';
+  constructor(
+    message: string = "Access denied",
+    context?: Record<string, unknown>
+  ) {
+    super(message, 403, VRTErrorCodes.VRT_0003, context);
+    this.name = "AuthorizationError";
   }
 }
 
 /**
  * NotFoundError - Used when resource doesn't exist (404)
- * 
- * Assumptions:
- * - Status code is always 404
- * - Used for missing users, businesses, attestations, etc.
  */
 export class NotFoundError extends AppError {
-  constructor(message: string = 'Resource not found') {
-    super(message, 404, 'NOT_FOUND');
-    this.name = 'NotFoundError';
+  constructor(
+    message: string = "Resource not found",
+    context?: Record<string, unknown>
+  ) {
+    super(message, 404, VRTErrorCodes.VRT_0004, context);
+    this.name = "NotFoundError";
   }
 }
 
 /**
  * ConflictError - Used for resource conflicts (409)
- * 
- * Assumptions:
- * - Status code is always 409
- * - Used for duplicate emails, write conflicts, etc.
  */
 export class ConflictError extends AppError {
-  constructor(message: string = 'Resource conflict') {
-    super(message, 409, 'CONFLICT');
-    this.name = 'ConflictError';
+  constructor(
+    message: string = "Resource conflict",
+    context?: Record<string, unknown>
+  ) {
+    super(message, 409, VRTErrorCodes.VRT_0005, context);
+    this.name = "ConflictError";
   }
 }
 
 /**
  * RateLimitError - Used when rate limit is exceeded (429)
- * 
- * Assumptions:
- * - Status code is always 429
- * - Used by rate limiter middleware
  */
 export class RateLimitError extends AppError {
-  constructor(message: string = 'Rate limit exceeded') {
-    super(message, 429, 'RATE_LIMIT_EXCEEDED');
-    this.name = 'RateLimitError';
+  constructor(
+    message: string = "Rate limit exceeded",
+    context?: Record<string, unknown>
+  ) {
+    super(message, 429, VRTErrorCodes.VRT_0006, context);
+    this.name = "RateLimitError";
   }
 }
 
 /**
  * DatabaseError - Used for database-related errors (500)
- * 
- * Assumptions:
- * - Status code is 500
- * - Message should not expose internal DB details
- * - Logs should contain detailed error info
  */
 export class DatabaseError extends AppError {
-  constructor(message: string = 'Database operation failed') {
-    super(message, 500, 'DATABASE_ERROR');
-    this.name = 'DatabaseError';
+  constructor(
+    message: string = "Database operation failed",
+    context?: Record<string, unknown>
+  ) {
+    super(message, 500, VRTErrorCodes.VRT_0007, context);
+    this.name = "DatabaseError";
   }
 }
 
 /**
  * ExternalServiceError - Used when external service calls fail (502/503)
- * 
- * Assumptions:
- * - Status code is 502 (Bad Gateway) or 503 (Service Unavailable)
- * - Used for Stripe, Shopify, Razorpay API failures
  */
 export class ExternalServiceError extends AppError {
-  constructor(message: string = 'External service unavailable', status: number = 503) {
-    super(message, status, 'EXTERNAL_SERVICE_ERROR');
-    this.name = 'ExternalServiceError';
+  constructor(
+    message: string = "External service unavailable",
+    status: number = 503,
+    context?: Record<string, unknown>
+  ) {
+    super(message, status, VRTErrorCodes.VRT_0008, context);
+    this.name = "ExternalServiceError";
   }
 }
-
-/**
- * Error code constants for common errors
- */
-export const ErrorCodes = {
-  // Validation errors
-  VALIDATION_ERROR: 'VALIDATION_ERROR',
-  
-  // Authentication errors
-  AUTHENTICATION_ERROR: 'AUTHENTICATION_ERROR',
-  INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',
-  TOKEN_EXPIRED: 'TOKEN_EXPIRED',
-  TOKEN_INVALID: 'TOKEN_INVALID',
-  
-  // Authorization errors
-  AUTHORIZATION_ERROR: 'AUTHORIZATION_ERROR',
-  INSUFFICIENT_PERMISSIONS: 'INSUFFICIENT_PERMISSIONS',
-  
-  // Resource errors
-  NOT_FOUND: 'NOT_FOUND',
-  CONFLICT: 'CONFLICT',
-  ALREADY_EXISTS: 'ALREADY_EXISTS',
-  
-  // Rate limiting
-  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
-  
-  // Server errors
-  INTERNAL_SERVER_ERROR: 'INTERNAL_SERVER_ERROR',
-  DATABASE_ERROR: 'DATABASE_ERROR',
-  EXTERNAL_SERVICE_ERROR: 'EXTERNAL_SERVICE_ERROR',
-  
-  // Business logic errors
-  INVALID_STATE: 'INVALID_STATE',
-  BUSINESS_RULE_VIOLATION: 'BUSINESS_RULE_VIOLATION',
-} as const;
 
 /**
  * Type guard to check if error is an AppError
