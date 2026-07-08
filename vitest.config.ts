@@ -10,6 +10,7 @@ export default defineConfig({
       NODE_ENV: "test",
       SOROBAN_CONTRACT_ID:
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+      REDIS_URL: "redis://localhost:6379/0",
     },
     coverage: {
       provider: "v8",
