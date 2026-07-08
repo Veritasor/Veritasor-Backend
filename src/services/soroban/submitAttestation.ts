@@ -1,5 +1,7 @@
 import { BASE_FEE, Contract, Keypair, StrKey, TransactionBuilder, nativeToScVal, rpc, scValToNative } from '@stellar/stellar-sdk';
 import { createSorobanRpcServer, getSorobanConfig } from './client.js';
+import { getSorobanBatchedSubmissionFlag } from '../features/flags.js';
+import { logger } from '../../utils/logger.js';
 
 export class SorobanSubmissionError extends Error {
   constructor(message: string, public code: string, public cause?: unknown) {
@@ -17,6 +19,7 @@ export type SubmitAttestationParams = {
   sourcePublicKey: string;
   signerSecret?: string;
   submit?: boolean;
+  userId?: string;
 };
 
 export type SubmitAttestationResult = {
@@ -215,6 +218,24 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
 
   const shouldSubmit = params.submit ?? true;
   const signerSecret = params.signerSecret ?? process.env.SOROBAN_SOURCE_SECRET;
+
+  if (params.userId) {
+    try {
+      const useBatched = await getSorobanBatchedSubmissionFlag({
+        businessId: params.business,
+        userId: params.userId,
+      });
+      if (useBatched) {
+        logger.info({
+          event: 'soroban_batched_submission_enabled',
+          business: params.business,
+          userId: params.userId,
+        });
+      }
+    } catch {
+      // flag evaluation failure is non-fatal; proceed with default behavior
+    }
+  }
 
   try {
     const account = await server.getAccount(params.sourcePublicKey);

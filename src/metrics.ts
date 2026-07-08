@@ -36,3 +36,38 @@ export const submissionReplayProgress = new Gauge({
   labelNames: ["phase"] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Storage pressure for the idempotency key store.
+ *
+ * - `idempotency_keys_count` (gauge, labels: backend): current number of
+ *   tracked keys in the store. `backend` is `memory` or `redis` so SREs
+ *   can split pressure per backend.
+ *
+ * - `idempotency_evictions_total` (counter, labels: backend, reason):
+ *   keys removed from the store. `reason` is `expired` (TTL sweep),
+ *   `overflow` (capacity pruning in `set`) or `manual` (explicit delete).
+ *
+ * The gauge and counter together let SREs plot retention vs churn and
+ * decide whether the sweeper interval or the TTL is mis-tuned.
+ */
+export const idempotencyKeysCount = new Gauge({
+  name: "idempotency_keys_count",
+  help: "Current number of entries in the idempotency key store",
+  labelNames: ["backend"] as const,
+  registers: [metricsRegistry],
+});
+
+export const idempotencyEvictionsTotal = new Counter({
+  name: "idempotency_evictions_total",
+  help: "Total number of idempotency keys evicted from the store",
+  labelNames: ["backend", "reason"] as const,
+  registers: [metricsRegistry],
+});
+
+export const idempotencySweepRunsTotal = new Counter({
+  name: "idempotency_sweep_runs_total",
+  help: "Total number of idempotency sweeper cycles executed",
+  labelNames: ["backend", "outcome"] as const,
+  registers: [metricsRegistry],
+});

@@ -12,6 +12,7 @@ import {
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
+import { compressionMiddleware } from "./middleware/compression.js";
 import { mtlsMiddleware } from "./middleware/mtls.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
@@ -28,12 +29,47 @@ import usersRouter from "./routes/users.js";
 import { jwksManager } from "./utils/jwks.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import adminRouter from "./routes/admin.js";
+import adminGraphqlRouter from "./routes/admin.graphql.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
 } from "./startup/readiness.js";
 import { replayFailedSubmissions } from "./startup/replayFailedSubmissions.js";
 import { initializeOpenTelemetry } from "./tracing.js";
+import {
+  startIdempotencySweeper,
+  type IdempotencySweeperHandle,
+} from "./middleware/idempotency.js";
+
+/**
+ * Handle to the running idempotency sweeper, if one was started. Stored
+ * at module scope so the production boot path and tests can share a
+ * single instance, and so `stopIdempotencySweeper()` is idempotent.
+ */
+let idempotencySweeperHandle: IdempotencySweeperHandle | null = null;
+
+/**
+ * Start the application-wide idempotency TTL sweeper.
+ *
+ * No-op in test environments so unit tests can drive `runOnce()` and
+ * timer injection without racing a real interval.
+ */
+export async function startIdempotencySweeperIfNeeded(): Promise<IdempotencySweeperHandle | null> {
+  if (process.env.NODE_ENV === 'test') return null;
+  if (idempotencySweeperHandle) return idempotencySweeperHandle;
+  idempotencySweeperHandle = await startIdempotencySweeper();
+  return idempotencySweeperHandle;
+}
+
+/**
+ * Stop the application-wide idempotency TTL sweeper, if one was started.
+ * Safe to call multiple times.
+ */
+export async function stopIdempotencySweeper(): Promise<void> {
+  if (!idempotencySweeperHandle) return;
+  await idempotencySweeperHandle.stop();
+  idempotencySweeperHandle = null;
+}
 
 export const telemetryReady = initializeOpenTelemetry();
 
@@ -78,6 +114,10 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use(express.json());
   app.use(createCorsMiddleware());
 
+  // Response compression (brotli preferred, gzip fallback) with a BREACH guard
+  // that refuses to compress responses carrying CSRF tokens or session cookies.
+  app.use(compressionMiddleware());
+
   if (process.env.METRICS_ENABLED === "true") {
     app.get("/metrics", async (_req: Request, res: Response) => {
       res.set("Content-Type", metricsRegistry.contentType);
@@ -98,6 +138,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/users", usersRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
+  app.use("/api/v1/admin", adminGraphqlRouter);
 
   app.get("/.well-known/jwks.json", async (_req: Request, res: Response) => {
     await jwksManager.ensureLoaded()
@@ -152,6 +193,12 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
   replayFailedSubmissions().catch((err) => {
     console.warn(`[Startup] Failed submission replay encountered an error: ${err instanceof Error ? err.message : String(err)}`);
   });
+
+  // Start the cooperative idempotency TTL sweeper. This drives the
+  // `idempotency_keys_count` gauge and `idempotency_evictions_total`
+  // counter, and is safe to run alongside the request path: its
+  // interval is unref'd and its `runOnce()` swallows store errors.
+  await startIdempotencySweeperIfNeeded();
 
   const application = createApp(readinessReport);
   const { attachAttestationStream } = await import("./ws/attestationStream.js");
