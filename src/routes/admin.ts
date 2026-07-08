@@ -11,7 +11,6 @@ import { db } from '../db/client.js'
 import { getDeadLetter, deleteDeadLetter, computePayloadHash } from '../services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../services/webhooks/razorpayHandler.js'
 import { revokeBatchAttestations } from '../services/attestation/revokeBatch.js'
-import { logger } from '../utils/logger.js'
 import { createRolePromotionRequest, findRolePromotionRequestById, updateRolePromotionRequest, findPendingRolePromotionRequestsForTarget } from '../repositories/rolePromotionRequestRepository.js'
 
 const adminRouter = Router()
