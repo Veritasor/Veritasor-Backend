@@ -307,7 +307,7 @@ describe('Admin Routes', () => {
         id: 'req-123',
         targetUserId: 'target-123',
         requestedRole: 'admin',
-        requestedByAdminId: 'admin-123', // Same as requester
+        requestedByAdminId: 'admin_123', // Same as requester
         status: 'pending',
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + 3600000),
@@ -318,7 +318,7 @@ describe('Admin Routes', () => {
 
       expect(response.status).toBe(403);
       expect(auditLogRepository.createAuditLog).toHaveBeenCalledWith(
-        expect.objectContaining({ 
+        expect.objectContaining({
           action: 'APPROVE_ROLE_PROMOTION_REQUEST',
           metadata: expect.objectContaining({ outcome: 'forbidden_self_approval' })
         })
