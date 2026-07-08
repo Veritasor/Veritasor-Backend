@@ -33,6 +33,28 @@ The shared rate limiter in [src/middleware/rateLimiter.ts](src/middleware/rateLi
 
 Prometheus metrics are available at `/metrics` when `METRICS_ENABLED=true`.
 
+### Idempotency TTL semantics
+
+Idempotency keys are cached so duplicate requests within a TTL window return the original response. Default TTL is 24 hours (`getDefaultTtl()` in [src/middleware/idempotency.ts](src/middleware/idempotency.ts)). Per-route overrides use `idempotencyMiddleware({ scope, ttlMs })`.
+
+**Eviction** is cooperative and never blocks the request path:
+
+- The in-memory store evicts on read (`get`) and on overflow (`set` when `MAX_MEMORY_STORE_SIZE` is reached) and additionally on a periodic sweep.
+- The Redis store relies on `PEXPIRE` for self-eviction; the sweeper does not write to Redis.
+- A background sweeper (`IdempotencySweeper`) runs at `IDEMPOTENCY_SWEEP_INTERVAL_MS` (default 60s, hard floor 1s) and emits the metrics below.
+- The sweeper is `unref`'d: it never blocks process exit and is stopped cleanly during graceful shutdown.
+- A single Redis blip does not stop the sweeper — `runOnce()` swallows store errors, increments `idempotency_sweep_runs_total{outcome="error"}`, and the next cycle resumes once ioredis reconnects.
+
+**Metrics for storage pressure** (see [src/metrics.ts](src/metrics.ts)):
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `idempotency_keys_count` | gauge | `backend` (`memory`/`redis`) | Current number of live keys in the store. Driven from `Map.size` (memory) or a `SCAN MATCH idempotency:*` walk (redis). |
+| `idempotency_evictions_total` | counter | `backend`, `reason` (`expired`/`overflow`/`manual`) | Total keys removed. `expired` = TTL sweep, `overflow` = capacity prune in `set`, `manual` = explicit `delete`. |
+| `idempotency_sweep_runs_total` | counter | `backend`, `outcome` (`ok`/`error`) | Sweeper cycles executed; `outcome="error"` indicates a transient store failure. |
+
+Tune the TTL (`ttlMs` per route) or the sweep interval (`IDEMPOTENCY_SWEEP_INTERVAL_MS`) so the gauge plateaus instead of climbing — a continuously-rising gauge signals either a leak in `set()` or a too-long TTL.
+
 Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP traces endpoint, such as `http://localhost:4318/v1/traces`, to initialize the OpenTelemetry Node SDK during app startup. The request logger creates one server span per HTTP request and Soroban RPC retries create child client spans, so slow attestation requests can be correlated with individual blockchain attempts.
 
 Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.

@@ -14,7 +14,7 @@
  */
 
 import 'dotenv/config';
-import { startServer } from './app.js';
+import { startServer, stopIdempotencySweeper } from './app.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
@@ -64,7 +64,23 @@ async function bootstrap(): Promise<void> {
 
   const shutdown = createShutdownOrchestrator({
     pool,
-    onCleanup: kafkaConsumer ? () => kafkaConsumer.stop() : undefined,
+    onCleanup: async () => {
+      if (kafkaConsumer) {
+        try {
+          await kafkaConsumer.stop();
+        } catch (err) {
+          console.warn(`[Shutdown] Kafka consumer stop error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      // Stop the cooperative idempotency sweeper. The handle is
+      // already cleared on the first successful stop, so re-invocation
+      // (e.g. via repeated SIGINT) is a no-op.
+      try {
+        await stopIdempotencySweeper();
+      } catch (err) {
+        console.warn(`[Shutdown] Idempotency sweeper stop error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
   });
   shutdown.register(server);
 
