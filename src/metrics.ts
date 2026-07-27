@@ -71,3 +71,40 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Batch job metrics.
+ *
+ * Batch jobs (see `src/jobs/`) are short-lived: the process that runs them
+ * can exit before Prometheus's next scrape, silently losing these metrics.
+ * `src/jobs/pushgatewayClient.ts` pushes them to a Pushgateway at job
+ * completion instead of relying on a pull-based scrape.
+ */
+export const jobDurationSeconds = new Histogram({
+  name: "job_duration_seconds",
+  help: "Duration of a batch job run in seconds",
+  labelNames: ["job"] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+  registers: [metricsRegistry],
+});
+
+export const jobRunsTotal = new Counter({
+  name: "job_runs_total",
+  help: "Total number of batch job runs, by outcome",
+  labelNames: ["job", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+export const jobItemsProcessedTotal = new Counter({
+  name: "job_items_processed_total",
+  help: "Total number of items processed across batch job runs",
+  labelNames: ["job"] as const,
+  registers: [metricsRegistry],
+});
+
+export const jobLastRunTimestamp = new Gauge({
+  name: "job_last_run_timestamp_seconds",
+  help: "Unix timestamp (seconds) of the last completed batch job run",
+  labelNames: ["job"] as const,
+  registers: [metricsRegistry],
+});
