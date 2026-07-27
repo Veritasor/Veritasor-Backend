@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../utils/logger.js";
 import { rateLimitRejections } from "../metrics.js";
-import { getRedisClient, hashTag } from "../redis.js";
+import { getRedisClient, hashTag, redisCircuitBreaker } from "../redis.js";
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
@@ -74,7 +74,7 @@ export class RedisStore implements RateLimitStore {
     const now = Date.now();
 
     // ioredis eval: (script, numkeys, ...keys, ...args)
-    const result = await (this.client as any).eval(
+    const result = await redisCircuitBreaker.execute(() => (this.client as any).eval(
       `local current = redis.call('INCR', KEYS[1])
        if current == 1 then
          redis.call('PEXPIRE', KEYS[1], ARGV[1])
@@ -83,7 +83,7 @@ export class RedisStore implements RateLimitStore {
       1,           // numkeys
       key,         // KEYS[1]
       windowMs     // ARGV[1]
-    ) as [number, number];
+    )) as [number, number];
 
     const [count, pttl] = result;
     const remainingTtl = pttl > 0 ? pttl : windowMs;

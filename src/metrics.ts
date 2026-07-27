@@ -71,3 +71,15 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const redisCircuitBreakerState = new Gauge({
+  name: "redis_circuit_breaker_state",
+  help: "Current state of the Redis circuit breaker (0=closed, 1=open, 2=half-open)",
+  registers: [metricsRegistry],
+});
+
+export const redisCircuitBreakerFailuresTotal = new Counter({
+  name: "redis_circuit_breaker_failures_total",
+  help: "Total number of failed operations observed by the Redis circuit breaker",
+  registers: [metricsRegistry],
+});

@@ -23,6 +23,7 @@ import {
   idempotencyKeysCount,
   idempotencySweepRunsTotal,
 } from '../metrics.js';
+import { redisCircuitBreaker } from '../redis.js';
 
 // ============================================================================
 // Constants
@@ -179,7 +180,10 @@ export class RedisIdempotencyStore implements IdempotencyStore {
   ) {}
 
   async get(key: string): Promise<IdempotencyEntry | undefined> {
-    const raw = await this.client.get(key);
+    const raw = await redisCircuitBreaker.execute(
+      () => this.client.get(key),
+      () => null // Fallback to cache miss on breaker open
+    );
     if (!raw) return undefined;
     try {
       return JSON.parse(raw) as IdempotencyEntry;
@@ -189,11 +193,17 @@ export class RedisIdempotencyStore implements IdempotencyStore {
   }
 
   async set(key: string, entry: IdempotencyEntry, ttlMs: number): Promise<void> {
-    await this.client.set(key, JSON.stringify(entry), 'PX', ttlMs);
+    await redisCircuitBreaker.execute(
+      () => this.client.set(key, JSON.stringify(entry), 'PX', ttlMs),
+      () => {} // Fallback to no-op
+    );
   }
 
   async delete(key: string): Promise<void> {
-    await this.client.del(key);
+    await redisCircuitBreaker.execute(
+      () => this.client.del(key),
+      () => {} // Fallback to no-op
+    );
   }
 
   /**
@@ -227,9 +237,10 @@ export class RedisIdempotencyStore implements IdempotencyStore {
 
     do {
       // ioredis signature: scan(cursor, 'MATCH', pattern, 'COUNT', count)
-      const result = (await this.client.scan(cursor, 'MATCH', match, 'COUNT', count)) as
-        | [string | number, string[]]
-        | undefined;
+      const result = await redisCircuitBreaker.execute(
+        () => this.client.scan!(cursor, 'MATCH', match, 'COUNT', count),
+        () => undefined // Fallback to undefined on breaker open
+      ) as [string | number, string[]] | undefined;
 
       if (!result || !Array.isArray(result)) {
         break;
