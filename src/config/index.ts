@@ -237,6 +237,14 @@ export const config = {
   secretLoader: {
     source: parsedEnv.SECRET_LOADER,
     filePath: parsedEnv.SECRET_FILE_PATH,
+    /**
+     * When `source` is `"vault"`, `VaultAdapter` (src/utils/secret-loader.ts)
+     * auto-renews any renewable dynamic-secret lease Vault returns at 70% of
+     * its `lease_duration` (with jitter), and falls back to a full reload —
+     * rotating in-memory secrets from a fresh lease — if Vault denies
+     * renewal. See `vault_lease_renewal_total` / `vault_lease_seconds_remaining`
+     * in src/metrics.ts for observability into this.
+     */
     vault: {
       baseUrl: parsedEnv.VAULT_BASE_URL,
       secretPath: parsedEnv.VAULT_SECRET_PATH,

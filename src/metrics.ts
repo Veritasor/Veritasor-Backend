@@ -71,3 +71,33 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Vault dynamic-secret lease renewal metrics.
+ *
+ * See `VaultAdapter` in `src/utils/secret-loader.ts`: dynamic Vault secrets
+ * carry a time-bounded lease that must be renewed before it expires, or the
+ * secret silently stops working. `outcome` is one of "success" (lease
+ * extended), "denied" (Vault refused renewal; a full secret reload was
+ * attempted as fallback), or "error" (the renewal request itself failed,
+ * e.g. Vault unreachable).
+ */
+export const vaultLeaseRenewalTotal = new Counter({
+  name: "vault_lease_renewal_total",
+  help: "Total number of Vault dynamic-secret lease renewal attempts, by outcome",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+export const vaultLeaseRenewalDurationSeconds = new Histogram({
+  name: "vault_lease_renewal_duration_seconds",
+  help: "Duration of a Vault lease renewal HTTP call in seconds",
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  registers: [metricsRegistry],
+});
+
+export const vaultLeaseSecondsRemaining = new Gauge({
+  name: "vault_lease_seconds_remaining",
+  help: "Seconds remaining on the current Vault dynamic-secret lease as of the last renewal or load",
+  registers: [metricsRegistry],
+});
