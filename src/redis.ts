@@ -24,6 +24,7 @@ import { logger } from "./utils/logger.js";
 export type RedisClient = Redis | Cluster;
 
 let _client: RedisClient | null = null;
+let _readonlyClient: RedisClient | null = null;
 
 /**
  * Parse REDIS_CLUSTER_NODES into the array ioredis Cluster expects.
@@ -79,10 +80,40 @@ export function getRedisClient(): RedisClient {
 }
 
 /**
+ * Build and cache a readonly Redis / Cluster client (routes reads to replicas in cluster mode).
+ */
+export function getReadonlyRedisClient(): RedisClient {
+  if (_readonlyClient) return _readonlyClient;
+
+  const clusterNodes = process.env.REDIS_CLUSTER_NODES;
+  const redisUrl = process.env.REDIS_URL;
+
+  if (clusterNodes) {
+    const nodes = parseClusterNodes(clusterNodes);
+    _readonlyClient = new Cluster(nodes, {
+      redisOptions: { tls: process.env.REDIS_TLS === "true" ? {} : undefined },
+      enableReadyCheck: true,
+      clusterRetryStrategy: (times) => Math.min(times * 100, 2000),
+      scaleReads: "slave",
+    });
+    (_readonlyClient as RedisClient).on("error", (err: Error) => logger.error("[redis] readonly client error", err));
+  } else if (redisUrl) {
+    // Single node Redis doesn't have a cluster topology to route to replicas automatically
+    // via scaleReads, so fallback to the primary client.
+    _readonlyClient = getRedisClient();
+  } else {
+    throw new Error("No Redis configuration: set REDIS_URL or REDIS_CLUSTER_NODES");
+  }
+
+  return _readonlyClient as RedisClient;
+}
+
+/**
  * Reset the cached client (test helper — do not use in production code).
  */
 export function resetRedisClient(): void {
   _client = null;
+  _readonlyClient = null;
 }
 
 /**
