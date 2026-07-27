@@ -57,7 +57,7 @@
     "@types/pg": "^8.11.6",
     "@types/supertest": "^6.0.3",
     "@types/ws": "8.5.13",
-    "@vitest/coverage-v8": "^1.6.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.15.0",
     "fast-check": "^4.6.0",
     "jest": "^30.2.0",

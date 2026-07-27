@@ -33,6 +33,8 @@ export const envSchema = z.object({
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
+  OUTBOUND_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
+  OUTBOUND_RETRY_BUDGET_WINDOW_MS: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -249,5 +251,19 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+  },
+  integrations: {
+    retryBudget: {
+      maxRetries: parsePositiveIntEnv(
+        "OUTBOUND_RETRY_BUDGET_MAX_RETRIES",
+        parsedEnv.OUTBOUND_RETRY_BUDGET_MAX_RETRIES,
+        50,
+      ),
+      windowMs: parsePositiveIntEnv(
+        "OUTBOUND_RETRY_BUDGET_WINDOW_MS",
+        parsedEnv.OUTBOUND_RETRY_BUDGET_WINDOW_MS,
+        60_000,
+      ),
+    },
   },
 } as const;

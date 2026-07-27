@@ -71,3 +71,24 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const integrationRetryTotal = new Counter({
+  name: "integration_retry_total",
+  help: "Total number of outbound integration retry attempts",
+  labelNames: ["provider", "operation"] as const,
+  registers: [metricsRegistry],
+});
+
+export const integrationRetryBudgetExhaustedTotal = new Counter({
+  name: "integration_retry_budget_exhausted_total",
+  help: "Total number of outbound integration retry attempts refused because global retry budget was exhausted",
+  labelNames: ["provider", "operation"] as const,
+  registers: [metricsRegistry],
+});
+
+export const integrationRetryBudgetRemaining = new Gauge({
+  name: "integration_retry_budget_remaining",
+  help: "Current remaining global outbound retry budget",
+  registers: [metricsRegistry],
+});
+
