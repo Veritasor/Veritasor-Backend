@@ -71,3 +71,10 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const webhookDlqOldestEntryAge = new Gauge({
+  name: "webhook_dlq_oldest_entry_age_seconds",
+  help: "Age of the oldest unprocessed webhook dead-letter queue entry in seconds",
+  labelNames: ["provider"] as const,
+  registers: [metricsRegistry],
+});
