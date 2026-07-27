@@ -71,3 +71,10 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const idempotencyBatchSize = new Histogram({
+  name: "idempotency_batch_size",
+  help: "Size of idempotency lookup batches",
+  buckets: [1, 5, 10, 20, 50, 100],
+  registers: [metricsRegistry],
+});
