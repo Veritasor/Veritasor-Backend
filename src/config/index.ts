@@ -16,6 +16,7 @@ export const envSchema = z.object({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
   }).url("DATABASE_URL must be a valid URL"),
+  DATABASE_SESSION_URL: z.string().url("DATABASE_SESSION_URL must be a valid URL").optional(),
   PGPOOL_MAX: z.string().optional(),
   PG_IDLE_TIMEOUT_MS: z.string().optional(),
   PG_CONN_TIMEOUT_MS: z.string().optional(),
@@ -160,6 +161,7 @@ export const config = {
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {
     url: parsedEnv.DATABASE_URL,
+    sessionUrl: parsedEnv.DATABASE_SESSION_URL || parsedEnv.DATABASE_URL,
     poolMax: parsePositiveIntEnv("PGPOOL_MAX", parsedEnv.PGPOOL_MAX, 10),
     idleTimeoutMs: parsePositiveIntEnv("PG_IDLE_TIMEOUT_MS", parsedEnv.PG_IDLE_TIMEOUT_MS, 30_000),
     connectionTimeoutMs: parsePositiveIntEnv("PG_CONN_TIMEOUT_MS", parsedEnv.PG_CONN_TIMEOUT_MS, 2_000),

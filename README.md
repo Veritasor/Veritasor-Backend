@@ -236,6 +236,8 @@ Optional `.env`:
 ```
 PORT=3000
 DATABASE_URL=postgresql://user:password@localhost:5432/veritasor
+# Dedicated URL for session-mode operations (LISTEN/NOTIFY). Falls back to DATABASE_URL if unset.
+# DATABASE_SESSION_URL=postgresql://user:password@localhost:5432/veritasor
 ```
 
 ## Merging to remote
