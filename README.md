@@ -229,6 +229,20 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/dbname npx tsx src/db/migrate
 
 Requires Node 18+ and a running PostgreSQL instance.
 
+### Migration lock / statement timeouts
+
+Each migration transaction sets `SET LOCAL lock_timeout` and `SET LOCAL statement_timeout` so long-running DDL cannot hold locks and stall traffic. Defaults: **5s** lock wait (`MIGRATION_LOCK_TIMEOUT_MS`) and **60s** statement budget (`MIGRATION_STATEMENT_TIMEOUT_MS`). On breach the runner rolls back, emits a `migration_timeout_breach` audit event, and throws `MigrationTimeoutError`.
+
+Per-file overrides (leading SQL comments):
+
+```sql
+-- @lock_timeout_ms 5000
+-- @statement_timeout_ms 0
+CREATE INDEX idx_big ON large_table (col);
+```
+
+Use `statement_timeout_ms 0` (or a higher value) for long index builds while keeping a tight lock timeout. Full details: [docs/migration-timeouts.md](docs/migration-timeouts.md).
+
 ## Environment
 
 Optional `.env`:
@@ -236,6 +250,8 @@ Optional `.env`:
 ```
 PORT=3000
 DATABASE_URL=postgresql://user:password@localhost:5432/veritasor
+# MIGRATION_LOCK_TIMEOUT_MS=5000
+# MIGRATION_STATEMENT_TIMEOUT_MS=60000
 ```
 
 ## Merging to remote
