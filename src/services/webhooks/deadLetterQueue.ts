@@ -4,6 +4,98 @@ import { webhookDlqOldestEntryAge } from '../../metrics.js'
 
 export const MAX_PAYLOAD_SIZE = 100 * 1024 // 100KB
 
+export interface DlqBackpressureState {
+  tokens: number;
+  pauseUntil: number;
+}
+
+const backpressureMap = new Map<string, DlqBackpressureState>();
+
+export function getBackpressureState(provider: string): DlqBackpressureState {
+  let state = backpressureMap.get(provider);
+  if (!state) {
+    state = { tokens: 100, pauseUntil: 0 };
+    backpressureMap.set(provider, state);
+  }
+  return state;
+}
+
+export function updateRateLimitFromHeaders(
+  provider: string,
+  headers: Record<string, string>,
+  statusCode: number
+): void {
+  const state = getBackpressureState(provider);
+  
+  const getHeader = (name: string): string | null => {
+    const key = Object.keys(headers).find(k => k.toLowerCase() === name.toLowerCase());
+    return key ? headers[key] : null;
+  }
+
+  const retryAfter = getHeader('retry-after');
+  if (statusCode === 429 && retryAfter) {
+    let delayMs = 0;
+    if (!isNaN(Number(retryAfter))) {
+      delayMs = Number(retryAfter) * 1000;
+    } else {
+      const date = new Date(retryAfter).getTime();
+      if (!isNaN(date)) {
+        delayMs = Math.max(0, date - Date.now());
+      }
+    }
+    if (delayMs > 0) {
+      state.pauseUntil = Date.now() + delayMs;
+      state.tokens = 0;
+      return;
+    }
+  }
+
+  if (statusCode === 429) {
+    state.pauseUntil = Date.now() + 60000; // Default 1 min pause
+    state.tokens = 0;
+    return;
+  }
+
+  const remaining = getHeader('x-ratelimit-remaining') || getHeader('ratelimit-remaining');
+  if (remaining) {
+    const r = parseInt(remaining, 10);
+    if (!isNaN(r)) {
+      state.tokens = r;
+      if (r <= 0) {
+        const reset = getHeader('x-ratelimit-reset') || getHeader('ratelimit-reset');
+        if (reset) {
+          const resetTime = parseInt(reset, 10);
+          if (!isNaN(resetTime)) {
+            const resetMs = resetTime < 1e10 ? resetTime * 1000 : resetTime;
+            state.pauseUntil = resetMs;
+          }
+        }
+      }
+    }
+  }
+}
+
+export async function acquireReplayPermit(provider: string): Promise<void> {
+  const state = getBackpressureState(provider);
+
+  while (true) {
+    const now = Date.now();
+    
+    if (now < state.pauseUntil) {
+      const delay = state.pauseUntil - now;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      continue;
+    }
+
+    if (state.tokens <= 0) {
+      state.tokens = 1; 
+    }
+
+    state.tokens--;
+    return;
+  }
+}
+
 export function computePayloadHash(payload: any): string {
   const rawString = typeof payload === 'string' ? payload : JSON.stringify(payload)
   
