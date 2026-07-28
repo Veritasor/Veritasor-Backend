@@ -12,6 +12,7 @@ vi.mock('../../../src/services/webhooks/deadLetterQueue.js', () => ({
   listQuarantinedLetters: vi.fn(),
   releaseQuarantinedLetter: vi.fn(),
   purgeQuarantinedLetter: vi.fn(),
+  listDeadLetterShards: vi.fn(),
 }))
 
 vi.mock('../../../src/services/webhooks/razorpayHandler.js', () => ({
@@ -31,6 +32,7 @@ import {
   listQuarantinedLetters,
   releaseQuarantinedLetter,
   purgeQuarantinedLetter,
+  listDeadLetterShards,
 } from '../../../src/services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../../../src/services/webhooks/razorpayHandler.js'
 
@@ -218,14 +220,25 @@ describe('Admin Webhook Replay and Quarantine Routes', () => {
 
   describe('Quarantine Admin Endpoints', () => {
     it('GET /api/v1/admin/webhooks/quarantine returns list of quarantined entries', async () => {
-      const mockList = [{ provider: 'razorpay', event_id: 'evt_q1', fingerprint: 'fp1' }]
+      const mockList = [{ provider: 'razorpay', integration: 'razorpay', event_id: 'evt_q1', fingerprint: 'fp1' }]
       vi.mocked(listQuarantinedLetters).mockResolvedValueOnce(mockList as any)
 
-      const response = await request(app).get('/api/v1/admin/webhooks/quarantine?provider=razorpay')
+      const response = await request(app).get('/api/v1/admin/webhooks/quarantine?provider=razorpay&integration=razorpay')
 
       expect(response.status).toBe(200)
       expect(response.body).toEqual({ data: mockList })
-      expect(listQuarantinedLetters).toHaveBeenCalledWith('razorpay')
+      expect(listQuarantinedLetters).toHaveBeenCalledWith('razorpay', 'razorpay')
+    })
+
+    it('GET /api/v1/admin/webhooks/shards returns DLQ shard counts', async () => {
+      const mockShards = [{ integration: 'razorpay', count: 10 }, { integration: 'unknown', count: 1 }]
+      vi.mocked(listDeadLetterShards).mockResolvedValueOnce(mockShards as any)
+
+      const response = await request(app).get('/api/v1/admin/webhooks/shards')
+
+      expect(response.status).toBe(200)
+      expect(response.body).toEqual({ data: mockShards })
+      expect(listDeadLetterShards).toHaveBeenCalled()
     })
 
     it('POST /api/v1/admin/webhooks/quarantine/release releases quarantined entry', async () => {

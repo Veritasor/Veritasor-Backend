@@ -11,9 +11,14 @@ import {
   computePayloadHash,
   computeFailureFingerprint,
   resolveFingerprintCollision,
+  resolveIntegrationShard,
   saveDeadLetter,
   getDeadLetter,
   deleteDeadLetter,
+  getDeadLettersByShard,
+  listDeadLetterShards,
+  DLQShardWorker,
+  createDLQShardWorker,
   isQuarantined,
   getQuarantinedLetter,
   listQuarantinedLetters,
@@ -22,6 +27,7 @@ import {
   getFingerprintCount,
   MAX_PAYLOAD_SIZE,
   DEFAULT_QUARANTINE_THRESHOLD,
+  UNKNOWN_INTEGRATION_SHARD,
 } from '../../../../src/services/webhooks/deadLetterQueue.js'
 
 describe('deadLetterQueue', () => {
@@ -29,6 +35,21 @@ describe('deadLetterQueue', () => {
 
   beforeEach(() => {
     mockQuery.mockReset()
+  })
+
+  describe('resolveIntegrationShard', () => {
+    it('returns normalized integration when integration string is provided', () => {
+      expect(resolveIntegrationShard('razorpay', 'Shopify-Store')).toBe('shopify-store')
+    })
+
+    it('falls back to provider when integration is not provided', () => {
+      expect(resolveIntegrationShard('RazorPay')).toBe('razorpay')
+    })
+
+    it('falls back to unknown integration shard when provider and integration are missing or empty', () => {
+      expect(resolveIntegrationShard('', '')).toBe(UNKNOWN_INTEGRATION_SHARD)
+      expect(resolveIntegrationShard(undefined, undefined)).toBe(UNKNOWN_INTEGRATION_SHARD)
+    })
   })
 
   describe('computePayloadHash', () => {
@@ -81,7 +102,28 @@ describe('deadLetterQueue', () => {
   })
 
   describe('saveDeadLetter', () => {
-    it('saves entry to webhook_dead_letters when under threshold', async () => {
+    it('saves entry to webhook_dead_letters with integration shard when under threshold', async () => {
+      mockQuery.mockResolvedValue({ rowCount: 0, rows: [] } as any)
+      const payload = { event: 'test' }
+      const error = new Error('Some database failure')
+
+      const result = await saveDeadLetter('razorpay', 'evt_123', payload, error, DEFAULT_QUARANTINE_THRESHOLD, 'custom_integration')
+
+      expect(result.status).toBe('saved')
+      expect(result.integration).toBe('custom_integration')
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO webhook_dead_letters'),
+        [
+          'razorpay',
+          'custom_integration',
+          'evt_123',
+          computePayloadHash(payload),
+          'Some database failure',
+        ]
+      )
+    })
+
+    it('falls back to provider as shard when integration is omitted', async () => {
       mockQuery.mockResolvedValue({ rowCount: 0, rows: [] } as any)
       const payload = { event: 'test' }
       const error = new Error('Some database failure')
@@ -89,15 +131,28 @@ describe('deadLetterQueue', () => {
       const result = await saveDeadLetter('razorpay', 'evt_123', payload, error)
 
       expect(result.status).toBe('saved')
+      expect(result.integration).toBe('razorpay')
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO webhook_dead_letters'),
         [
+          'razorpay',
           'razorpay',
           'evt_123',
           computePayloadHash(payload),
           'Some database failure',
         ]
       )
+    })
+
+    it('falls back to unknown integration shard when provider is empty', async () => {
+      mockQuery.mockResolvedValue({ rowCount: 0, rows: [] } as any)
+      const payload = { event: 'test' }
+      const error = new Error('Some database failure')
+
+      const result = await saveDeadLetter('', 'evt_123', payload, error)
+
+      expect(result.status).toBe('saved')
+      expect(result.integration).toBe(UNKNOWN_INTEGRATION_SHARD)
     })
 
     it('handles non-Error throwables gracefully', async () => {
@@ -109,6 +164,7 @@ describe('deadLetterQueue', () => {
         expect.stringContaining('INSERT INTO webhook_dead_letters'),
         [
           'razorpay',
+          'razorpay',
           'evt_123',
           expect.any(String),
           'string error',
@@ -116,8 +172,7 @@ describe('deadLetterQueue', () => {
       )
     })
 
-    it('quarantines malformed payload when threshold is reached', async () => {
-      // Return 2 existing attempts so current + 1 = 3 >= threshold (3)
+    it('quarantines malformed payload with shard when threshold is reached', async () => {
       mockQuery.mockImplementation(async (query: string) => {
         if (query.includes('webhook_dead_letters')) {
           if (query.startsWith('SELECT')) {
@@ -130,13 +185,14 @@ describe('deadLetterQueue', () => {
       const payload = { event: 'test' }
       const error = new Error('Repeated poison pill')
 
-      const result = await saveDeadLetter('razorpay', 'evt_123', payload, error, 3)
+      const result = await saveDeadLetter('razorpay', 'evt_123', payload, error, 3, 'razorpay_shard')
 
       expect(result.status).toBe('quarantined')
       expect(result.attemptCount).toBe(3)
+      expect(result.integration).toBe('razorpay_shard')
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO webhook_quarantine'),
-        expect.arrayContaining(['razorpay', 'evt_123'])
+        expect.arrayContaining(['razorpay', 'razorpay_shard', 'evt_123'])
       )
     })
 
@@ -144,7 +200,6 @@ describe('deadLetterQueue', () => {
       mockQuery.mockImplementation(async (query: string) => {
         if (query.includes('webhook_failure_fingerprints')) {
           if (query.startsWith('SELECT') && !query.includes('WHERE fingerprint = $1 AND')) {
-            // Simulate existing collision with a different payload_hash
             return { rowCount: 1, rows: [{ payload_hash: 'different_hash', failure_count: 5 }] } as any
           }
         }
@@ -170,7 +225,7 @@ describe('deadLetterQueue', () => {
     })
 
     it('returns entry details if found', async () => {
-      const mockRow = { payload_hash: 'hash123', attempt_count: 1 }
+      const mockRow = { provider: 'razorpay', integration: 'razorpay', event_id: 'evt_123', payload_hash: 'hash123', attempt_count: 1 }
       mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [mockRow] } as any)
       const result = await getDeadLetter('razorpay', 'evt_123')
       expect(result).toEqual(mockRow)
@@ -188,6 +243,82 @@ describe('deadLetterQueue', () => {
     })
   })
 
+  describe('Sharding & Worker functions', () => {
+    it('getDeadLettersByShard queries dead letters by integration shard', async () => {
+      const mockRows = [{ provider: 'razorpay', integration: 'razorpay', event_id: 'evt_1' }]
+      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: mockRows } as any)
+
+      const entries = await getDeadLettersByShard('razorpay', 10)
+      expect(entries).toEqual(mockRows)
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('WHERE integration = $1'),
+        ['razorpay', 10]
+      )
+    })
+
+    it('listDeadLetterShards returns aggregated shard stats', async () => {
+      const mockShards = [{ integration: 'razorpay', count: 5 }, { integration: 'unknown', count: 2 }]
+      mockQuery.mockResolvedValueOnce({ rowCount: 2, rows: mockShards } as any)
+
+      const shards = await listDeadLetterShards()
+      expect(shards).toEqual(mockShards)
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('GROUP BY integration')
+      )
+    })
+
+    it('DLQShardWorker processes shard entries independently and deletes succeeded entries', async () => {
+      const mockEntries = [
+        { provider: 'razorpay', integration: 'razorpay', event_id: 'evt_success', payload_hash: 'h1', error_code: 'e1', attempt_count: 1 },
+        { provider: 'razorpay', integration: 'razorpay', event_id: 'evt_fail', payload_hash: 'h2', error_code: 'e2', attempt_count: 1 },
+      ]
+
+      mockQuery.mockImplementation(async (query: string, params?: any[]) => {
+        if (query.includes('WHERE integration = $1')) {
+          return { rowCount: 2, rows: mockEntries } as any
+        }
+        return { rowCount: 1, rows: [] } as any
+      })
+
+      const handler = vi.fn().mockImplementation(async (entry) => {
+        return entry.event_id === 'evt_success'
+      })
+
+      const worker = createDLQShardWorker('razorpay', handler)
+      expect(worker.integration).toBe('razorpay')
+
+      const res = await worker.processBatch()
+
+      expect(res.processed).toBe(2)
+      expect(res.succeeded).toBe(1)
+      expect(res.failed).toBe(1)
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('DELETE FROM webhook_dead_letters WHERE provider = $1 AND event_id = $2'),
+        ['razorpay', 'evt_success']
+      )
+    })
+
+    it('DLQShardWorker handles unknown integration fallback shard', async () => {
+      const mockEntries = [
+        { provider: 'unknown', integration: 'unknown', event_id: 'evt_unk', payload_hash: 'h1', error_code: 'e1', attempt_count: 1 },
+      ]
+      mockQuery.mockImplementation(async (query: string) => {
+        if (query.includes('WHERE integration = $1')) {
+          return { rowCount: 1, rows: mockEntries } as any
+        }
+        return { rowCount: 1, rows: [] } as any
+      })
+
+      const handler = vi.fn().mockResolvedValue(true)
+      const worker = new DLQShardWorker('', handler)
+      expect(worker.integration).toBe(UNKNOWN_INTEGRATION_SHARD)
+
+      const res = await worker.processBatch()
+      expect(res.processed).toBe(1)
+      expect(res.succeeded).toBe(1)
+    })
+  })
+
   describe('quarantine helper functions', () => {
     it('isQuarantined returns true when entry exists in quarantine', async () => {
       mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ 1: 1 }] } as any)
@@ -202,28 +333,31 @@ describe('deadLetterQueue', () => {
     })
 
     it('getQuarantinedLetter returns item if found', async () => {
-      const mockQuarantineItem = { provider: 'razorpay', event_id: 'evt_123', fingerprint: 'fp123' }
+      const mockQuarantineItem = { provider: 'razorpay', integration: 'razorpay', event_id: 'evt_123', fingerprint: 'fp123' }
       mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [mockQuarantineItem] } as any)
       const res = await getQuarantinedLetter('razorpay', 'evt_123')
       expect(res).toEqual(mockQuarantineItem)
     })
 
-    it('listQuarantinedLetters queries with or without provider filter', async () => {
+    it('listQuarantinedLetters queries with or without provider or integration filter', async () => {
       mockQuery.mockResolvedValue({ rowCount: 1, rows: [{ id: 1 }] } as any)
       
       const all = await listQuarantinedLetters()
       expect(all).toHaveLength(1)
 
-      const filtered = await listQuarantinedLetters('razorpay')
-      expect(filtered).toHaveLength(1)
+      const filteredProvider = await listQuarantinedLetters('razorpay')
+      expect(filteredProvider).toHaveLength(1)
+
+      const filteredIntegration = await listQuarantinedLetters(undefined, 'razorpay_integration')
+      expect(filteredIntegration).toHaveLength(1)
       expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE provider = $1'),
-        ['razorpay']
+        expect.stringContaining('WHERE integration = $1'),
+        ['razorpay_integration']
       )
     })
 
     it('releaseQuarantinedLetter releases and deletes fingerprint entry', async () => {
-      const mockQuarantineItem = { provider: 'razorpay', event_id: 'evt_123', fingerprint: 'fp123' }
+      const mockQuarantineItem = { provider: 'razorpay', integration: 'razorpay', event_id: 'evt_123', fingerprint: 'fp123' }
       mockQuery.mockImplementation(async (query: string) => {
         if (query.includes('webhook_quarantine') && query.startsWith('SELECT')) {
           return { rowCount: 1, rows: [mockQuarantineItem] } as any
