@@ -1,3 +1,4 @@
+import { trace, context, SpanKind, SpanStatusCode, Link } from "@opentelemetry/api";
 import {
   fetchRazorpayRevenue,
   RevenueEntry,
@@ -315,7 +316,7 @@ async function submitToSorobanWithRetry(
  * @security Verified that only the business owner (or authorized user) can submit 
  * attestations for their specific businessId.
  */
-export async function submitAttestation(
+async function doSubmitAttestation(
   userId: string,
   businessId: string,
   period: string,
@@ -401,3 +402,117 @@ export async function submitAttestation(
     );
   }
 }
+
+const tracer = trace.getTracer("veritasor-backend.attestation");
+
+interface EnqueuedAttestation {
+  userId: string;
+  businessId: string;
+  period: string;
+  resolve: (value: { attestationId: string; txHash: string }) => void;
+  reject: (reason?: any) => void;
+  enqueueTime: number;
+  spanContext: any;
+}
+
+class AttestationBatcher {
+  private queue: EnqueuedAttestation[] = [];
+  private flushTimer: NodeJS.Timeout | null = null;
+  private readonly MAX_BATCH_SIZE = 50;
+  private readonly FLUSH_DEADLINE_MS = 5000;
+
+  async submit(userId: string, businessId: string, period: string): Promise<{ attestationId: string; txHash: string }> {
+    return new Promise((resolve, reject) => {
+      tracer.startActiveSpan('queue.enqueue', { kind: SpanKind.INTERNAL }, (span) => {
+        const item: EnqueuedAttestation = {
+          userId,
+          businessId,
+          period,
+          resolve,
+          reject,
+          enqueueTime: Date.now(),
+          spanContext: trace.getSpanContext(context.active())
+        };
+        this.queue.push(item);
+        
+        span.setAttribute('queue.size', this.queue.length);
+        span.end();
+
+        if (this.queue.length >= this.MAX_BATCH_SIZE) {
+          this.flush();
+        } else if (!this.flushTimer) {
+          this.flushTimer = setTimeout(() => this.flush(), this.FLUSH_DEADLINE_MS);
+        }
+      });
+    });
+  }
+
+  private async flush() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    if (this.queue.length === 0) return;
+
+    const batch = this.queue;
+    this.queue = [];
+
+    const links: Link[] = batch
+      .filter(item => item.spanContext)
+      .map(item => ({ context: item.spanContext }));
+
+    await tracer.startActiveSpan('batch.flush', {
+      kind: SpanKind.INTERNAL,
+      links,
+      attributes: {
+        'batch.size': batch.length,
+      }
+    }, async (span) => {
+      try {
+        const promises = batch.map(async (item) => {
+          return tracer.startActiveSpan('queue.dequeue', { kind: SpanKind.INTERNAL }, async (dequeueSpan) => {
+            const waitTime = Date.now() - item.enqueueTime;
+            dequeueSpan.setAttribute('queue.wait_time_ms', waitTime);
+            
+            // Set link to parent span (from enqueue time)
+            if (item.spanContext) {
+              dequeueSpan.addLink({ context: item.spanContext });
+            }
+
+            try {
+              const result = await doSubmitAttestation(item.userId, item.businessId, item.period);
+              dequeueSpan.setStatus({ code: SpanStatusCode.OK });
+              item.resolve(result);
+            } catch (err: any) {
+              dequeueSpan.recordException(err);
+              dequeueSpan.setStatus({ code: SpanStatusCode.ERROR });
+              item.reject(err);
+            } finally {
+              dequeueSpan.end();
+            }
+          });
+        });
+        
+        await Promise.all(promises);
+        span.setStatus({ code: SpanStatusCode.OK });
+      } catch (err: any) {
+        span.recordException(err);
+        span.setStatus({ code: SpanStatusCode.ERROR });
+      } finally {
+        span.end();
+      }
+    });
+  }
+}
+
+const batcher = new AttestationBatcher();
+
+/**
+ * @notice Orchestrates the full attestation submission flow.
+ * @dev Batches submissions into queues and flushes them when the deadline or max size is reached.
+ */
+export async function submitAttestation(userId: string, businessId: string, period: string) {
+  return batcher.submit(userId, businessId, period);
+}
+

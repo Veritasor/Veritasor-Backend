@@ -5,7 +5,8 @@
  */
 
 import { consumeOAuthState } from './store.js'
-import * as IntegrationRepository from '../../../repositories/integration.js'
+import { executeWithRetry } from '../clientWrapper.js'
+import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
 
 export interface CallbackParams {
   code: string
@@ -81,17 +82,27 @@ export async function handleCallback(
   
   let response: Response
   try {
-    response = await fetch('https://connect.stripe.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+    response = await executeWithRetry(
+      () =>
+        fetch('https://connect.stripe.com/oauth/token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: tokenRequestBody.toString(),
+        }),
+      {
+        provider: 'stripe',
+        operation: 'oauth_token',
+        maxRetries: 2,
       },
-      body: tokenRequestBody.toString()
-    })
+    )
   } catch (error) {
     return {
       success: false,
-      error: 'Failed to reach Stripe API'
+      error: error instanceof GlobalRetryBudgetExceededError
+        ? 'Global outbound retry budget exhausted'
+        : 'Failed to reach Stripe API',
     }
   }
   
