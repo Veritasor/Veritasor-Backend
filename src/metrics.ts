@@ -37,6 +37,14 @@ export const rateLimitRejections = new Counter({
   registers: [metricsRegistry],
 });
 
+export const redisClusterRedirectionsTotal = new Counter({
+  name: "redis_cluster_redirections_total",
+  help: "Total number of Redis Cluster MOVED/ASK redirections handled in rateLimiter",
+  labelNames: ["type", "store"] as const,
+  registers: [metricsRegistry],
+});
+
+
 export const sorobanRetryTotal = new Counter({
   name: "soroban_retry_total",
   help: "Total number of Soroban RPC retry attempts",
