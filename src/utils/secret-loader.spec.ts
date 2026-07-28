@@ -8,6 +8,14 @@ import {
   SecretNotFoundError,
   SecretLoadError,
 } from './secret-loader.js'
+import { logger } from './logger.js'
+
+let mockSend: ReturnType<typeof vi.fn>
+
+vi.mock('@aws-sdk/client-secrets-manager', () => ({
+  SecretsManagerClient: vi.fn(function () { return { send: mockSend } }),
+  GetSecretValueCommand: vi.fn(),
+}))
 
 let mockSend: ReturnType<typeof vi.fn>
 let mockAccessSecretVersion: ReturnType<typeof vi.fn>
@@ -200,6 +208,14 @@ describe('SecretLoader', () => {
 
     it('throws when required AWS config is missing', () => {
       expect(() => createSecretLoader({ provider: 'aws' })).toThrow(SecretLoadError)
+    })
+
+    it('accepts awsSecondaryRegion option', () => {
+      expect(() => createSecretLoader({
+        provider: 'aws',
+        awsRegion: 'us-east-1',
+        awsSecondaryRegion: 'us-west-2',
+      })).not.toThrow()
     })
 
     it('throws when required Vault config is missing', () => {

@@ -1,4 +1,4 @@
-import { getRedisClient } from '../../redis.js'
+import { getRedisClient, redisCircuitBreaker } from '../../redis.js'
 import { logger } from '../../utils/logger.js'
 import {
   createDataExport,
@@ -89,7 +89,7 @@ export async function getExportArchive(exportId: string): Promise<Buffer | null>
     const client = getRedisClient()
     const key = `${ARCHIVE_KEY_PREFIX}${exportId}`
 
-    const data = await client.get(key)
+    const data = await redisCircuitBreaker.execute(() => client.get(key))
     if (!data) return null
 
     // Parse the stored export data
@@ -124,11 +124,11 @@ async function processExportAsync(userId: string, exportId: string): Promise<voi
       metadata: exportResult.metadata,
     }
 
-    await client.setex(
+    await redisCircuitBreaker.execute(() => client.setex(
       archiveKey,
       ARCHIVE_TTL_SECONDS,
       JSON.stringify(archiveData)
-    )
+    ))
 
     // Update status to completed with archive size
     await updateDataExportStatus(exportId, 'completed', {
