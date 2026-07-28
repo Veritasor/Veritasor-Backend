@@ -238,3 +238,25 @@ export const redisCircuitBreakerFailuresTotal = new Counter({
   help: "Total number of Redis circuit breaker failures recorded",
   registers: [metricsRegistry],
 });
+
+/**
+ * Webhook secret rotation rollout status.
+ *
+ * - `webhook_secret_rotation_status` (gauge, labels: subscription_id, business_id, status):
+ *   1 = subscription has adopted the latest secret version, 0 = lagging behind.
+ *
+ * Operators can sum or count by `status` to see how many subscriptions are
+ * current vs. lagging, and drill into individual lagging subscriptions by
+ * `subscription_id` / `business_id`.
+ *
+ * Implementation in `src/services/webhooks/secretRotation.ts` — see that
+ * module for the update loop and per-subscription resolution.
+ */
+export const webhookSecretRotationStatus = new Gauge({
+  name: "webhook_secret_rotation_status",
+  help:
+    "Rollout status of webhook secret rotation per subscription " +
+    "(1 = current / 0 = lagging)",
+  labelNames: ["subscription_id", "business_id", "status"] as const,
+  registers: [metricsRegistry],
+});
