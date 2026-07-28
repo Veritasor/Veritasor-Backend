@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+import { withPgBouncerRetry } from './retry.js';
 
 const SLOW_QUERY_MS = Number(process.env.SLOW_QUERY_MS) || 200;
 const EXPLAIN_RATE_LIMIT_MS = Number(process.env.EXPLAIN_RATE_LIMIT_MS) || 1000;
@@ -110,5 +111,25 @@ export const sessionPool = new pg.Pool({
 });
 
 export const db = {
-  query: wrapQuery((text: string, params?: any[]) => pool.query(text, params)),
+  /**
+   * Execute a SQL query against the primary pool.
+   *
+   * Transient PgBouncer disconnects (ECONNRESET, admin_shutdown, etc.) are
+   * transparently retried with full-jitter exponential backoff up to
+   * PGBOUNCER_MAX_RETRIES times (default 3).  Persistent errors and all
+   * query-level errors (constraint violations, auth, etc.) are surfaced
+   * immediately without retrying.
+   *
+   * ⚠ Do NOT call this inside an explicit transaction (`BEGIN` / `COMMIT`)
+   * that you manage yourself — retrying a mid-transaction query after a
+   * disconnect will restart only the single statement, not the whole
+   * transaction, which would leave the connection in an aborted state.
+   * Use pool.connect() + client.query() directly for multi-statement
+   * transactions.
+   */
+  query: (text: string, params?: any[]) =>
+    withPgBouncerRetry(
+      () => wrapQuery((t, p) => pool.query(t, p))(text, params),
+      text.slice(0, 60),
+    ),
 };

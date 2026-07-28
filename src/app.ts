@@ -79,21 +79,6 @@ export async function stopPgBouncerScraperIfNeeded(): Promise<void> {
   pgbouncerScraperTimer = null;
 }
 
-let dlqAgeScannerHandle: DlqAgeScannerHandle | null = null;
-
-export function startDlqAgeScannerIfNeeded(): DlqAgeScannerHandle | null {
-  if (process.env.NODE_ENV === 'test') return null;
-  if (dlqAgeScannerHandle) return dlqAgeScannerHandle;
-  dlqAgeScannerHandle = startDlqAgeScanner();
-  return dlqAgeScannerHandle;
-}
-
-export function stopDlqAgeScanner(): void {
-  if (!dlqAgeScannerHandle) return;
-  dlqAgeScannerHandle.stop();
-  dlqAgeScannerHandle = null;
-}
-
 export const telemetryReady = initializeOpenTelemetry();
 
 // Security middleware to reject prototype pollution attempts
