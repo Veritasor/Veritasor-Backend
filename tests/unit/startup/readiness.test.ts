@@ -6,8 +6,7 @@ vi.mock("../../../src/db/client.js", () => ({
   pool: { query: mockQuery },
 }));
 
-// Import after mocks are set up
-const { checkDatabase, sanitiseDbError } = await import(
+const { checkDatabase, sanitiseDbError, runStartupDependencyReadinessChecks } = await import(
   "../../../src/startup/readiness.js"
 );
 
@@ -69,5 +68,36 @@ describe("sanitiseDbError", () => {
     expect(sanitiseDbError("ECONNREFUSED 127.0.0.1:5432")).toBe(
       "ECONNREFUSED 127.0.0.1:5432",
     );
+  });
+});
+
+describe("runStartupDependencyReadinessChecks mTLS", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("requires SPIFFE trust domain when SPIFFE mTLS is enabled", async () => {
+    process.env.MTLS_ENABLED = "true";
+    process.env.MTLS_SPIFFE_ENABLED = "true";
+    delete process.env.SPIFFE_TRUST_DOMAIN;
+
+    const report = await runStartupDependencyReadinessChecks();
+    const mtlsCheck = report.checks.find((check) => check.dependency === "config/mtls");
+
+    expect(mtlsCheck?.ready).toBe(false);
+    expect(mtlsCheck?.reason).toMatch(/SPIFFE_TRUST_DOMAIN/);
+  });
+
+  it("accepts SPIFFE mTLS configuration with trust domain and unix socket", async () => {
+    process.env.MTLS_ENABLED = "true";
+    process.env.MTLS_SPIFFE_ENABLED = "true";
+    process.env.SPIFFE_TRUST_DOMAIN = "example.org";
+
+    const report = await runStartupDependencyReadinessChecks();
+    const mtlsCheck = report.checks.find((check) => check.dependency === "config/mtls");
+
+    expect(mtlsCheck).toEqual({ dependency: "config/mtls", ready: true });
   });
 });

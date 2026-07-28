@@ -43,6 +43,15 @@ export const envSchema = z.object({
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
   OUTBOUND_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
   OUTBOUND_RETRY_BUDGET_WINDOW_MS: z.string().optional(),
+  MTLS_ENABLED: z.string().optional(),
+  MTLS_CN_ALLOWLIST: z.string().optional(),
+  MTLS_SPIFFE_ID_ALLOWLIST: z.string().optional(),
+  MTLS_CA_PATH: z.string().optional(),
+  MTLS_CERT_PATH: z.string().optional(),
+  MTLS_KEY_PATH: z.string().optional(),
+  MTLS_SPIFFE_ENABLED: z.string().optional(),
+  SPIFFE_TRUST_DOMAIN: z.string().optional(),
+  SPIFFE_WORKLOAD_API_SOCKET: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -176,6 +185,62 @@ export function getAllowedOrigins(): string | string[] {
   }
   return "*";
 }
+
+function parseCsvList(raw: string | undefined): string[] {
+  if (!raw?.trim()) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
+  const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
+  const spiffeEnabled = parseBooleanEnv(
+    "MTLS_SPIFFE_ENABLED",
+    parsedEnv.MTLS_SPIFFE_ENABLED,
+    false,
+  );
+  const trustDomain = parsedEnv.SPIFFE_TRUST_DOMAIN?.trim() ?? "";
+
+  if (enabled && spiffeEnabled && !trustDomain) {
+    throw new ConfigValidationError(
+      "SPIFFE_TRUST_DOMAIN must be set when MTLS_SPIFFE_ENABLED=true",
+    );
+  }
+
+  if (enabled && !spiffeEnabled) {
+    const caPath = parsedEnv.MTLS_CA_PATH?.trim();
+    const certPath = parsedEnv.MTLS_CERT_PATH?.trim();
+    const keyPath = parsedEnv.MTLS_KEY_PATH?.trim();
+    if (!caPath || !certPath || !keyPath) {
+      throw new ConfigValidationError(
+        "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED is not true",
+      );
+    }
+  }
+
+  return {
+    enabled,
+    cnAllowlist: parseCsvList(parsedEnv.MTLS_CN_ALLOWLIST),
+    spiffeIdAllowlist: parseCsvList(parsedEnv.MTLS_SPIFFE_ID_ALLOWLIST),
+    caPath: parsedEnv.MTLS_CA_PATH?.trim(),
+    certPath: parsedEnv.MTLS_CERT_PATH?.trim(),
+    keyPath: parsedEnv.MTLS_KEY_PATH?.trim(),
+    spiffe: {
+      enabled: spiffeEnabled,
+      trustDomain,
+      workloadApiSocket:
+        parsedEnv.SPIFFE_WORKLOAD_API_SOCKET?.trim()
+        ?? "unix:///tmp/spire-agent/public/api.sock",
+      refreshRatio: 0.7,
+    },
+  };
+}
+
+const mtlsConfig = parseMtlsConfig(parsedEnv);
 
 export const config = {
   env: parsedEnv.NODE_ENV,
@@ -341,4 +406,5 @@ export const config = {
       ),
     },
   },
+  mtls: mtlsConfig,
 } as const;

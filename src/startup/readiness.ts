@@ -131,26 +131,56 @@ export async function runStartupDependencyReadinessChecks(): Promise<StartupRead
 /**
  * Validate mTLS configuration.
  *
- * If MTLS_ENABLED=true requires MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH.
+ * When MTLS_SPIFFE_ENABLED=true requires SPIFFE_TRUST_DOMAIN and the Workload
+ * API socket address. Otherwise static MTLS_* paths are required.
  */
-function checkMtlsConfig(isProduction: boolean): DependencyReadinessResult {
-  const mtlsEnabled = process.env.MTLS_ENABLED?.trim().toLowerCase() === "true"
-  
-  if (mtlsEnabled) {
-    const caPath = process.env.MTLS_CA_PATH?.trim()
-    const certPath = process.env.MTLS_CERT_PATH?.trim()
-    const keyPath = process.env.MTLS_KEY_PATH?.trim()
+function checkMtlsConfig(_isProduction: boolean): DependencyReadinessResult {
+  const mtlsEnabled = process.env.MTLS_ENABLED?.trim().toLowerCase() === "true";
+  const spiffeEnabled =
+    process.env.MTLS_SPIFFE_ENABLED?.trim().toLowerCase() === "true";
 
-    if (!caPath || !certPath || !keyPath) {
+  if (!mtlsEnabled) {
+    return { dependency: "config/mtls", ready: true };
+  }
+
+  if (spiffeEnabled) {
+    const trustDomain = process.env.SPIFFE_TRUST_DOMAIN?.trim();
+    const workloadSocket = process.env.SPIFFE_WORKLOAD_API_SOCKET?.trim()
+      ?? "unix:///tmp/spire-agent/public/api.sock";
+
+    if (!trustDomain) {
       return {
         dependency: "config/mtls",
         ready: false,
-        reason: "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true",
-      }
+        reason: "SPIFFE_TRUST_DOMAIN must be set when MTLS_SPIFFE_ENABLED=true",
+      };
     }
+
+    if (!workloadSocket.startsWith("unix:")) {
+      return {
+        dependency: "config/mtls",
+        ready: false,
+        reason: "SPIFFE_WORKLOAD_API_SOCKET must reference a unix domain socket",
+      };
+    }
+
+    return { dependency: "config/mtls", ready: true };
   }
 
-  return { dependency: "config/mtls", ready: true }
+  const caPath = process.env.MTLS_CA_PATH?.trim();
+  const certPath = process.env.MTLS_CERT_PATH?.trim();
+  const keyPath = process.env.MTLS_KEY_PATH?.trim();
+
+  if (!caPath || !certPath || !keyPath) {
+    return {
+      dependency: "config/mtls",
+      ready: false,
+      reason:
+        "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED is not true",
+    };
+  }
+
+  return { dependency: "config/mtls", ready: true };
 }
 
 
