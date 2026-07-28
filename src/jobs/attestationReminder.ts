@@ -1,5 +1,8 @@
 import { businessRepository, Business, ReportingPeriod } from "../repositories/business.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob, type JobOutcome } from "./jobRunner.js";
+
+export const ATTESTATION_REMINDER_JOB_NAME = "attestation_reminder";
 
 /**
  * Compute the start-of-period (SOW for weekly, SOM for monthly) boundary
@@ -88,27 +91,31 @@ export function shouldSendReminder(business: Business, now: Date): boolean {
  * Designed to be invoked on a frequent cron (e.g. every 5 minutes); the
  * period-alignment logic ensures actual notifications are calendar-aligned.
  */
-export const attestationReminderJob = async (now: Date = new Date()): Promise<void> => {
-  logger.info("Running attestation reminder job...");
+export const attestationReminderJob = async (now: Date = new Date()): Promise<JobOutcome> => {
+  return runInstrumentedJob(ATTESTATION_REMINDER_JOB_NAME, async () => {
+    logger.info("Running attestation reminder job...");
 
-  try {
-    const businesses = await businessRepository.getAll();
-    let reminded = 0;
+    try {
+      const businesses = await businessRepository.getAll();
+      let reminded = 0;
 
-    for (const business of businesses) {
-      if (!shouldSendReminder(business, now)) continue;
+      for (const business of businesses) {
+        if (!shouldSendReminder(business, now)) continue;
 
-      logger.info(`Reminder would be sent for business: ${business.name}`);
-      await businessRepository.setLastReminderSentAt(business.id, now.toISOString());
-      reminded++;
+        logger.info(`Reminder would be sent for business: ${business.name}`);
+        await businessRepository.setLastReminderSentAt(business.id, now.toISOString());
+        reminded++;
+      }
+
+      logger.info(
+        reminded === 0
+          ? "No businesses to remind."
+          : `Reminded ${reminded} business(es).`,
+      );
+      return { itemsProcessed: reminded, success: true };
+    } catch (error) {
+      logger.error("Error running attestation reminder job:", error);
+      return { itemsProcessed: 0, success: false };
     }
-
-    logger.info(
-      reminded === 0
-        ? "No businesses to remind."
-        : `Reminded ${reminded} business(es).`,
-    );
-  } catch (error) {
-    logger.error("Error running attestation reminder job:", error);
-  }
+  });
 };

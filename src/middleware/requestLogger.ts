@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
-import { httpRequestDuration } from "../metrics.js";
+import { observeHttpRequestDuration } from "../metrics.js";
 import { startHttpRequestSpan } from "../tracing.js";
 
 /**
@@ -123,7 +123,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
         const durationSec = sec + nano / 1e9;
 
         const route = (req.route?.path as string | undefined) ?? req.path;
-        httpRequestDuration.observe(
+        observeHttpRequestDuration(
           { method: req.method, route, status_code: String(res.statusCode) },
           durationSec,
         );
