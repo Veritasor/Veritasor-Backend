@@ -1,14 +1,34 @@
 import { Registry, Histogram, Counter, Gauge } from "prom-client";
+import { getActiveTraceExemplarLabels } from "./tracing.js";
 
 export const metricsRegistry = new Registry();
+metricsRegistry.setContentType(Registry.OPENMETRICS_CONTENT_TYPE);
 
 export const httpRequestDuration = new Histogram({
   name: "http_request_duration_seconds",
   help: "HTTP request duration in seconds",
   labelNames: ["method", "route", "status_code"] as const,
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  enableExemplars: true,
   registers: [metricsRegistry],
 });
+
+export function observeHttpRequestDuration(
+  labels: Record<string, string>,
+  durationSec: number,
+): void {
+  const exemplarLabels = getActiveTraceExemplarLabels();
+  if (Object.keys(exemplarLabels).length === 0) {
+    httpRequestDuration.observe({ labels, value: durationSec });
+    return;
+  }
+
+  httpRequestDuration.observe({
+    labels,
+    value: durationSec,
+    exemplarLabels,
+  });
+}
 
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
@@ -69,5 +89,78 @@ export const idempotencySweepRunsTotal = new Counter({
   name: "idempotency_sweep_runs_total",
   help: "Total number of idempotency sweeper cycles executed",
   labelNames: ["backend", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * PgBouncer queue depth and latency metrics.
+ *
+ * Scraped from `SHOW STATS` on the PgBouncer admin database at second granularity.
+ * Key metrics exposed:
+ *
+ * - `pgbouncer_waiting_clients` (gauge, labels: database): clients waiting for a server connection.
+ *   Spikes here precede tail-latency incidents.
+ * - `pgbouncer_avg_wait_time_seconds` (gauge, labels: database): average wait time in seconds.
+ *   Spikes indicate pool saturation.
+ * - `pgbouncer_active_clients` (gauge, labels: database): currently active client connections.
+ * - `pgbouncer_idle_clients` (gauge, labels: database): idle client connections.
+ * - `pgbouncer_server_connections` (gauge, labels: database): active server connections.
+ * - `pgbouncer_avg_query_time_seconds` (gauge, labels: database): average query execution time.
+ * - `pgbouncer_total_requests_total` (counter, labels: database): total client requests.
+ * - `pgbouncer_total_query_time_seconds_total` (counter, labels: database): cumulative query time.
+ */
+export const pgbouncerWaitingClients = new Gauge({
+  name: "pgbouncer_waiting_clients",
+  help: "Number of clients waiting for a server connection in PgBouncer pool",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerAvgWaitTimeSeconds = new Gauge({
+  name: "pgbouncer_avg_wait_time_seconds",
+  help: "Average wait time for a server connection in seconds",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerActiveClients = new Gauge({
+  name: "pgbouncer_active_clients",
+  help: "Number of active client connections in PgBouncer",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerIdleClients = new Gauge({
+  name: "pgbouncer_idle_clients",
+  help: "Number of idle client connections in PgBouncer",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerServerConnections = new Gauge({
+  name: "pgbouncer_server_connections",
+  help: "Number of active server connections in PgBouncer",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerAvgQueryTimeSeconds = new Gauge({
+  name: "pgbouncer_avg_query_time_seconds",
+  help: "Average query execution time in seconds",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerTotalRequestsTotal = new Counter({
+  name: "pgbouncer_total_requests_total",
+  help: "Total number of client requests processed by PgBouncer",
+  labelNames: ["database"] as const,
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerTotalQueryTimeSecondsTotal = new Counter({
+  name: "pgbouncer_total_query_time_seconds_total",
+  help: "Cumulative query execution time in seconds",
+  labelNames: ["database"] as const,
   registers: [metricsRegistry],
 });
