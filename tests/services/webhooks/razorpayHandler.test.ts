@@ -4,8 +4,11 @@ vi.mock('../../../src/services/webhooks/deadLetterQueue.js', () => ({
   saveDeadLetter: vi.fn(),
 }))
 
+import { BackoffError } from '../../../src/utils/backoff.js'
 import { handleRazorpayEvent, RazorpayWebhookError } from '../../../src/services/webhooks/razorpayHandler.js'
 import { saveDeadLetter } from '../../../src/services/webhooks/deadLetterQueue.js'
+
+const NO_RETRY = { maxAttempts: 1 }
 
 const makeEvent = (overrides: any = {}) => ({
   id: 'evt_test_123',
@@ -28,15 +31,15 @@ const makeEvent = (overrides: any = {}) => ({
 describe('handleRazorpayEvent', () => {
   it('processes a valid event on first delivery', async () => {
     const event = makeEvent({ id: 'evt_valid_' + Date.now() })
-    const result = await handleRazorpayEvent(event)
+    const result = await handleRazorpayEvent(event, NO_RETRY)
     expect(result.status).toBe('ok')
   })
 
   it('returns duplicate status on second delivery of same event', async () => {
     const id = 'evt_dup_' + Date.now()
     const event = makeEvent({ id })
-    await handleRazorpayEvent(event)
-    const result = await handleRazorpayEvent(event)
+    await handleRazorpayEvent(event, NO_RETRY)
+    const result = await handleRazorpayEvent(event, NO_RETRY)
     expect(result.status).toBe('duplicate')
     expect(result.message).toContain(id)
   })
@@ -48,7 +51,7 @@ describe('handleRazorpayEvent', () => {
     })
     let error: any
     try {
-      await handleRazorpayEvent(staleEvent)
+      await handleRazorpayEvent(staleEvent, NO_RETRY)
     } catch (e) {
       error = e
     }
@@ -60,15 +63,33 @@ describe('handleRazorpayEvent', () => {
 
   it('handles missing event id by throwing', async () => {
     const badEvent = makeEvent({ id: 'evt_noid_' + Date.now(), event: 'unknown.event' })
-    const result = await handleRazorpayEvent(badEvent)
+    const result = await handleRazorpayEvent(badEvent, NO_RETRY)
     expect(result.status).toBe('ignored')
   })
 
   it('ignores unhandled event types', async () => {
     const event = makeEvent({ id: 'evt_ignored_' + Date.now(), event: 'refund.created' })
-    const result = await handleRazorpayEvent(event)
+    const result = await handleRazorpayEvent(event, NO_RETRY)
     expect(result.status).toBe('ignored')
   })
+
+  it('saves to DLQ after exhausting all retry attempts', async () => {
+    const id = 'evt_retry_exhaust_' + Date.now()
+    const event = makeEvent({
+      id,
+      created_at: Math.floor(Date.now() / 1000) - 600,
+    })
+
+    let error: any
+    try {
+      await handleRazorpayEvent(event, { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2 })
+    } catch (e) {
+      error = e
+    }
+    expect(error).toBeDefined()
+    expect(error).toBeInstanceOf(BackoffError)
+    expect(saveDeadLetter).toHaveBeenCalledWith('razorpay', id, event, expect.any(Error))
+  }, 10000)
 })
 
 // ─── verifyRazorpaySignatureWithRotation unit tests ───────────────────────────

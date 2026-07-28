@@ -28,6 +28,13 @@ export const envSchema = z.object({
   SOROBAN_NETWORK_PASSPHRASE: z.string().default("Test SDF Network ; September 2015"),
   SOROBAN_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
   SOROBAN_REPLAY_MAX_AGE_DAYS: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_MIN_SIZE: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_MAX_SIZE: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SENSITIVITY: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
   SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
   SECRET_FILE_PATH: z.string().optional(),
   VAULT_BASE_URL: z.string().url().optional(),
@@ -112,6 +119,19 @@ function parsePositiveIntEnv(name: string, rawValue: string | undefined, default
   const value = Number.parseInt(rawValue.trim(), 10);
   if (!Number.isInteger(value) || value <= 0) {
     throw new ConfigValidationError(`${name} must be a positive integer`);
+  }
+
+  return value;
+}
+
+function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValue: number, min: number, max: number): number {
+  if (rawValue === undefined) {
+    return defaultValue;
+  }
+
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new ConfigValidationError(`${name} must be a number between ${min} and ${max}`);
   }
 
   return value;
@@ -237,6 +257,51 @@ export const config = {
       parsedEnv.SOROBAN_REPLAY_MAX_AGE_DAYS,
       7,
     ),
+    adaptiveBatch: {
+      minBatchSize: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_MIN_SIZE",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_MIN_SIZE,
+        1,
+      ),
+      maxBatchSize: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_MAX_SIZE",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_MAX_SIZE,
+        100,
+      ),
+      ewmaAlpha: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA,
+        0.3,
+        0.01,
+        1.0,
+      ),
+      feeSpikeMultiplier: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER,
+        2.0,
+        1.0,
+        10.0,
+      ),
+      sensitivity: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SENSITIVITY",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SENSITIVITY,
+        0.5,
+        0.01,
+        2.0,
+      ),
+      volatilityDampening: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING,
+        0.5,
+        0.0,
+        1.0,
+      ),
+      sampleIntervalMs: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS,
+        60_000,
+      ),
+    },
   },
   secretLoader: {
     source: parsedEnv.SECRET_LOADER,
