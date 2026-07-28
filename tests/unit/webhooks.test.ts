@@ -70,4 +70,36 @@ describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
     expect(breaker.getState()).toBe(WebhookCircuitBreakerState.CLOSED);
     expect(breaker.canAttempt()).toBe(true);
   });
+
+  it("persists breaker state across instances for the same endpoint", () => {
+    const storage = new Map<string, unknown>();
+    const persistence = {
+      load: () => Object.fromEntries(storage.entries()),
+      save: (states: Record<string, unknown>) => {
+        storage.clear();
+        Object.entries(states).forEach(([key, value]) => storage.set(key, value));
+      },
+    };
+
+    const breaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "persisted-endpoint",
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      persistence: persistence as never,
+    });
+
+    breaker.recordFailure();
+
+    const restoredBreaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "persisted-endpoint",
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      persistence: persistence as never,
+    });
+
+    expect(restoredBreaker.getState()).toBe(WebhookCircuitBreakerState.OPEN);
+    expect(restoredBreaker.canAttempt()).toBe(false);
+  });
 });

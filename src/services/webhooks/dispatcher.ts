@@ -32,8 +32,8 @@ interface PersistedWebhookCircuitBreakerState {
 }
 
 interface WebhookCircuitBreakerPersistence {
-  load(): PersistedWebhookCircuitBreakerState | null;
-  save(state: PersistedWebhookCircuitBreakerState): void;
+  load(): Record<string, PersistedWebhookCircuitBreakerState>;
+  save(states: Record<string, PersistedWebhookCircuitBreakerState>): void;
 }
 
 export interface WebhookEndpointCircuitBreakerOptions {
@@ -72,29 +72,34 @@ function validatePositiveInteger(value: number, min: number, max: number, name: 
 class FileWebhookCircuitBreakerPersistence implements WebhookCircuitBreakerPersistence {
   constructor(private readonly filePath: string) {}
 
-  load(): PersistedWebhookCircuitBreakerState | null {
+  load(): Record<string, PersistedWebhookCircuitBreakerState> {
     try {
       if (!fs.existsSync(this.filePath)) {
-        return null;
+        return {};
       }
 
       const raw = fs.readFileSync(this.filePath, "utf8").trim();
       if (!raw) {
-        return null;
+        return {};
       }
 
-      return JSON.parse(raw) as PersistedWebhookCircuitBreakerState;
+      const parsed = JSON.parse(raw) as Record<string, PersistedWebhookCircuitBreakerState> | PersistedWebhookCircuitBreakerState;
+      if (parsed && typeof parsed === "object" && "endpointKey" in parsed) {
+        return { [parsed.endpointKey]: parsed };
+      }
+
+      return parsed as Record<string, PersistedWebhookCircuitBreakerState>;
     } catch {
-      return null;
+      return {};
     }
   }
 
-  save(state: PersistedWebhookCircuitBreakerState): void {
+  save(states: Record<string, PersistedWebhookCircuitBreakerState>): void {
     const directory = path.dirname(this.filePath);
     fs.mkdirSync(directory, { recursive: true });
 
     const tempFilePath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempFilePath, JSON.stringify(state, null, 2));
+    fs.writeFileSync(tempFilePath, JSON.stringify(states, null, 2));
     fs.renameSync(tempFilePath, this.filePath);
   }
 }
@@ -146,8 +151,9 @@ export class WebhookEndpointCircuitBreaker {
     this.now = options.now ?? (() => Date.now());
     this.persistence = options.persistence ?? createDefaultPersistence();
 
-    const persistedState = this.persistence.load();
-    if (persistedState && persistedState.endpointKey === this.endpointKey) {
+    const persistedStates = this.persistence.load();
+    const persistedState = persistedStates[this.endpointKey];
+    if (persistedState) {
       this.state = persistedState.state;
       this.failureCount = persistedState.failureCount;
       this.openedAt = persistedState.openedAt;
@@ -248,7 +254,13 @@ export class WebhookEndpointCircuitBreaker {
   }
 
   private persist(): void {
-    this.persistence?.save(this.snapshot());
+    if (!this.persistence) {
+      return;
+    }
+
+    const persistedStates = this.persistence.load();
+    persistedStates[this.endpointKey] = this.snapshot();
+    this.persistence.save(persistedStates);
   }
 
   private snapshot(): PersistedWebhookCircuitBreakerState {
