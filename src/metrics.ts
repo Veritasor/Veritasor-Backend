@@ -1,14 +1,34 @@
 import { Registry, Histogram, Counter, Gauge } from "prom-client";
+import { getActiveTraceExemplarLabels } from "./tracing.js";
 
 export const metricsRegistry = new Registry();
+metricsRegistry.setContentType(Registry.OPENMETRICS_CONTENT_TYPE);
 
 export const httpRequestDuration = new Histogram({
   name: "http_request_duration_seconds",
   help: "HTTP request duration in seconds",
   labelNames: ["method", "route", "status_code"] as const,
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+  enableExemplars: true,
   registers: [metricsRegistry],
 });
+
+export function observeHttpRequestDuration(
+  labels: Record<string, string>,
+  durationSec: number,
+): void {
+  const exemplarLabels = getActiveTraceExemplarLabels();
+  if (Object.keys(exemplarLabels).length === 0) {
+    httpRequestDuration.observe({ labels, value: durationSec });
+    return;
+  }
+
+  httpRequestDuration.observe({
+    labels,
+    value: durationSec,
+    exemplarLabels,
+  });
+}
 
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
@@ -71,3 +91,24 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const integrationRetryTotal = new Counter({
+  name: "integration_retry_total",
+  help: "Total number of outbound integration retry attempts",
+  labelNames: ["provider", "operation"] as const,
+  registers: [metricsRegistry],
+});
+
+export const integrationRetryBudgetExhaustedTotal = new Counter({
+  name: "integration_retry_budget_exhausted_total",
+  help: "Total number of outbound integration retry attempts refused because global retry budget was exhausted",
+  labelNames: ["provider", "operation"] as const,
+  registers: [metricsRegistry],
+});
+
+export const integrationRetryBudgetRemaining = new Gauge({
+  name: "integration_retry_budget_remaining",
+  help: "Current remaining global outbound retry budget",
+  registers: [metricsRegistry],
+});
+
