@@ -111,6 +111,11 @@ describeFn('PgBouncer compatibility tests', () => {
     expect(url.searchParams.get('statement_cache_size')).toBe('0');
   });
 
+  it('asserts sessionPool uses DATABASE_SESSION_URL if provided, falling back to DATABASE_URL', async () => {
+    const configModule = await import('../../src/config/index.js');
+    expect(configModule.config.db.sessionUrl).toBe(process.env.DATABASE_SESSION_URL || process.env.DATABASE_URL);
+  });
+
   it('runs concurrent parameterized queries through PgBouncer in transaction mode without prepared statement conflicts', async () => {
     const queries = Array.from({ length: 15 }).map((_, i) => {
       // parameterized query to simulate standard statement execution

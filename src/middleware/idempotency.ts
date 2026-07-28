@@ -22,7 +22,9 @@ import {
   idempotencyEvictionsTotal,
   idempotencyKeysCount,
   idempotencySweepRunsTotal,
+  idempotencyBatchSize,
 } from '../metrics.js';
+import { redisCircuitBreaker } from '../redis.js';
 
 // ============================================================================
 // Constants
@@ -170,16 +172,96 @@ export interface RedisClientLike {
   set(key: string, value: string, px: 'PX', ms: number): Promise<unknown>;
   del(key: string): Promise<unknown>;
   scan?(cursor: string | number, ...args: unknown[]): Promise<unknown>;
+  pipeline?(): any;
+}
+
+interface BatchItem {
+  key: string;
+  resolve: (value: string | null) => void;
+  reject: (error: Error) => void;
 }
 
 export class RedisIdempotencyStore implements IdempotencyStore {
+  private batch: BatchItem[] = [];
+  private batchTimer: NodeJS.Timeout | null = null;
+  private readonly maxBatchSize = 100;
+  private readonly batchWindowMs = 5;
+
   constructor(
     private client: RedisClientLike,
+    private readonlyClient?: RedisClientLike,
     private readonly options: { scanMatch?: string; scanCount?: number } = {},
   ) {}
 
+  private flushBatch = () => {
+    if (this.batch.length === 0) return;
+    const currentBatch = this.batch;
+    this.batch = [];
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+
+    idempotencyBatchSize.observe(currentBatch.length);
+
+    this.executeBatch(currentBatch).catch(err => {
+      logger.error('[idempotency] Batch execution failed (should not happen)', err);
+    });
+  }
+
+  private async executeBatch(batch: BatchItem[]) {
+    try {
+      if (typeof this.client.pipeline === 'function') {
+        const pipeline = this.client.pipeline();
+        for (const item of batch) {
+          pipeline.get(item.key);
+        }
+        
+        // ioredis pipeline.exec() returns an array of [Error | null, result] tuples
+        // If the whole pipeline execution fails (e.g. connection error), it might throw
+        const results = await pipeline.exec();
+        
+        if (!results) {
+          throw new Error('Pipeline returned empty results');
+        }
+
+        for (let i = 0; i < batch.length; i++) {
+          const [err, val] = results[i] as [Error | null, string | null];
+          if (err) {
+            batch[i].reject(err);
+          } else {
+            batch[i].resolve(val);
+          }
+        }
+      } else {
+        // Fallback for mocks/tests that don't implement pipeline()
+        await Promise.all(batch.map(async item => {
+          try {
+            const val = await this.client.get(item.key);
+            item.resolve(val);
+          } catch (err) {
+            item.reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        }));
+      }
+    } catch (err) {
+      // Handle partial or complete pipeline failure
+      const error = err instanceof Error ? err : new Error(String(err));
+      for (const item of batch) {
+        item.reject(error);
+      }
+    }
+  }
+
   async get(key: string): Promise<IdempotencyEntry | undefined> {
-    const raw = await this.client.get(key);
+    const readClient = this.readonlyClient ?? this.client;
+    let raw = await readClient.get(key);
+    
+    // Fallback to primary on staleness (cache miss)
+    if (!raw && this.readonlyClient) {
+      raw = await this.client.get(key);
+    }
+    
     if (!raw) return undefined;
     try {
       return JSON.parse(raw) as IdempotencyEntry;
@@ -189,11 +271,17 @@ export class RedisIdempotencyStore implements IdempotencyStore {
   }
 
   async set(key: string, entry: IdempotencyEntry, ttlMs: number): Promise<void> {
-    await this.client.set(key, JSON.stringify(entry), 'PX', ttlMs);
+    await redisCircuitBreaker.execute(
+      () => this.client.set(key, JSON.stringify(entry), 'PX', ttlMs),
+      () => {} // Fallback to no-op
+    );
   }
 
   async delete(key: string): Promise<void> {
-    await this.client.del(key);
+    await redisCircuitBreaker.execute(
+      () => this.client.del(key),
+      () => {} // Fallback to no-op
+    );
   }
 
   /**
@@ -227,9 +315,10 @@ export class RedisIdempotencyStore implements IdempotencyStore {
 
     do {
       // ioredis signature: scan(cursor, 'MATCH', pattern, 'COUNT', count)
-      const result = (await this.client.scan(cursor, 'MATCH', match, 'COUNT', count)) as
-        | [string | number, string[]]
-        | undefined;
+      const result = await redisCircuitBreaker.execute(
+        () => this.client.scan!(cursor, 'MATCH', match, 'COUNT', count),
+        () => undefined // Fallback to undefined on breaker open
+      ) as [string | number, string[]] | undefined;
 
       if (!result || !Array.isArray(result)) {
         break;
@@ -672,8 +761,9 @@ export async function createRedisIdempotencyStore(): Promise<RedisIdempotencySto
   // single-process environments (tests, in-memory dev).
   const mod = (await import('../redis.js')) as {
     getRedisClient: () => RedisClientLike;
+    getReadonlyRedisClient: () => RedisClientLike;
   };
-  return new RedisIdempotencyStore(mod.getRedisClient());
+  return new RedisIdempotencyStore(mod.getRedisClient(), mod.getReadonlyRedisClient());
 }
 
 /**
