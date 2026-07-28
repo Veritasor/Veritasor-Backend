@@ -86,6 +86,12 @@ async function bootstrap(): Promise<void> {
       } catch (err) {
         console.warn(`[Shutdown] PgBouncer scraper stop error: ${err instanceof Error ? err.message : String(err)}`);
       }
+      try {
+        const { stopSpiffeSvidProviderIfNeeded } = await import('./app.js');
+        stopSpiffeSvidProviderIfNeeded();
+      } catch (err) {
+        console.warn(`[Shutdown] SPIFFE SVID provider stop error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     },
   });
   shutdown.register(server);

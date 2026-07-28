@@ -3,14 +3,24 @@ import { config } from "../config/index.js";
 import { mtlsRevocationChecker } from "./mtlsRevocation.js";
 import { logger } from "../utils/logger.js";
 
+export interface MtlsAuthenticatedRequest extends Request {
+  clientCN?: string;
+  clientSpiffeId?: string;
+}
+
 /**
- * mTLS middleware to validate client certificate and check CN against allowlist.
+ * mTLS middleware to validate client certificate identity.
+ *
+ * When SPIFFE is enabled, client identity is derived from the SPIFFE ID URI SAN
+ * and validated against the configured trust domain and optional allowlist.
+ * Otherwise, the legacy CN allowlist path is used.
+ *
  * Only active when config.mtls.enabled is true.
  */
 export function mtlsMiddleware(
   req: Request,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ): void {
   void handleMtls(req, res, next).catch((error) => {
     logger.error({
@@ -34,10 +44,8 @@ async function handleMtls(
     return next();
   }
 
-  // Get the client certificate from the request
   const cert = req.socket.getPeerCertificate(true);
 
-  // Check if client certificate is present and valid
   if (!cert || !req.socket.authorized) {
     logger.warn({
       event: "mtls_unauthorized",
@@ -91,8 +99,6 @@ async function handleMtls(
     }
   }
 
-  // Add client CN to request for downstream use
-  (req as any).clientCN = cn;
-
+  authenticated.clientCN = cn;
   next();
 }

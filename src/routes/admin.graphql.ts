@@ -1,5 +1,9 @@
 import { Router } from 'express';
 import { createYoga, type YogaServerInstance } from 'graphql-yoga';
+import { usePersistedOperations } from '@graphql-yoga/plugin-persisted-operations';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { verifySignature, type SignedManifest } from '../../scripts/sync-persisted-queries.js';
 import { GraphQLError, Kind, type DocumentNode, TypeInfo, visit, visitWithTypeInfo } from 'graphql';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { requirePermissions } from '../middleware/permissions.js';
@@ -155,6 +159,34 @@ class TokenBucketStore {
 
 const tokenBucketStore = new TokenBucketStore();
 
+const REGISTRY_PATH = process.env.PERSISTED_QUERY_MANIFEST_PATH || path.join(process.cwd(), 'signed-manifest.json');
+let cachedManifest: SignedManifest | null = null;
+let manifestLastModified = 0;
+
+async function getPersistedQueryStore() {
+  try {
+    const stats = await fs.stat(REGISTRY_PATH);
+    if (stats.mtimeMs > manifestLastModified) {
+      const content = await fs.readFile(REGISTRY_PATH, 'utf-8');
+      const parsed = JSON.parse(content) as SignedManifest;
+      if (verifySignature(parsed, process.env.PERSISTED_QUERY_SECRET || 'default-dev-secret-do-not-use-in-prod')) {
+        cachedManifest = parsed;
+        manifestLastModified = stats.mtimeMs;
+      } else {
+        console.error('Invalid signature on persisted query manifest');
+      }
+    }
+  } catch (e) {
+    // File not found or read error
+  }
+  
+  return {
+    get: async (hash: string) => {
+      return cachedManifest?.manifest?.queries?.[hash] || null;
+    }
+  };
+}
+
 export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
   return createYoga({
     schema,
@@ -164,6 +196,13 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
       loaders: createDataLoaders(),
     }),
     plugins: [
+      usePersistedOperations({
+        getPersistedOperation: async (key: string) => {
+          const store = await getPersistedQueryStore();
+          return store.get(key);
+        },
+        allowArbitraryOperations: false,
+      }),
       {
         onValidate({ params, setResult }: { params: { documentAST: DocumentNode; rules: readonly any[]; schema: any; typeInfo: any; options: any }; setResult: (errors: readonly GraphQLError[]) => void }) {
           const { documentAST } = params;
