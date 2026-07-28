@@ -1,26 +1,22 @@
 import crypto from "crypto";
-
-export type WebhookAlgorithm = "hmac-sha256" | "ed25519";
+import { staleWebhookDeliveries } from "../../metrics.js";
 
 export interface WebhookSubscription {
   id: string;
   businessId: string;
   url: string;
   secret: string;
-  algo?: WebhookAlgorithm | string;
 }
 
 export interface WebhookDeliveryReceipt {
   delivery_id: string;
   attempt: number;
   signature: string;
-  algo: string;
   timestamp: string;
 }
 
 /**
- * Signs the outbound payload and constructs a verifiable delivery receipt.
- * Supports algorithm negotiation (HMAC-SHA256 and Ed25519) per subscription.
+ * Signs the outbound payload and constructs a verifiable delivery receipt
  */
 export function signAndPrepareDelivery(
   payload: object,
@@ -29,244 +25,106 @@ export function signAndPrepareDelivery(
 ): { headers: Record<string, string>; receipt: WebhookDeliveryReceipt } {
   const deliveryId = crypto.randomUUID();
   const serializedPayload = JSON.stringify(payload);
-  const dataToSign = `${deliveryId}.${attempt}.${serializedPayload}`;
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  
+  // Compute standard HMAC-SHA256 signature over the payload with the business subscription secret
+  const signature = crypto
+    .createHmac("sha256", subscription.secret)
+    .update(`${deliveryId}.${attempt}.${timestamp}.${serializedPayload}`)
+    .digest("hex");
 
-  const rawAlgo = subscription.algo || "hmac-sha256";
-  const algo = rawAlgo.toLowerCase();
-
-  let signature: string;
-  let normalizedAlgo: string;
-
-  if (algo === "hmac-sha256" || algo === "hmac" || algo === "sha256") {
-    normalizedAlgo = "hmac-sha256";
-    signature = crypto
-      .createHmac("sha256", subscription.secret)
-      .update(dataToSign)
-      .digest("hex");
-  } else if (algo === "ed25519") {
-    normalizedAlgo = "ed25519";
-    try {
-      let key: crypto.KeyObject | string = subscription.secret;
-      if (typeof subscription.secret === "string" && !subscription.secret.includes("-----BEGIN")) {
-        try {
-          key = crypto.createPrivateKey(subscription.secret);
-        } catch {
-          key = crypto.createPrivateKey({
-            key: Buffer.from(subscription.secret, "utf8"),
-            format: "pem",
-            type: "pkcs8"
-          });
-        }
-      }
-      signature = crypto.sign(null, Buffer.from(dataToSign), key).toString("hex");
-    } catch (err: any) {
-      signature = crypto.sign(null, Buffer.from(dataToSign), subscription.secret).toString("hex");
-    }
-  } else {
-    throw new Error(`Unsupported webhook signature algorithm: ${subscription.algo}`);
-  }
-
-  const headers: Record<string, string> = {
+  const headers = {
     "Content-Type": "application/json",
     "X-Veritasor-Delivery-Id": deliveryId,
     "X-Veritasor-Attempt": attempt.toString(),
+    "X-Veritasor-Timestamp": timestamp,
     "X-Veritasor-Signature": signature,
-    "X-Veritasor-Signature-Alg": normalizedAlgo,
   };
 
   const receipt: WebhookDeliveryReceipt = {
     delivery_id: deliveryId,
     attempt,
     signature,
-    algo: normalizedAlgo,
-    timestamp: new Date().toISOString(),
+    timestamp,
   };
 
   return { headers, receipt };
 }
 
-/**
- * Helper utility to verify webhook signatures using either HMAC-SHA256 or Ed25519
- */
-export function verifyWebhookSignature(
-  payload: object,
-  deliveryId: string,
-  attempt: number,
-  signature: string,
-  secretOrPublicKey: string,
-  algo: string = "hmac-sha256"
-): boolean {
-  const serializedPayload = JSON.stringify(payload);
-  const dataToSign = `${deliveryId}.${attempt}.${serializedPayload}`;
-  const normalizedAlgo = algo.toLowerCase();
-
-  if (normalizedAlgo === "hmac-sha256" || normalizedAlgo === "hmac" || normalizedAlgo === "sha256") {
-    const expected = crypto
-      .createHmac("sha256", secretOrPublicKey)
-      .update(dataToSign)
-      .digest("hex");
-    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-  } else if (normalizedAlgo === "ed25519") {
-    return crypto.verify(
-      null,
-      Buffer.from(dataToSign),
-      secretOrPublicKey,
-      Buffer.from(signature, "hex")
-    );
-  } else {
-    throw new Error(`Unsupported webhook signature algorithm: ${algo}`);
-  }
+export interface VerifyWebhookOptions {
+  payload: string;
+  headers: Record<string, string | string[] | undefined>;
+  secret: string;
+  toleranceMs?: number; // default 5 minutes
 }
-
-export const DEFAULT_EWMA_HALF_LIFE_SECONDS = 300; // 5 minutes default half-life
 
 /**
- * Exponentially Weighted Moving Average (EWMA) decay counter.
- * Emphasizes recent failures over historical noise with configurable half-life.
- * Clock skew safe: Prevents negative time elapsed calculation if system clock drifts backwards.
+ * Verifies the signature of an incoming webhook delivery.
+ * 
+ * Verification Recipe for Consumers:
+ * 1. Extract the following headers from the incoming request:
+ *    - X-Veritasor-Delivery-Id
+ *    - X-Veritasor-Attempt
+ *    - X-Veritasor-Timestamp
+ *    - X-Veritasor-Signature
+ * 2. Verify that the timestamp is within a reasonable tolerance (e.g., 5 minutes) of the current time.
+ *    - Reject if Math.abs(current_time_unix - timestamp) > tolerance_seconds.
+ *    - This protects against replay attacks.
+ * 3. Construct the signature payload as a string:
+ *    `${deliveryId}.${attempt}.${timestamp}.${rawBody}`
+ * 4. Compute an HMAC-SHA256 signature using your webhook secret over the payload.
+ * 5. Compare the computed signature to the `X-Veritasor-Signature` header using a constant-time string comparison.
+ * 6. To protect against reorder attacks across delivery attempts, track the highest `attempt` seen for a given `deliveryId`.
  */
-export class EWMADecayCounter {
-  private value: number = 0;
-  private lastTimestamp: number;
-  private halfLifeSeconds: number;
+export function verifyWebhookSignature(options: VerifyWebhookOptions): boolean {
+  const { payload, headers, secret, toleranceMs = 5 * 60 * 1000 } = options;
 
-  constructor(halfLifeSeconds: number = DEFAULT_EWMA_HALF_LIFE_SECONDS, initialTimestamp: number = Date.now()) {
-    this.halfLifeSeconds = halfLifeSeconds > 0 ? halfLifeSeconds : DEFAULT_EWMA_HALF_LIFE_SECONDS;
-    this.lastTimestamp = initialTimestamp;
+  const getHeader = (name: string) => headers[name] ?? headers[name.toLowerCase()];
+  
+  const deliveryId = getHeader("X-Veritasor-Delivery-Id");
+  const attemptHeader = getHeader("X-Veritasor-Attempt");
+  const timestampHeader = getHeader("X-Veritasor-Timestamp");
+  const signatureHeader = getHeader("X-Veritasor-Signature");
+
+  if (!deliveryId || !attemptHeader || !timestampHeader || !signatureHeader) {
+    return false;
   }
 
-  /**
-   * Calculates current value decayed up to timestamp without adding new weight.
-   * Clamps delta to >= 0 to protect against clock skew.
-   */
-  public getValue(now: number = Date.now()): number {
-    if (this.value === 0) return 0;
-    const deltaMs = Math.max(0, now - this.lastTimestamp);
-    const deltaSeconds = deltaMs / 1000;
-    const decayFactor = Math.pow(2, -deltaSeconds / this.halfLifeSeconds);
-    return this.value * decayFactor;
+  const deliveryIdStr = Array.isArray(deliveryId) ? deliveryId[0] : deliveryId;
+  const attemptStr = Array.isArray(attemptHeader) ? attemptHeader[0] : attemptHeader;
+  const timestampStr = Array.isArray(timestampHeader) ? timestampHeader[0] : timestampHeader;
+  const signatureStr = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
+
+  const timestamp = parseInt(timestampStr, 10);
+  if (isNaN(timestamp)) {
+    return false;
   }
 
-  /**
-   * Adds an event weight to the counter at the given timestamp after applying decay.
-   * Clock skew protection ensures lastTimestamp does not drift backwards.
-   */
-  public add(weight: number = 1, timestamp: number = Date.now()): number {
-    const currentDecayed = this.getValue(timestamp);
-    this.value = currentDecayed + weight;
-    this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
-    return this.value;
+  const now = Math.floor(Date.now() / 1000);
+  const toleranceSeconds = Math.floor(toleranceMs / 1000);
+  
+  if (Math.abs(now - timestamp) > toleranceSeconds) {
+    staleWebhookDeliveries.inc();
+    return false;
   }
 
-  /**
-   * Decay current score without adding any weight (e.g. on successful webhook attempt).
-   */
-  public decay(timestamp: number = Date.now()): number {
-    this.value = this.getValue(timestamp);
-    this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
-    return this.value;
-  }
+  const expectedSignature = crypto
+    .createHmac("sha256", secret)
+    .update(`${deliveryIdStr}.${attemptStr}.${timestampStr}.${payload}`)
+    .digest("hex");
 
-  public setHalfLife(halfLifeSeconds: number): void {
-    if (halfLifeSeconds > 0) {
-      const now = Date.now();
-      this.value = this.getValue(now);
-      this.lastTimestamp = now;
-      this.halfLifeSeconds = halfLifeSeconds;
-    }
-  }
-
-  public getHalfLife(): number {
-    return this.halfLifeSeconds;
-  }
-
-  public reset(timestamp: number = Date.now()): void {
-    this.value = 0;
-    this.lastTimestamp = timestamp;
-  }
-}
-
-import { webhookDeliveryFailureEWMAScore } from "../../metrics.js";
-
-let globalHalfLifeSeconds = DEFAULT_EWMA_HALF_LIFE_SECONDS;
-const ewmaCounters = new Map<string, { counter: EWMADecayCounter; businessId: string; algo: string }>();
-
-export function setGlobalEWMADecayHalfLife(seconds: number): void {
-  if (seconds > 0) {
-    globalHalfLifeSeconds = seconds;
-    for (const entry of ewmaCounters.values()) {
-      entry.counter.setHalfLife(seconds);
-    }
-  }
-}
-
-export function getGlobalEWMADecayHalfLife(): number {
-  return globalHalfLifeSeconds;
-}
-
-export function clearWebhookEWMACounters(): void {
-  ewmaCounters.clear();
+  const expectedBuffer = Buffer.from(expectedSignature, "hex");
+  
+  let providedBuffer: Buffer;
   try {
-    webhookDeliveryFailureEWMAScore.reset();
+    providedBuffer = Buffer.from(signatureStr, "hex");
   } catch {
-    // metrics safety fallback
+    return false;
   }
-}
 
-export function recordWebhookFailure(
-  subscription: WebhookSubscription,
-  weight: number = 1,
-  timestamp: number = Date.now()
-): number {
-  let entry = ewmaCounters.get(subscription.id);
-  if (!entry) {
-    entry = {
-      counter: new EWMADecayCounter(globalHalfLifeSeconds, timestamp),
-      businessId: subscription.businessId || "unknown",
-      algo: (subscription.algo || "hmac-sha256").toLowerCase(),
-    };
-    ewmaCounters.set(subscription.id, entry);
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return false;
   }
-  const score = entry.counter.add(weight, timestamp);
-  try {
-    webhookDeliveryFailureEWMAScore
-      .labels(subscription.id, entry.businessId, entry.algo)
-      .set(score);
-  } catch {
-    // metrics safety fallback
-  }
-  return score;
-}
 
-export function recordWebhookSuccess(
-  subscription: WebhookSubscription,
-  timestamp: number = Date.now()
-): number {
-  let entry = ewmaCounters.get(subscription.id);
-  if (!entry) {
-    entry = {
-      counter: new EWMADecayCounter(globalHalfLifeSeconds, timestamp),
-      businessId: subscription.businessId || "unknown",
-      algo: (subscription.algo || "hmac-sha256").toLowerCase(),
-    };
-    ewmaCounters.set(subscription.id, entry);
-  }
-  const score = entry.counter.decay(timestamp);
-  try {
-    webhookDeliveryFailureEWMAScore
-      .labels(subscription.id, entry.businessId, entry.algo)
-      .set(score);
-  } catch {
-    // metrics safety fallback
-  }
-  return score;
+  return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
 }
-
-export function getWebhookEWMAScore(
-  subscriptionId: string,
-  timestamp: number = Date.now()
-): number {
-  const entry = ewmaCounters.get(subscriptionId);
-  if (!entry) return 0;
-  return entry.counter.getValue(timestamp);
-}

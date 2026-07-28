@@ -1,10 +1,5 @@
-import crypto from "crypto";
-import { describe, it, expect } from "vitest";
-import {
-  signAndPrepareDelivery,
-  verifyWebhookSignature,
-  WebhookSubscription,
-} from "../../src/services/webhooks/dispatcher";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { signAndPrepareDelivery, verifyWebhookSignature, WebhookSubscription } from "../../src/services/webhooks/dispatcher";
 
 describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
   const mockSubscription: WebhookSubscription = {
@@ -16,94 +11,101 @@ describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
 
   const mockEvent = { event: "attestation.created", root: "0xhash" };
 
-  it("constructs a signature receipt conforming to structured parameters (default HMAC-SHA256)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("constructs a signature receipt conforming to structured parameters", () => {
     const { headers, receipt } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
 
     expect(headers["X-Veritasor-Signature"]).toBeDefined();
-    expect(headers["X-Veritasor-Signature-Alg"]).toBe("hmac-sha256");
+    expect(headers["X-Veritasor-Timestamp"]).toBeDefined();
     expect(receipt).toMatchObject({
       delivery_id: expect.any(String),
       attempt: 1,
       signature: headers["X-Veritasor-Signature"],
-      algo: "hmac-sha256",
-      timestamp: expect.any(String),
+      timestamp: headers["X-Veritasor-Timestamp"],
+    });
+  });
+
+  it("verifies a valid signature successfully", () => {
+    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
+    
+    const isValid = verifyWebhookSignature({
+      payload: JSON.stringify(mockEvent),
+      headers,
+      secret: mockSubscription.secret,
     });
 
-    const isValid = verifyWebhookSignature(
-      mockEvent,
-      receipt.delivery_id,
-      receipt.attempt,
-      receipt.signature,
-      mockSubscription.secret,
-      "hmac-sha256"
-    );
     expect(isValid).toBe(true);
   });
 
-  it("signs and verifies using explicit hmac-sha256 algorithm", () => {
-    const sub: WebhookSubscription = {
-      ...mockSubscription,
-      algo: "hmac-sha256",
-    };
-    const { headers, receipt } = signAndPrepareDelivery(mockEvent, sub, 2);
-
-    expect(headers["X-Veritasor-Signature-Alg"]).toBe("hmac-sha256");
-    expect(receipt.algo).toBe("hmac-sha256");
-
-    const isValid = verifyWebhookSignature(
-      mockEvent,
-      receipt.delivery_id,
-      2,
-      receipt.signature,
-      sub.secret,
-      "hmac-sha256"
-    );
-    expect(isValid).toBe(true);
-  });
-
-  it("signs and verifies using ed25519 algorithm for enterprise tenants", () => {
-    const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519", {
-      privateKeyEncoding: { type: "pkcs8", format: "pem" },
-      publicKeyEncoding: { type: "spki", format: "pem" },
+  it("rejects an invalid signature", () => {
+    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
+    
+    // Modify signature
+    headers["X-Veritasor-Signature"] = "deadbeef" + headers["X-Veritasor-Signature"].substring(8);
+    
+    const isValid = verifyWebhookSignature({
+      payload: JSON.stringify(mockEvent),
+      headers,
+      secret: mockSubscription.secret,
     });
 
-    const ed25519Sub: WebhookSubscription = {
-      id: "sub-enterprise-999",
-      businessId: "biz-ent-1",
-      url: "https://enterprise.client/webhook",
-      secret: privateKey,
-      algo: "ed25519",
-    };
+    expect(isValid).toBe(false);
+  });
 
-    const { headers, receipt } = signAndPrepareDelivery(mockEvent, ed25519Sub, 1);
+  it("rejects a stale delivery outside the configurable freshness window", () => {
+    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
+    
+    // Advance time by 6 minutes (beyond default 5 min tolerance)
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    
+    const isValid = verifyWebhookSignature({
+      payload: JSON.stringify(mockEvent),
+      headers,
+      secret: mockSubscription.secret,
+    });
 
-    expect(headers["X-Veritasor-Signature-Alg"]).toBe("ed25519");
-    expect(receipt.algo).toBe("ed25519");
-    expect(receipt.signature).toBeDefined();
+    expect(isValid).toBe(false);
+  });
 
-    const isValid = verifyWebhookSignature(
-      mockEvent,
-      receipt.delivery_id,
-      receipt.attempt,
-      receipt.signature,
-      publicKey,
-      "ed25519"
-    );
+  it("accepts a delivery within the configurable freshness window", () => {
+    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
+    
+    // Advance time by 4 minutes (within default 5 min tolerance)
+    vi.advanceTimersByTime(4 * 60 * 1000);
+    
+    const isValid = verifyWebhookSignature({
+      payload: JSON.stringify(mockEvent),
+      headers,
+      secret: mockSubscription.secret,
+    });
+
     expect(isValid).toBe(true);
   });
 
-  it("rejects unknown signature algorithms with an error", () => {
-    const invalidSub: WebhookSubscription = {
-      ...mockSubscription,
-      algo: "invalid-sha999",
-    };
+  it("prevents reorder attacks by requiring attempt tracking (implicit via distinct signatures)", () => {
+    const attempt1 = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
+    const attempt2 = signAndPrepareDelivery(mockEvent, mockSubscription, 2);
+    
+    // The signatures must be different
+    expect(attempt1.headers["X-Veritasor-Signature"]).not.toEqual(attempt2.headers["X-Veritasor-Signature"]);
+    
+    // If an attacker sends attempt 1 headers but changes the attempt number to 2, signature verification should fail
+    const forgedHeaders = { ...attempt1.headers, "X-Veritasor-Attempt": "2" };
+    
+    const isValid = verifyWebhookSignature({
+      payload: JSON.stringify(mockEvent),
+      headers: forgedHeaders,
+      secret: mockSubscription.secret,
+    });
 
-    expect(() => signAndPrepareDelivery(mockEvent, invalidSub, 1)).toThrow(
-      /Unsupported webhook signature algorithm: invalid-sha999/
-    );
-
-    expect(() =>
-      verifyWebhookSignature(mockEvent, "d-1", 1, "sig", "secret", "unknown-algo")
-    ).toThrow(/Unsupported webhook signature algorithm: unknown-algo/);
+    expect(isValid).toBe(false);
   });
 });

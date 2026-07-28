@@ -14,7 +14,7 @@
  */
 
 import 'dotenv/config';
-import { startServer, stopIdempotencySweeper } from './app.js';
+import { startServer, stopIdempotencySweeper, stopPgBouncerScraperIfNeeded } from './app.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
@@ -79,6 +79,12 @@ async function bootstrap(): Promise<void> {
         await stopIdempotencySweeper();
       } catch (err) {
         console.warn(`[Shutdown] Idempotency sweeper stop error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // Stop the PgBouncer stats scraper
+      try {
+        await stopPgBouncerScraperIfNeeded();
+      } catch (err) {
+        console.warn(`[Shutdown] PgBouncer scraper stop error: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   });
