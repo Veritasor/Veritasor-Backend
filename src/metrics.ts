@@ -71,3 +71,11 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const webhookDeliveryFailureEWMAScore = new Gauge({
+  name: "webhook_delivery_failure_ewma_score",
+  help: "Exponentially weighted moving average score of recent webhook delivery failures",
+  labelNames: ["subscription_id", "business_id", "algo"] as const,
+  registers: [metricsRegistry],
+});
+

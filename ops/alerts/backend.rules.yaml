@@ -30,6 +30,34 @@ groups:
             SLO breach imminent — investigate consumer failures immediately.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
 
+      # ── Webhook EWMA failure decay score ─────────────────────────────────────
+      - alert: WebhookEWMAFailureScoreWarning
+        expr: webhook_delivery_failure_ewma_score > 10
+        for: 3m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Webhook failure EWMA decay score elevated ({{ $labels.subscription_id }})"
+          description: >
+            Webhook subscription {{ $labels.subscription_id }} (business {{ $labels.business_id }})
+            has an exponential decay failure score of {{ $value }} exceeding threshold 10 over 3 minutes.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookewmafailurescorewarning--webhookewmafailurescorecritical"
+
+      - alert: WebhookEWMAFailureScoreCritical
+        expr: webhook_delivery_failure_ewma_score > 25
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Webhook failure EWMA decay score critical ({{ $labels.subscription_id }})"
+          description: >
+            Webhook subscription {{ $labels.subscription_id }} (business {{ $labels.business_id }})
+            has an exponential decay failure score of {{ $value }} exceeding critical threshold 25.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookewmafailurescorewarning--webhookewmafailurescorecritical"
+
+
       # ── DB connection pool utilisation ───────────────────────────────────────
       - alert: PgPoolHighUtilization
         expr: >

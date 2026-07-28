@@ -117,3 +117,156 @@ export function verifyWebhookSignature(
     throw new Error(`Unsupported webhook signature algorithm: ${algo}`);
   }
 }
+
+export const DEFAULT_EWMA_HALF_LIFE_SECONDS = 300; // 5 minutes default half-life
+
+/**
+ * Exponentially Weighted Moving Average (EWMA) decay counter.
+ * Emphasizes recent failures over historical noise with configurable half-life.
+ * Clock skew safe: Prevents negative time elapsed calculation if system clock drifts backwards.
+ */
+export class EWMADecayCounter {
+  private value: number = 0;
+  private lastTimestamp: number;
+  private halfLifeSeconds: number;
+
+  constructor(halfLifeSeconds: number = DEFAULT_EWMA_HALF_LIFE_SECONDS, initialTimestamp: number = Date.now()) {
+    this.halfLifeSeconds = halfLifeSeconds > 0 ? halfLifeSeconds : DEFAULT_EWMA_HALF_LIFE_SECONDS;
+    this.lastTimestamp = initialTimestamp;
+  }
+
+  /**
+   * Calculates current value decayed up to timestamp without adding new weight.
+   * Clamps delta to >= 0 to protect against clock skew.
+   */
+  public getValue(now: number = Date.now()): number {
+    if (this.value === 0) return 0;
+    const deltaMs = Math.max(0, now - this.lastTimestamp);
+    const deltaSeconds = deltaMs / 1000;
+    const decayFactor = Math.pow(2, -deltaSeconds / this.halfLifeSeconds);
+    return this.value * decayFactor;
+  }
+
+  /**
+   * Adds an event weight to the counter at the given timestamp after applying decay.
+   * Clock skew protection ensures lastTimestamp does not drift backwards.
+   */
+  public add(weight: number = 1, timestamp: number = Date.now()): number {
+    const currentDecayed = this.getValue(timestamp);
+    this.value = currentDecayed + weight;
+    this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
+    return this.value;
+  }
+
+  /**
+   * Decay current score without adding any weight (e.g. on successful webhook attempt).
+   */
+  public decay(timestamp: number = Date.now()): number {
+    this.value = this.getValue(timestamp);
+    this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
+    return this.value;
+  }
+
+  public setHalfLife(halfLifeSeconds: number): void {
+    if (halfLifeSeconds > 0) {
+      const now = Date.now();
+      this.value = this.getValue(now);
+      this.lastTimestamp = now;
+      this.halfLifeSeconds = halfLifeSeconds;
+    }
+  }
+
+  public getHalfLife(): number {
+    return this.halfLifeSeconds;
+  }
+
+  public reset(timestamp: number = Date.now()): void {
+    this.value = 0;
+    this.lastTimestamp = timestamp;
+  }
+}
+
+import { webhookDeliveryFailureEWMAScore } from "../../metrics.js";
+
+let globalHalfLifeSeconds = DEFAULT_EWMA_HALF_LIFE_SECONDS;
+const ewmaCounters = new Map<string, { counter: EWMADecayCounter; businessId: string; algo: string }>();
+
+export function setGlobalEWMADecayHalfLife(seconds: number): void {
+  if (seconds > 0) {
+    globalHalfLifeSeconds = seconds;
+    for (const entry of ewmaCounters.values()) {
+      entry.counter.setHalfLife(seconds);
+    }
+  }
+}
+
+export function getGlobalEWMADecayHalfLife(): number {
+  return globalHalfLifeSeconds;
+}
+
+export function clearWebhookEWMACounters(): void {
+  ewmaCounters.clear();
+  try {
+    webhookDeliveryFailureEWMAScore.reset();
+  } catch {
+    // metrics safety fallback
+  }
+}
+
+export function recordWebhookFailure(
+  subscription: WebhookSubscription,
+  weight: number = 1,
+  timestamp: number = Date.now()
+): number {
+  let entry = ewmaCounters.get(subscription.id);
+  if (!entry) {
+    entry = {
+      counter: new EWMADecayCounter(globalHalfLifeSeconds, timestamp),
+      businessId: subscription.businessId || "unknown",
+      algo: (subscription.algo || "hmac-sha256").toLowerCase(),
+    };
+    ewmaCounters.set(subscription.id, entry);
+  }
+  const score = entry.counter.add(weight, timestamp);
+  try {
+    webhookDeliveryFailureEWMAScore
+      .labels(subscription.id, entry.businessId, entry.algo)
+      .set(score);
+  } catch {
+    // metrics safety fallback
+  }
+  return score;
+}
+
+export function recordWebhookSuccess(
+  subscription: WebhookSubscription,
+  timestamp: number = Date.now()
+): number {
+  let entry = ewmaCounters.get(subscription.id);
+  if (!entry) {
+    entry = {
+      counter: new EWMADecayCounter(globalHalfLifeSeconds, timestamp),
+      businessId: subscription.businessId || "unknown",
+      algo: (subscription.algo || "hmac-sha256").toLowerCase(),
+    };
+    ewmaCounters.set(subscription.id, entry);
+  }
+  const score = entry.counter.decay(timestamp);
+  try {
+    webhookDeliveryFailureEWMAScore
+      .labels(subscription.id, entry.businessId, entry.algo)
+      .set(score);
+  } catch {
+    // metrics safety fallback
+  }
+  return score;
+}
+
+export function getWebhookEWMAScore(
+  subscriptionId: string,
+  timestamp: number = Date.now()
+): number {
+  const entry = ewmaCounters.get(subscriptionId);
+  if (!entry) return 0;
+  return entry.counter.getValue(timestamp);
+}
