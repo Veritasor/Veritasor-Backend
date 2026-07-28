@@ -11,6 +11,8 @@ import {
 import type { Request, Response } from "express";
 import { logger } from "./utils/logger.js";
 
+export const ALLOWED_BAGGAGE_KEYS = new Set(["tenant.id"]);
+
 type OpenTelemetrySdk = {
   start: () => void;
   shutdown: () => Promise<void>;
@@ -158,7 +160,20 @@ export function startHttpRequestSpan(
   }
 
   const tracer = trace.getTracer("veritasor-backend.http");
-  const requestContext = getHttpRequestContext(req);
+  const extractedContext = getHttpRequestContext(req);
+
+  let requestContext = extractedContext;
+  const b = propagation.getBaggage(extractedContext);
+  if (b) {
+    let newBaggage = propagation.createBaggage();
+    for (const key of ALLOWED_BAGGAGE_KEYS) {
+      const entry = b.getEntry(key);
+      if (entry) {
+        newBaggage = newBaggage.setEntry(key, entry);
+      }
+    }
+    requestContext = propagation.setBaggage(extractedContext, newBaggage);
+  }
 
   context.with(requestContext, () => {
     tracer.startActiveSpan(
@@ -174,6 +189,12 @@ export function startHttpRequestSpan(
         },
       },
       (span) => {
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
+        if (tenantId) {
+          span.setAttribute("tenant.id", tenantId);
+        }
+
         const spanExecutionContext = context.active();
         let ended = false;
         const endSpan = () => {
@@ -223,11 +244,17 @@ export async function traceSorobanRpcAttempt<T>(
   }
 
   const tracer = trace.getTracer("veritasor-backend.soroban");
+  let currentContext = context.active();
+  const b = propagation.getBaggage(currentContext);
+  if (b) {
+    currentContext = propagation.setBaggage(currentContext, b.removeEntry("tenant.id"));
+  }
 
-  return tracer.startActiveSpan(
-    `soroban.rpc ${operationName}`,
-    {
-      kind: SpanKind.CLIENT,
+  return context.with(currentContext, () => {
+    return tracer.startActiveSpan(
+      `soroban.rpc ${operationName}`,
+      {
+        kind: SpanKind.CLIENT,
       attributes: {
         "rpc.system": "soroban",
         "rpc.method": operationName,
@@ -249,6 +276,7 @@ export async function traceSorobanRpcAttempt<T>(
       }
     },
   );
+  });
 }
 
 function recordRedactedException(span: Span, error: unknown): void {
