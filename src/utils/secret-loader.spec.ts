@@ -7,6 +7,14 @@ import {
   SecretNotFoundError,
   SecretLoadError,
 } from './secret-loader.js'
+import { logger } from './logger.js'
+
+let mockSend: ReturnType<typeof vi.fn>
+
+vi.mock('@aws-sdk/client-secrets-manager', () => ({
+  SecretsManagerClient: vi.fn(function () { return { send: mockSend } }),
+  GetSecretValueCommand: vi.fn(),
+}))
 
 const ORIGINAL_ENV = { ...process.env }
 
@@ -65,20 +73,106 @@ describe('SecretLoader', () => {
   })
 
   describe('AwsSecretsAdapter', () => {
+    beforeEach(() => {
+      mockSend = vi.fn()
+    })
+
     it('loads secrets from AWS Secrets Manager', async () => {
-      const mockSend = vi.fn(async () => ({
-        SecretString: '{"AWS_SECRET": "aws-value"}',
+      mockSend.mockResolvedValue({ SecretString: '{"AWS_SECRET": "aws-value"}' })
+      const loader = new AwsSecretsAdapter('us-east-1')
+      await loader.reload()
+      expect(await loader.get('test-secret')).toBe('aws-value')
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    })
+
+    it('fails over to secondary region on 5xx', async () => {
+      mockSend
+        .mockRejectedValueOnce(Object.assign(new Error('Service error'), {
+          $metadata: { httpStatusCode: 500 },
+        }))
+        .mockResolvedValueOnce({ SecretString: '{"SECRET": "secondary-value"}' })
+
+      const loader = new AwsSecretsAdapter('us-east-1', 'us-west-2')
+      await loader.reload()
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+      const result = await loader.get('SECRET')
+      expect(result).toBe('secondary-value')
+      expect(mockSend).toHaveBeenCalledTimes(2)
+      expect(warnSpy).toHaveBeenCalledWith({
+        event: 'secrets_failover',
+        from: 'us-east-1',
+        to: 'us-west-2',
+      })
+    })
+
+    it('fails over on network timeout', async () => {
+      mockSend
+        .mockRejectedValueOnce(new Error('Connection timeout'))
+        .mockResolvedValueOnce({ SecretString: '{"SECRET": "secondary-value"}' })
+
+      const loader = new AwsSecretsAdapter('us-east-1', 'us-west-2')
+      await loader.reload()
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+      const result = await loader.get('SECRET')
+      expect(result).toBe('secondary-value')
+      expect(mockSend).toHaveBeenCalledTimes(2)
+      expect(warnSpy).toHaveBeenCalledOnce()
+    })
+
+    it('does not fail over on ResourceNotFoundException', async () => {
+      mockSend.mockRejectedValueOnce(Object.assign(new Error('Not found'), {
+        name: 'ResourceNotFoundException',
+        $metadata: { httpStatusCode: 404 },
       }))
-      
-      vi.mock('@aws-sdk/client-secrets-manager', () => ({
-        SecretsManagerClient: vi.fn(() => ({ send: mockSend })),
-        GetSecretValueCommand: vi.fn(),
+
+      const loader = new AwsSecretsAdapter('us-east-1', 'us-west-2')
+      await loader.reload()
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+      await expect(loader.get('SECRET')).rejects.toThrow(SecretLoadError)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      expect(warnSpy).not.toHaveBeenCalled()
+    })
+
+    it('throws when all regions fail', async () => {
+      mockSend.mockRejectedValue(Object.assign(new Error('Service error'), {
+        $metadata: { httpStatusCode: 500 },
+      }))
+
+      const loader = new AwsSecretsAdapter('us-east-1', 'us-west-2')
+      await loader.reload()
+
+      await expect(loader.get('SECRET')).rejects.toThrow(SecretLoadError)
+      expect(mockSend).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not retry when no secondary region configured', async () => {
+      mockSend.mockRejectedValue(Object.assign(new Error('Service error'), {
+        $metadata: { httpStatusCode: 500 },
       }))
 
       const loader = new AwsSecretsAdapter('us-east-1')
       await loader.reload()
-      expect(await loader.get('test-secret')).toBe('aws-value')
-      expect(mockSend).toHaveBeenCalled()
+
+      await expect(loader.get('SECRET')).rejects.toThrow(SecretLoadError)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    })
+
+    it('uses primary value when primary succeeds (divergent secrets)', async () => {
+      mockSend
+        .mockResolvedValueOnce({ SecretString: '{"SECRET": "primary-value"}' })
+        .mockResolvedValueOnce({ SecretString: '{"SECRET": "secondary-value"}' })
+
+      const loader = new AwsSecretsAdapter('us-east-1', 'us-west-2')
+      await loader.reload()
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+
+      const result = await loader.get('SECRET')
+      expect(result).toBe('primary-value')
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      expect(warnSpy).not.toHaveBeenCalled()
     })
   })
 
@@ -142,6 +236,14 @@ describe('SecretLoader', () => {
 
     it('throws when required AWS config is missing', () => {
       expect(() => createSecretLoader({ provider: 'aws' })).toThrow(SecretLoadError)
+    })
+
+    it('accepts awsSecondaryRegion option', () => {
+      expect(() => createSecretLoader({
+        provider: 'aws',
+        awsRegion: 'us-east-1',
+        awsSecondaryRegion: 'us-west-2',
+      })).not.toThrow()
     })
 
     it('throws when required Vault config is missing', () => {
