@@ -4,6 +4,7 @@ import {
   isSpanContextValid,
   trace,
 } from "@opentelemetry/api";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 
 /**
  * Structured logger utility with request-scoped context.
@@ -86,6 +87,23 @@ export const logger = {
 function writeLog(level: LogLevel, args: unknown[]): void {
   const entry = buildLogEntry(level, args);
   const output = JSON.stringify(entry);
+
+  try {
+    const otelLogger = logs.getLogger("veritasor-logger");
+    const severityNumber = 
+      level === "error" ? SeverityNumber.ERROR : 
+      level === "warn" ? SeverityNumber.WARN : 
+      SeverityNumber.INFO;
+
+    otelLogger.emit({
+      severityNumber,
+      severityText: level.toUpperCase(),
+      body: entry.message || output,
+      attributes: entry as any,
+    });
+  } catch (e) {
+    // Ignore OTel bridge errors
+  }
 
   if (level === "error") {
     console.error(output);

@@ -63,6 +63,13 @@ export async function getById(id: string): Promise<Business | null> {
   return business ? { ...business } : null
 }
 
+export async function getByIds(ids: readonly string[]): Promise<(Business | Error)[]> {
+  return ids.map(id => {
+    const business = businesses.get(id)
+    return business ? { ...business } : new Error(`Business not found: ${id}`)
+  })
+}
+
 export async function getByUserId(userId: string): Promise<Business | null> {
   for (const business of businesses.values()) {
     if (business.userId === userId) {
@@ -180,6 +187,7 @@ export async function setLastReminderSentAt(id: string, sentAt: string): Promise
 export const businessRepository = {
   create,
   getById,
+  getByIds,
   getByUserId,
   getAll,
   list,

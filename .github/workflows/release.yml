@@ -65,3 +65,11 @@ jobs:
             --certificate-identity-regexp "https://github.com/${{ github.repository_owner }}/*" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             ghcr.io/${{ github.repository }}/backend:latest
+
+      - name: Run Pact can-i-deploy gate
+        env:
+          PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          npm install --legacy-peer-deps
+          npm run pact:can-i-deploy
