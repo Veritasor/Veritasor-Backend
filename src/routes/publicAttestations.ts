@@ -10,6 +10,10 @@ const hashParamSchema = z.string().min(1).max(512);
 
 export const publicAttestationsRouter = Router();
 
+function getSwrCacheControl(maxAge: number) {
+  return `public, max-age=${maxAge}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`;
+}
+
 publicAttestationsRouter.get(
   '/:hash',
   async (req: Request, res: Response) => {
@@ -31,7 +35,10 @@ publicAttestationsRouter.get(
     }
 
     if (attestation.status === 'revoked') {
-      res.set('Cache-Control', 'no-store');
+      res.set({
+        'Cache-Control': getSwrCacheControl(15),
+        'Age': '0'
+      });
       res.status(410).json({
         status: 'error',
         code: 'GONE',
@@ -59,9 +66,10 @@ publicAttestationsRouter.get(
     }
 
     res.set({
-      'Cache-Control': `public, max-age=60, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`,
+      'Cache-Control': getSwrCacheControl(60),
       'ETag': etag,
       'Last-Modified': lastModified,
+      'Age': '0'
     });
 
     res.status(200).json({
