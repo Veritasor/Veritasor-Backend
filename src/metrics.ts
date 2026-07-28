@@ -172,3 +172,42 @@ export const pgbouncerTotalQueryTimeSecondsTotal = new Counter({
   labelNames: ["database"] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Adaptive batch-size tuning metrics for Soroban submissions.
+ *
+ * - `soroban_adaptive_batch_size` (gauge): current batch size after tuning.
+ * - `soroban_fee_ewma` (gauge): EWMA-smoothed Soroban inclusion fee (p50 stroops).
+ * - `soroban_current_fee` (gauge): latest raw p50 fee (stroops).
+ * - `soroban_fee_volatility` (gauge): fee coefficient of variation (p90-p10)/p50.
+ * - `soroban_fee_spike_protection_activations_total` (counter): spike-protection events.
+ */
+export const sorobanAdaptiveBatchSize = new Gauge({
+  name: "soroban_adaptive_batch_size",
+  help: "Current adaptive batch size for Soroban submissions, tuned by fee volatility",
+  registers: [metricsRegistry],
+});
+
+export const sorobanFeeEwma = new Gauge({
+  name: "soroban_fee_ewma",
+  help: "EWMA-smoothed Soroban network inclusion fee in stroops",
+  registers: [metricsRegistry],
+});
+
+export const sorobanCurrentFee = new Gauge({
+  name: "soroban_current_fee",
+  help: "Latest observed Soroban inclusion fee p50 in stroops",
+  registers: [metricsRegistry],
+});
+
+export const sorobanFeeVolatility = new Gauge({
+  name: "soroban_fee_volatility",
+  help: "Soroban fee coefficient of variation (p90-p10)/p50",
+  registers: [metricsRegistry],
+});
+
+export const sorobanFeeSpikeProtectionsTotal = new Counter({
+  name: "soroban_fee_spike_protection_activations_total",
+  help: "Total number of Soroban fee spike protection activations that reduced batch size to minimum",
+  registers: [metricsRegistry],
+});
