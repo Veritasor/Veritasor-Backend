@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
-import { httpRequestDuration } from "../metrics.js";
+import { context, propagation } from "@opentelemetry/api";
+import { observeHttpRequestDuration } from "../metrics.js";
 import { startHttpRequestSpan } from "../tracing.js";
 
 /**
@@ -105,9 +106,13 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       res,
       correlationId,
       () => {
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
+
         logger.info({
           type: "request",
           correlationId,
+          tenantId,
           method: req.method,
           path: req.path,
           query: redactQuery(req.query as Record<string, unknown>),
@@ -123,14 +128,18 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
         const durationSec = sec + nano / 1e9;
 
         const route = (req.route?.path as string | undefined) ?? req.path;
-        httpRequestDuration.observe(
+        observeHttpRequestDuration(
           { method: req.method, route, status_code: String(res.statusCode) },
           durationSec,
         );
 
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
+
         logger.info({
           type: "response",
           correlationId,
+          tenantId,
           method: req.method,
           path: req.path,
           statusCode: res.statusCode,

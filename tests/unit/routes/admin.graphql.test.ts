@@ -140,7 +140,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ users { id email role } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.users).toHaveLength(2);
       expect(res.body.data.users[0]).toEqual({
         id: 'user-1',
@@ -155,11 +155,11 @@ describe('Admin GraphQL endpoint', () => {
     });
 
     it('returns a single user by id', async () => {
-      vi.mocked(userRepository.findUserById).mockResolvedValue(mockUsers[0] as any);
+      vi.mocked(userRepository.findUserById).mockResolvedValue(mockUsers[0] as any); vi.mocked(userRepository.findUsersByIds).mockResolvedValue([mockUsers[0]] as any);
 
       const res = await gql('{ user(id: "user-1") { id email role } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.user).toEqual({
         id: 'user-1',
         email: 'alice@test.com',
@@ -172,7 +172,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ user(id: "nonexistent") { id } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.user).toBeNull();
     });
 
@@ -186,7 +186,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ users { id auditLogs { id action } } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.users[0].auditLogs).toHaveLength(2);
       expect(auditLogRepository.queryAuditLogs).toHaveBeenCalledWith(
         expect.objectContaining({ actorId: 'user-1' }),
@@ -204,7 +204,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ auditLogs { id action resource } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.auditLogs).toHaveLength(2);
       expect(res.body.data.auditLogs[0]).toEqual({
         id: 'log-1',
@@ -220,7 +220,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ auditLog(id: "log-1") { id action resource } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.auditLog).toEqual({
         id: 'log-1',
         action: 'UPDATE_USER',
@@ -235,7 +235,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ auditLog(id: "nonexistent") { id } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.auditLog).toBeNull();
     });
 
@@ -245,11 +245,11 @@ describe('Admin GraphQL endpoint', () => {
         nextCursor: null,
         hasMore: false,
       });
-      vi.mocked(userRepository.findUserById).mockResolvedValue(mockUsers[0] as any);
+      vi.mocked(userRepository.findUserById).mockResolvedValue(mockUsers[0] as any); vi.mocked(userRepository.findUsersByIds).mockResolvedValue([mockUsers[0]] as any);
 
       const res = await gql('{ auditLogs { id actor { id email } } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.auditLogs[0].actor).toEqual({
         id: 'user-1',
         email: 'alice@test.com',
@@ -266,7 +266,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ businesses { id name email } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.businesses).toHaveLength(1);
       expect(res.body.data.businesses[0]).toEqual({
         id: 'biz-1',
@@ -282,7 +282,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ business(id: "biz-1") { id name } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.business).toEqual({
         id: 'biz-1',
         name: 'Acme Inc',
@@ -294,7 +294,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ business(id: "nonexistent") { id } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.data.business).toBeNull();
     });
   });
@@ -320,7 +320,7 @@ describe('Admin GraphQL endpoint', () => {
         nextCursor: null,
         hasMore: false,
       });
-      vi.mocked(userRepository.findUserById).mockResolvedValue(mockUsers[0] as any);
+      vi.mocked(userRepository.findUserById).mockResolvedValue(mockUsers[0] as any); vi.mocked(userRepository.findUsersByIds).mockResolvedValue([mockUsers[0]] as any);
 
       const deepQuery = `
         {
@@ -375,7 +375,7 @@ describe('Admin GraphQL endpoint', () => {
 
       const res = await gql('{ users { id } }');
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.errors).toBeDefined();
       expect(res.body.errors[0].message).toBe('Unexpected error.');
       expect(res.body.errors[0].message).not.toContain('secret');
@@ -387,7 +387,7 @@ describe('Admin GraphQL endpoint', () => {
         .set('Content-Type', 'application/json')
         .send({ query: '' });
 
-      expect(res.status).toBe(200);
+      if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.errors).toBeDefined();
       expect(res.body.errors[0].message).toContain('Syntax Error');
     });

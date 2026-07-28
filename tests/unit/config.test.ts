@@ -89,4 +89,37 @@ describe("Config Module Validation", () => {
     const { config } = await loadConfig();
     expect(config.stellar.network).toBe("public");
   });
+
+  it("should parse static mTLS and OCSP revocation config", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+    process.env.MTLS_ENABLED = "true";
+    process.env.MTLS_CA_PATH = "/tmp/ca.pem";
+    process.env.MTLS_CERT_PATH = "/tmp/server-cert.pem";
+    process.env.MTLS_KEY_PATH = "/tmp/server-key.pem";
+    process.env.MTLS_CN_ALLOWLIST = "svc-a, svc-b";
+    process.env.MTLS_OCSP_ENABLED = "true";
+    process.env.MTLS_OCSP_CACHE_TTL_MS = "60000";
+    process.env.MTLS_CRL_PATH = "/tmp/clients.crl";
+
+    const { config } = await loadConfig();
+    expect(config.mtls.enabled).toBe(true);
+    expect(config.mtls.cnAllowlist).toEqual(["svc-a", "svc-b"]);
+    expect(config.mtls.revocation.enabled).toBe(true);
+    expect(config.mtls.revocation.ocspCacheTtlMs).toBe(60000);
+    expect(config.mtls.revocation.crlPath).toBe("/tmp/clients.crl");
+  });
+
+  it("should require CRL fallback when OCSP verification is enabled", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+    process.env.MTLS_ENABLED = "true";
+    process.env.MTLS_CA_PATH = "/tmp/ca.pem";
+    process.env.MTLS_CERT_PATH = "/tmp/server-cert.pem";
+    process.env.MTLS_KEY_PATH = "/tmp/server-key.pem";
+    process.env.MTLS_OCSP_ENABLED = "true";
+    delete process.env.MTLS_CRL_PATH;
+
+    await expect(loadConfig()).rejects.toThrow("MTLS_CRL_PATH must be set");
+  });
 });
