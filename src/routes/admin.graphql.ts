@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { createYoga, createSchema, type YogaServerInstance } from 'graphql-yoga';
-import { GraphQLError, Kind, type DocumentNode } from 'graphql';
+import { GraphQLError, Kind, type DocumentNode, type FieldNode, type ValidationContext, type ASTVisitor } from 'graphql';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { requirePermissions } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
@@ -9,6 +9,7 @@ import * as businessRepository from '../repositories/business.js';
 import * as userRepository from '../repositories/userRepository.js';
 import { Counter } from 'prom-client';
 import { metricsRegistry } from '../metrics.js';
+import { config } from '../config/index.js';
 
 const graphqlMutationRejections = new Counter({
   name: 'graphql_admin_mutation_rejections_total',
@@ -19,6 +20,12 @@ const graphqlMutationRejections = new Counter({
 const graphqlDepthLimitRejections = new Counter({
   name: 'graphql_admin_depth_limit_rejections_total',
   help: 'Total number of queries rejected due to depth limit on admin GraphQL endpoint',
+  registers: [metricsRegistry],
+});
+
+const graphqlIntrospectionRejections = new Counter({
+  name: 'graphql_admin_introspection_rejections_total',
+  help: 'Total number of introspection queries rejected on admin GraphQL endpoint',
   registers: [metricsRegistry],
 });
 
@@ -144,11 +151,79 @@ function getOperationDepth(document: DocumentNode): number {
   return maxDepth;
 }
 
+const INTROSPECTION_FIELD_NAMES = new Set(['__schema', '__type']);
+
+function containsIntrospectionField(
+  selections: readonly any[],
+  fragmentMap: Map<string, any>,
+): boolean {
+  for (const selection of selections) {
+    if (selection.kind === Kind.FIELD) {
+      if (INTROSPECTION_FIELD_NAMES.has((selection as FieldNode).name.value)) {
+        return true;
+      }
+      if (selection.selectionSet?.selections) {
+        if (containsIntrospectionField(selection.selectionSet.selections, fragmentMap)) {
+          return true;
+        }
+      }
+    } else if (selection.kind === Kind.INLINE_FRAGMENT && selection.selectionSet?.selections) {
+      if (containsIntrospectionField(selection.selectionSet.selections, fragmentMap)) {
+        return true;
+      }
+    } else if (selection.kind === Kind.FRAGMENT_SPREAD) {
+      const fragment = fragmentMap.get(selection.name.value);
+      if (fragment?.selectionSet?.selections) {
+        if (containsIntrospectionField(fragment.selectionSet.selections, fragmentMap)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function isIntrospectionQuery(document: DocumentNode): boolean {
+  const fragmentMap = new Map<string, any>();
+  for (const def of document.definitions) {
+    if (def.kind === Kind.FRAGMENT_DEFINITION) {
+      fragmentMap.set(def.name.value, def);
+    }
+  }
+  for (const def of document.definitions) {
+    if (def.kind === Kind.OPERATION_DEFINITION) {
+      if (containsIntrospectionField(def.selectionSet.selections, fragmentMap)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function introspectionGateRule(context: ValidationContext): ASTVisitor {
+  return {
+    Document(node) {
+      if (!config.graphql.enableIntrospection && isIntrospectionQuery(node)) {
+        graphqlIntrospectionRejections.inc();
+        context.reportError(
+          new GraphQLError('Introspection is not allowed on this endpoint'),
+        );
+      }
+    },
+  };
+}
+
 export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
   return createYoga({
     schema,
     maskedErrors: true,
+    parserAndValidationCache: { validationCache: false },
     plugins: [
+      {
+        onValidate({ addValidationRule }: { addValidationRule: (rule: any) => void }) {
+          addValidationRule(introspectionGateRule);
+        },
+      },
       {
         onValidate({ params, setResult }: { params: { documentAST: DocumentNode; rules: readonly any[]; schema: any; typeInfo: any; options: any }; setResult: (errors: readonly GraphQLError[]) => void }) {
           const { documentAST } = params;

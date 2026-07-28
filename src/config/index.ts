@@ -33,6 +33,7 @@ export const envSchema = z.object({
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
+  ENABLE_INTROSPECTION: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -249,5 +250,15 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+  },
+  graphql: {
+    /**
+     * Controls whether GraphQL introspection is allowed.
+     * - ENABLE_INTROSPECTION env var overrides NODE_ENV when set.
+     * - Defaults to true in development/test, false in production.
+     */
+    enableIntrospection: parsedEnv.ENABLE_INTROSPECTION !== undefined
+      ? parseBooleanEnv("ENABLE_INTROSPECTION", parsedEnv.ENABLE_INTROSPECTION, true)
+      : !isProduction,
   },
 } as const;
