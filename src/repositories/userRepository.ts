@@ -253,6 +253,16 @@ export async function deleteUser(userId: string): Promise<boolean> {
 }
 
 /**
+ * Find users by IDs (for DataLoader)
+ */
+export async function findUsersByIds(ids: readonly string[]): Promise<(User | Error)[]> {
+  return ids.map(id => {
+    const user = users.get(id)
+    return user ? cloneUser(user) : new Error(`User not found: ${id}`)
+  })
+}
+
+/**
  * Get all users (admin only)
  */
 export async function getAllUsers(): Promise<User[]> {
