@@ -132,6 +132,7 @@ export async function runStartupDependencyReadinessChecks(): Promise<StartupRead
  * Validate mTLS configuration.
  *
  * If MTLS_ENABLED=true requires MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH.
+ * If MTLS_OCSP_ENABLED=true also requires MTLS_CRL_PATH for fallback revocation checks.
  */
 function checkMtlsConfig(isProduction: boolean): DependencyReadinessResult {
   const mtlsEnabled = process.env.MTLS_ENABLED?.trim().toLowerCase() === "true"
@@ -146,6 +147,17 @@ function checkMtlsConfig(isProduction: boolean): DependencyReadinessResult {
         dependency: "config/mtls",
         ready: false,
         reason: "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true",
+      }
+    }
+
+    const ocspEnabled = process.env.MTLS_OCSP_ENABLED?.trim().toLowerCase() === "true"
+    const crlPath = process.env.MTLS_CRL_PATH?.trim()
+
+    if (ocspEnabled && !crlPath) {
+      return {
+        dependency: "config/mtls",
+        ready: false,
+        reason: "MTLS_CRL_PATH must be set when MTLS_OCSP_ENABLED=true",
       }
     }
   }
