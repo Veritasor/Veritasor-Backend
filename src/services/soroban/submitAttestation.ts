@@ -2,6 +2,14 @@ import { BASE_FEE, Contract, Keypair, StrKey, TransactionBuilder, nativeToScVal,
 import { createSorobanRpcServer, getSorobanConfig } from './client.js';
 import { getSorobanBatchedSubmissionFlag } from '../features/flags.js';
 import { logger } from '../../utils/logger.js';
+import { AdaptiveBatchSizeController, sampleSorobanFeeStats } from './adaptiveBatchSize.js';
+import {
+  sorobanAdaptiveBatchSize,
+  sorobanFeeEwma,
+  sorobanCurrentFee,
+  sorobanFeeVolatility,
+  sorobanFeeSpikeProtectionsTotal,
+} from '../../metrics.js';
 
 export class SorobanSubmissionError extends Error {
   constructor(message: string, public code: string, public cause?: unknown) {
@@ -37,6 +45,77 @@ const CONFIRMATION_MAX_ATTEMPTS = 15;
 
 /** Valid hex hash: 64 lowercase hex chars. */
 const TX_HASH_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Global singleton adaptive batch-size controller.
+ *
+ * Created once at module load and shared across all attestation submission
+ * calls. The controller samples Soroban network fee stats via RPC and
+ * adjusts the batch size within configured bounds using an EWMA-smoothed
+ * fee signal.
+ */
+export const adaptiveBatchController = new AdaptiveBatchSizeController();
+
+/**
+ * Samples Soroban network fee stats and returns the current tuned batch
+ * size from the global adaptive batch-size controller.
+ *
+ * Updates Prometheus metrics for observability. If fee spike protection
+ * activates, increments the spike protection counter.
+ *
+ * If the sample interval has not elapsed since the last sample, returns
+ * the previously tuned batch size without a new RPC call.
+ *
+ * @param server - A connected Soroban RPC server instance.
+ * @returns The current tuned batch size (clamped between min and max).
+ */
+export async function getAdaptiveBatchSize(server: rpc.Server): Promise<number> {
+  const controller = adaptiveBatchController;
+  const config = controller.getConfig();
+
+  const sampled = await controller.sampleAndTune(server);
+
+  if (sampled) {
+    const ewmaFee = controller.getEwmaFee();
+    sorobanAdaptiveBatchSize.set(controller.getBatchSize());
+    if (ewmaFee !== null) {
+      sorobanFeeEwma.set(ewmaFee);
+    }
+  }
+
+  return controller.getBatchSize();
+}
+
+/**
+ * Samples fee stats explicitly and updates all Prometheus metrics,
+ * including the spike protection counter if spike protection is active.
+ *
+ * This is called internally by `getAdaptiveBatchSize` but is exported
+ * for callers that need to sample fees independently of tuning.
+ */
+export async function sampleAndUpdateMetrics(server: rpc.Server): Promise<void> {
+  const sample = await sampleSorobanFeeStats(server);
+  sorobanCurrentFee.set(sample.fee);
+  sorobanFeeVolatility.set(sample.volatility);
+
+  const controller = adaptiveBatchController;
+  const config = controller.getConfig();
+  const prevBatchSize = controller.getBatchSize();
+
+  controller.tune(sample.fee, sample.volatility);
+
+  sorobanAdaptiveBatchSize.set(controller.getBatchSize());
+  const ewmaFee = controller.getEwmaFee();
+  if (ewmaFee !== null) {
+    sorobanFeeEwma.set(ewmaFee);
+  }
+
+  // Detect spike protection activation
+  const ratio = sample.fee / (ewmaFee ?? sample.fee);
+  if (ratio > config.feeSpikeMultiplier && controller.getBatchSize() < prevBatchSize) {
+    sorobanFeeSpikeProtectionsTotal.inc();
+  }
+}
 
 function normalizeTimestamp(timestamp: number | bigint): bigint {
   if (typeof timestamp === 'bigint') {
