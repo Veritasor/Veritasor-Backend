@@ -51,7 +51,48 @@ tests:
             exp_annotations:
               runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
 
+  # ── WebhookEWMAFailureScoreWarning ──────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'webhook_delivery_failure_ewma_score{subscription_id="sub-1",business_id="biz-1"}'
+        values: "0 12 12 12 12"        # crosses 10 at min 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: WebhookEWMAFailureScoreWarning
+        exp_alerts: []                 # 3m pending not met yet
+      - eval_time: 4m
+        alertname: WebhookEWMAFailureScoreWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: backend
+              subscription_id: sub-1
+              business_id: biz-1
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookewmafailurescorewarning--webhookewmafailurescorecritical"
+
+  # ── WebhookEWMAFailureScoreCritical ─────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'webhook_delivery_failure_ewma_score{subscription_id="sub-2",business_id="biz-2"}'
+        values: "0 30 30"              # crosses 25 at min 1
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: WebhookEWMAFailureScoreCritical
+        exp_alerts: []                 # 1m pending not met yet
+      - eval_time: 2m
+        alertname: WebhookEWMAFailureScoreCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: backend
+              subscription_id: sub-2
+              business_id: biz-2
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookewmafailurescorewarning--webhookewmafailurescorecritical"
+
   # ── PgPoolHighUtilization ──────────────────────────────────────────────────
+
   - interval: 1m
     input_series:
       - series: 'pg_pool_active_connections'
