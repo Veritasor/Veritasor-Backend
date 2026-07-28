@@ -211,3 +211,18 @@ export const sorobanFeeSpikeProtectionsTotal = new Counter({
   help: "Total number of Soroban fee spike protection activations that reduced batch size to minimum",
   registers: [metricsRegistry],
 });
+
+export const webhookRetryAttempts = new Histogram({
+  name: "webhook_retry_attempts",
+  help: "Number of retry attempts made when processing a webhook event",
+  labelNames: ["provider"] as const,
+  buckets: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+  registers: [metricsRegistry],
+});
+
+export const webhookRetryExhaustedTotal = new Counter({
+  name: "webhook_retry_exhausted_total",
+  help: "Total number of webhook events that exhausted all retry attempts and were sent to DLQ",
+  labelNames: ["provider"] as const,
+  registers: [metricsRegistry],
+});
