@@ -1,5 +1,8 @@
 import { attestationRepository } from "../../repositories/attestation.js";
 import { businessRepository } from "../../repositories/business.js";
+import { logger } from "../../utils/logger.js";
+import { cdnClient } from "../../services/cdn/cdnClientAdapter.js";
+import { recordCdnPurgeStatus } from "../../services/audit/auditLog.js";
 
 /**
  * Revoke an existing attestation.
@@ -46,7 +49,18 @@ export async function revokeAttestation(
   if (reason) {
     (updateData as any).revokeReason = reason;
   }
-  attestationRepository.update(attestationId, updateData);
+  // 5. Trigger CDN purge for the revoked attestation
+  try {
+    const purgeUrl = `${process.env.CDN_BASE_URL ?? ''}/attestations/${attestationId}`;
+    await cdnClient.purge([purgeUrl]);
+    recordCdnPurgeStatus(attestationId, 'success', { url: purgeUrl });
+    logger.info(`CDN purge successful for attestation ${attestationId}`);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    recordCdnPurgeStatus(attestationId, 'failed', { error });
+    logger.error(`CDN purge failed for attestation ${attestationId}: ${error}`);
+  }
+
 
   // TODO: Optionally call Soroban revoke if the contract supports it.
   // This will be implemented when the Soroban integration is ready.

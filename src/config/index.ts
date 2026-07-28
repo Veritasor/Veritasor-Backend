@@ -16,6 +16,7 @@ export const envSchema = z.object({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
   }).url("DATABASE_URL must be a valid URL"),
+  DATABASE_SESSION_URL: z.string().url("DATABASE_SESSION_URL must be a valid URL").optional(),
   PGPOOL_MAX: z.string().optional(),
   PG_IDLE_TIMEOUT_MS: z.string().optional(),
   PG_CONN_TIMEOUT_MS: z.string().optional(),
@@ -40,6 +41,8 @@ export const envSchema = z.object({
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
+  OUTBOUND_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
+  OUTBOUND_RETRY_BUDGET_WINDOW_MS: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -180,6 +183,7 @@ export const config = {
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {
     url: parsedEnv.DATABASE_URL,
+    sessionUrl: parsedEnv.DATABASE_SESSION_URL || parsedEnv.DATABASE_URL,
     poolMax: parsePositiveIntEnv("PGPOOL_MAX", parsedEnv.PGPOOL_MAX, 10),
     idleTimeoutMs: parsePositiveIntEnv("PG_IDLE_TIMEOUT_MS", parsedEnv.PG_IDLE_TIMEOUT_MS, 30_000),
     connectionTimeoutMs: parsePositiveIntEnv("PG_CONN_TIMEOUT_MS", parsedEnv.PG_CONN_TIMEOUT_MS, 2_000),
@@ -302,6 +306,14 @@ export const config = {
   secretLoader: {
     source: parsedEnv.SECRET_LOADER,
     filePath: parsedEnv.SECRET_FILE_PATH,
+    /**
+     * When `source` is `"vault"`, `VaultAdapter` (src/utils/secret-loader.ts)
+     * auto-renews any renewable dynamic-secret lease Vault returns at 70% of
+     * its `lease_duration` (with jitter), and falls back to a full reload —
+     * rotating in-memory secrets from a fresh lease — if Vault denies
+     * renewal. See `vault_lease_renewal_total` / `vault_lease_seconds_remaining`
+     * in src/metrics.ts for observability into this.
+     */
     vault: {
       baseUrl: parsedEnv.VAULT_BASE_URL,
       secretPath: parsedEnv.VAULT_SECRET_PATH,
@@ -314,5 +326,19 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+  },
+  integrations: {
+    retryBudget: {
+      maxRetries: parsePositiveIntEnv(
+        "OUTBOUND_RETRY_BUDGET_MAX_RETRIES",
+        parsedEnv.OUTBOUND_RETRY_BUDGET_MAX_RETRIES,
+        50,
+      ),
+      windowMs: parsePositiveIntEnv(
+        "OUTBOUND_RETRY_BUDGET_WINDOW_MS",
+        parsedEnv.OUTBOUND_RETRY_BUDGET_WINDOW_MS,
+        60_000,
+      ),
+    },
   },
 } as const;

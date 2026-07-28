@@ -35,3 +35,11 @@ jobs:
           DATABASE_URL: postgres://localhost:5432/test_db
           JWT_SECRET: supersecretjwttokenthatisfortycharacterslong!!
           SOROBAN_CONTRACT_ID: CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+
+      - name: Publish Pact contracts to broker
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.PACT_BROKER_URL != ''
+        run: npm run pact:publish
+        timeout-minutes: 10
+        env:
+          PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+          GITHUB_SHA: ${{ github.sha }}
