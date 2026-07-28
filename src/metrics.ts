@@ -30,6 +30,13 @@ export function observeHttpRequestDuration(
   });
 }
 
+export const mtlsHandshakeFailuresTotal = new Counter({
+  name: "mtls_handshake_failures_total",
+  help: "Total number of mTLS handshake failures",
+  labelNames: ["reason"] as const,
+  registers: [metricsRegistry],
+});
+
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
   help: "Total number of requests rejected by the rate limiter (HTTP 429)",
