@@ -2,6 +2,7 @@ import {
   SpanKind,
   SpanStatusCode,
   context,
+  isSpanContextValid,
   propagation,
   trace,
   type Context,
@@ -109,6 +110,19 @@ export function getHttpRequestContext(req: Request): Context {
   }
 
   return propagation.extract(context.active(), req.headers, HTTP_HEADER_GETTER);
+}
+
+export function getActiveTraceExemplarLabels(): Record<string, string> {
+  const activeSpan = trace.getActiveSpan();
+  const spanContext = activeSpan?.spanContext();
+
+  if (!spanContext || !isSpanContextValid(spanContext)) {
+    return {};
+  }
+
+  return {
+    trace_id: spanContext.traceId,
+  };
 }
 
 export function startHttpRequestSpan(
