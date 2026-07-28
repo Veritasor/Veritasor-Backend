@@ -28,6 +28,7 @@ import { publicAttestationsRouter } from "./routes/publicAttestations.js";
 import usersRouter from "./routes/users.js";
 import { jwksManager } from "./utils/jwks.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import adminRouter from "./routes/admin.js";
 import adminGraphqlRouter from "./routes/admin.graphql.js";
 import {
@@ -159,6 +160,9 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
     res.set("ETag", etag)
     res.json(jwks)
   });
+
+  // Webhook egress IP allow-list (issue #534)
+  app.use(webhookEgressIpsRouter);
 
   // 5. Error Handling
   app.use(errorHandler);
