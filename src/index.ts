@@ -14,7 +14,7 @@
  */
 
 import 'dotenv/config';
-import { startServer, stopIdempotencySweeper } from './app.js';
+import { startServer, stopIdempotencySweeper, stopDlqAgeScanner } from './app.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
@@ -79,6 +79,11 @@ async function bootstrap(): Promise<void> {
         await stopIdempotencySweeper();
       } catch (err) {
         console.warn(`[Shutdown] Idempotency sweeper stop error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        stopDlqAgeScanner();
+      } catch (err) {
+        console.warn(`[Shutdown] DLQ age scanner stop error: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   });

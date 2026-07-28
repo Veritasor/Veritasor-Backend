@@ -30,6 +30,32 @@ groups:
             SLO breach imminent — investigate consumer failures immediately.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
 
+      - alert: WebhookDlqAgeWarning
+        expr: webhook_dlq_oldest_entry_age_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Webhook DLQ oldest entry > 1 hour old ({{ $labels.provider }})"
+          description: >
+            Dead-letter queue for provider {{ $labels.provider }} has an entry
+            that is {{ $value | humanizeDuration }} old.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqagewarning--webhookdlqagecritical"
+
+      - alert: WebhookDlqAgeCritical
+        expr: webhook_dlq_oldest_entry_age_seconds > 14400
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Webhook DLQ oldest entry > 4 hours old — SLO breach ({{ $labels.provider }})"
+          description: >
+            Dead-letter queue for provider {{ $labels.provider }} has an entry
+            that is {{ $value | humanizeDuration }} old. SLO breached.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqagewarning--webhookdlqagecritical"
+
       # ── DB connection pool utilisation ───────────────────────────────────────
       - alert: PgPoolHighUtilization
         expr: >

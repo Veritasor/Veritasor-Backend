@@ -40,6 +40,10 @@ import {
   startIdempotencySweeper,
   type IdempotencySweeperHandle,
 } from "./middleware/idempotency.js";
+import {
+  startDlqAgeScanner,
+  type DlqAgeScannerHandle,
+} from "./services/webhooks/deadLetterQueue.js";
 
 /**
  * Handle to the running idempotency sweeper, if one was started. Stored
@@ -69,6 +73,21 @@ export async function stopIdempotencySweeper(): Promise<void> {
   if (!idempotencySweeperHandle) return;
   await idempotencySweeperHandle.stop();
   idempotencySweeperHandle = null;
+}
+
+let dlqAgeScannerHandle: DlqAgeScannerHandle | null = null;
+
+export function startDlqAgeScannerIfNeeded(): DlqAgeScannerHandle | null {
+  if (process.env.NODE_ENV === 'test') return null;
+  if (dlqAgeScannerHandle) return dlqAgeScannerHandle;
+  dlqAgeScannerHandle = startDlqAgeScanner();
+  return dlqAgeScannerHandle;
+}
+
+export function stopDlqAgeScanner(): void {
+  if (!dlqAgeScannerHandle) return;
+  dlqAgeScannerHandle.stop();
+  dlqAgeScannerHandle = null;
 }
 
 export const telemetryReady = initializeOpenTelemetry();
@@ -199,6 +218,8 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
   // counter, and is safe to run alongside the request path: its
   // interval is unref'd and its `runOnce()` swallows store errors.
   await startIdempotencySweeperIfNeeded();
+
+  startDlqAgeScannerIfNeeded();
 
   const application = createApp(readinessReport);
   const { attachAttestationStream } = await import("./ws/attestationStream.js");
