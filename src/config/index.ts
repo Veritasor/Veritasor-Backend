@@ -42,6 +42,9 @@ export const envSchema = z.object({
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
   ENABLE_INTROSPECTION: z.string().optional(),
+  GRAPHQL_DEV_BYPASS: z.string().optional(),
+  ALLOW_ARBITRARY_OPERATIONS: z.string().optional(),
+  PERSISTED_QUERY_SECRET: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -147,50 +150,6 @@ function parseCsvList(rawValue: string | undefined): string[] {
     .filter(Boolean);
 }
 
-function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
-  const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
-  const ocspEnabled = parseBooleanEnv(
-    "MTLS_OCSP_ENABLED",
-    parsedEnv.MTLS_OCSP_ENABLED,
-    false,
-  );
-
-  const caPath = parsedEnv.MTLS_CA_PATH?.trim();
-  const certPath = parsedEnv.MTLS_CERT_PATH?.trim();
-  const keyPath = parsedEnv.MTLS_KEY_PATH?.trim();
-  const crlPath = parsedEnv.MTLS_CRL_PATH?.trim();
-
-  if (enabled && (!caPath || !certPath || !keyPath)) {
-    throw new ConfigValidationError(
-      "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true",
-    );
-  }
-
-  if (enabled && ocspEnabled && !crlPath) {
-    throw new ConfigValidationError(
-      "MTLS_CRL_PATH must be set when MTLS_OCSP_ENABLED=true",
-    );
-  }
-
-  return {
-    enabled,
-    cnAllowlist: parseCsvList(parsedEnv.MTLS_CN_ALLOWLIST),
-    caPath,
-    certPath,
-    keyPath,
-    revocation: {
-      enabled: ocspEnabled,
-      ocspCacheTtlMs: parsePositiveIntEnv(
-        "MTLS_OCSP_CACHE_TTL_MS",
-        parsedEnv.MTLS_OCSP_CACHE_TTL_MS,
-        300_000,
-      ),
-      ocspIssuerPath: parsedEnv.MTLS_OCSP_ISSUER_PATH?.trim() || caPath,
-      crlPath,
-    },
-  };
-}
-
 let parsedEnv: z.infer<typeof envSchema>;
 
 try {
@@ -212,8 +171,6 @@ if (parsedEnv.NODE_ENV === "development" && !parsedEnv.JWT_SECRET) {
   parsedEnv.JWT_SECRET = "default_dev_secret_for_local_testing_only";
 }
 
-const mtlsConfig = parseMtlsConfig(parsedEnv);
-
 /**
  * CORS allowed origins.
  * - Dev: * (allow all) unless ALLOWED_ORIGINS is set.
@@ -231,16 +188,6 @@ export function getAllowedOrigins(): string | string[] {
     return [];
   }
   return "*";
-}
-
-function parseCsvList(raw: string | undefined): string[] {
-  if (!raw?.trim()) {
-    return [];
-  }
-  return raw
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
 }
 
 function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
@@ -448,5 +395,14 @@ export const config = {
     enableIntrospection: parsedEnv.ENABLE_INTROSPECTION !== undefined
       ? parseBooleanEnv("ENABLE_INTROSPECTION", parsedEnv.ENABLE_INTROSPECTION, true)
       : !isProduction,
+    /**
+     * Controls whether arbitrary (ad-hoc) GraphQL operations are allowed.
+     * In production, defaults to false (enforces persisted query allow-list).
+     * Retains dev bypass toggle via GRAPHQL_DEV_BYPASS or ALLOW_ARBITRARY_OPERATIONS env var.
+     */
+    allowArbitraryOperations: (parsedEnv.GRAPHQL_DEV_BYPASS !== undefined || parsedEnv.ALLOW_ARBITRARY_OPERATIONS !== undefined)
+      ? parseBooleanEnv("GRAPHQL_DEV_BYPASS", parsedEnv.GRAPHQL_DEV_BYPASS ?? parsedEnv.ALLOW_ARBITRARY_OPERATIONS, false)
+      : !isProduction,
+    persistedQuerySecret: parsedEnv.PERSISTED_QUERY_SECRET || 'default-dev-secret-do-not-use-in-prod',
   },
 } as const;
