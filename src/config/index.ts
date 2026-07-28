@@ -41,17 +41,7 @@ export const envSchema = z.object({
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
-  OUTBOUND_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
-  OUTBOUND_RETRY_BUDGET_WINDOW_MS: z.string().optional(),
-  MTLS_ENABLED: z.string().optional(),
-  MTLS_CN_ALLOWLIST: z.string().optional(),
-  MTLS_CA_PATH: z.string().optional(),
-  MTLS_CERT_PATH: z.string().optional(),
-  MTLS_KEY_PATH: z.string().optional(),
-  MTLS_OCSP_ENABLED: z.string().optional(),
-  MTLS_OCSP_CACHE_TTL_MS: z.string().optional(),
-  MTLS_OCSP_ISSUER_PATH: z.string().optional(),
-  MTLS_CRL_PATH: z.string().optional(),
+  ENABLE_INTROSPECTION: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -449,19 +439,14 @@ export const config = {
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
   },
-  integrations: {
-    retryBudget: {
-      maxRetries: parsePositiveIntEnv(
-        "OUTBOUND_RETRY_BUDGET_MAX_RETRIES",
-        parsedEnv.OUTBOUND_RETRY_BUDGET_MAX_RETRIES,
-        50,
-      ),
-      windowMs: parsePositiveIntEnv(
-        "OUTBOUND_RETRY_BUDGET_WINDOW_MS",
-        parsedEnv.OUTBOUND_RETRY_BUDGET_WINDOW_MS,
-        60_000,
-      ),
-    },
+  graphql: {
+    /**
+     * Controls whether GraphQL introspection is allowed.
+     * - ENABLE_INTROSPECTION env var overrides NODE_ENV when set.
+     * - Defaults to true in development/test, false in production.
+     */
+    enableIntrospection: parsedEnv.ENABLE_INTROSPECTION !== undefined
+      ? parseBooleanEnv("ENABLE_INTROSPECTION", parsedEnv.ENABLE_INTROSPECTION, true)
+      : !isProduction,
   },
-  mtls: mtlsConfig,
 } as const;
