@@ -101,6 +101,14 @@ export const pool = new pg.Pool({
   ssl: config.db.ssl,
 });
 
+export const sessionPool = new pg.Pool({
+  connectionString: config.db.sessionUrl,
+  max: 2, // Dedicated small pool for session-mode operations like LISTEN/NOTIFY
+  idleTimeoutMillis: config.db.idleTimeoutMs,
+  connectionTimeoutMillis: config.db.connectionTimeoutMs,
+  ssl: config.db.ssl,
+});
+
 export const db = {
   query: wrapQuery((text: string, params?: any[]) => pool.query(text, params)),
 };
