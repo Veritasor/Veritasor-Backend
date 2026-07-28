@@ -71,3 +71,9 @@ export const idempotencySweepRunsTotal = new Counter({
   labelNames: ["backend", "outcome"] as const,
   registers: [metricsRegistry],
 });
+
+export const staleWebhookDeliveries = new Counter({
+  name: "webhook_delivery_stale_total",
+  help: "Total number of webhook deliveries rejected due to stale timestamp",
+  registers: [metricsRegistry],
+});
