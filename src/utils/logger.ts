@@ -18,7 +18,7 @@ import { logs, SeverityNumber } from "@opentelemetry/api-logs";
  */
 
 export type LogContext = Record<string, unknown>;
-type LogLevel = "info" | "warn" | "error";
+type LogLevel = "debug" | "info" | "warn" | "error";
 
 const REDACTED = "[REDACTED]";
 const LOGGER_CONTEXT_KEY = createContextKey("veritasor.logger.context");
@@ -78,6 +78,7 @@ export function getLoggerContext(activeContext = context.active()): LogContext {
 }
 
 export const logger = {
+  debug: (...args: unknown[]) => writeLog("debug", args),
   info: (...args: unknown[]) => writeLog("info", args),
   warn: (...args: unknown[]) => writeLog("warn", args),
   error: (...args: unknown[]) => writeLog("error", args),

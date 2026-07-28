@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import zlib from "node:zlib";
+import { compress as zstdCompressSync } from "fzstd";
 
 /**
  * Response compression middleware (brotli preferred, gzip fallback) with a
@@ -94,10 +95,10 @@ function isCompressionDisabled(res: Response): boolean {
 
 /**
  * Pick the best supported encoding from the client's `Accept-Encoding` header.
- * Brotli is preferred over gzip when both are offered. Returns `null` when the
+ * Zstd is preferred over brotli, which is preferred over gzip when offered. Returns `null` when the
  * client supports neither (or explicitly disables one with `;q=0`).
  */
-export function selectEncoding(acceptEncoding: string | undefined): "br" | "gzip" | null {
+export function selectEncoding(acceptEncoding: string | undefined): "zstd" | "br" | "gzip" | null {
   if (!acceptEncoding) return null;
 
   const accepted = new Map<string, number>();
@@ -119,6 +120,7 @@ export function selectEncoding(acceptEncoding: string | undefined): "br" | "gzip
     return q !== undefined && q > 0;
   };
 
+  if (supports("zstd")) return "zstd";
   if (supports("br")) return "br";
   if (supports("gzip")) return "gzip";
   return null;
@@ -151,7 +153,10 @@ function bodyContainsCsrfToken(body: Buffer, contentType: string, csrfFieldNames
   });
 }
 
-function compressSync(encoding: "br" | "gzip", data: Buffer): Buffer {
+function compressSync(encoding: "zstd" | "br" | "gzip", data: Buffer): Buffer {
+  if (encoding === "zstd") {
+    return Buffer.from(zstdCompressSync(data));
+  }
   if (encoding === "br") {
     return zlib.brotliCompressSync(data, {
       params: {
@@ -170,12 +175,6 @@ export function compressionMiddleware(options: CompressionOptions = {}): Request
 
   return function compression(req: Request, res: Response, next: NextFunction): void {
     const encoding = selectEncoding(req.headers["accept-encoding"] as string | undefined);
-
-    // No acceptable encoding — leave the response untouched.
-    if (!encoding) {
-      next();
-      return;
-    }
 
     const chunks: Buffer[] = [];
     let buffering = true;
@@ -225,24 +224,29 @@ export function compressionMiddleware(options: CompressionOptions = {}): Request
       const cacheControl = String(res.getHeader("Cache-Control") ?? "");
       const alreadyEncoded = Boolean(res.getHeader("Content-Encoding"));
 
-      const shouldCompress =
+      const isCompressibleType = COMPRESSIBLE_TYPE.test(contentType);
+      const isEligibleForCompression =
         !isCompressionDisabled(res) &&
         !alreadyEncoded &&
         res.statusCode !== 204 &&
         res.statusCode !== 304 &&
         body.length >= threshold &&
-        COMPRESSIBLE_TYPE.test(contentType) &&
+        isCompressibleType &&
         !/\bno-transform\b/i.test(cacheControl) &&
         !responseSetsSessionCookie(res, sessionCookieNames) &&
         !bodyContainsCsrfToken(body, contentType, csrfFieldNames);
 
-      // Always advertise that the representation varies on Accept-Encoding so
-      // shared caches keep encoded and unencoded variants apart.
-      res.vary("Accept-Encoding");
+      // Only advertise that the representation varies on Accept-Encoding if
+      // the response is actually eligible for compression. This prevents cache
+      // fragmentation for images, small files, and uncompressible payloads.
+      if (isEligibleForCompression) {
+        res.vary("Accept-Encoding");
+      }
 
       passthrough();
 
-      if (!shouldCompress) {
+      // If not eligible, or if the client didn't advertise a supported encoding, send uncompressed.
+      if (!isEligibleForCompression || !encoding) {
         return originalEnd(body, ...(cb ? [cb] : [])) as unknown as Response;
       }
 
