@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { signAndPrepareDelivery, WebhookSubscription } from "../../src/services/webhooks/dispatcher";
+import { describe, it, expect, vi } from "vitest";
+import {
+  signAndPrepareDelivery,
+  WebhookSubscription,
+  WebhookCircuitBreakerState,
+  WebhookEndpointCircuitBreaker,
+} from "../../src/services/webhooks/dispatcher";
 
 describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
   const mockSubscription: WebhookSubscription = {
@@ -21,5 +26,48 @@ describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
       signature: headers["X-Veritasor-Signature"],
       timestamp: expect.any(String),
     });
+  });
+
+  it("opens after repeated failures and blocks delivery until the cooldown elapses", () => {
+    const now = vi.fn(() => 0);
+    const breaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "webhook-endpoint-1",
+      failureThreshold: 2,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      now,
+    });
+
+    expect(breaker.canAttempt()).toBe(true);
+    breaker.recordFailure();
+    expect(breaker.canAttempt()).toBe(true);
+    breaker.recordFailure();
+
+    expect(breaker.getState()).toBe(WebhookCircuitBreakerState.OPEN);
+    expect(breaker.canAttempt()).toBe(false);
+
+    now.mockReturnValue(1500);
+    expect(breaker.canAttempt()).toBe(true);
+  });
+
+  it("allows one probe in half-open mode and closes on success", () => {
+    const now = vi.fn(() => 0);
+    const breaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "webhook-endpoint-2",
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      now,
+    });
+
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe(WebhookCircuitBreakerState.OPEN);
+
+    now.mockReturnValue(1500);
+    expect(breaker.canAttempt()).toBe(true);
+    breaker.recordSuccess();
+
+    expect(breaker.getState()).toBe(WebhookCircuitBreakerState.CLOSED);
+    expect(breaker.canAttempt()).toBe(true);
   });
 });
