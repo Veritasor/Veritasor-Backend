@@ -25,6 +25,7 @@ import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
 import { broadcaster } from '../ws/attestationStream.js';
+import { observeAttestationSubmitLatency } from '../metrics.js';
 
 type RouteAttestation = {
   id: string;
@@ -276,44 +277,49 @@ async function revokeAttestation(id: string, reason?: string): Promise<RouteAtte
 async function submitOnChain(
   params: SubmitAttestationParams & { userId?: string; businessId?: string },
 ): Promise<SubmitAttestationResult> {
-  const shouldSubmit = params.submit ?? true;
-  const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === 'true';
-
-  if (shouldSubmit && !submissionEnabled) {
-    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
-  }
-
-  const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
-  if (!sourcePublicKey) {
-    throw createHttpError(503, 'SOROBAN_NOT_CONFIGURED', 'Soroban submission is not available right now.');
-  }
-
-  const modulePath = '../services/soroban/submitAttestation.js';
-  let module: {
-    submitAttestation?: (value: SorobanSubmitAttestationParams) => Promise<SorobanSubmitAttestationResult>;
-  };
-
+  const startTime = process.hrtime.bigint();
+  let statusForMetric = 'success';
   try {
-    module = (await import(modulePath)) as typeof module;
-  } catch (_error) {
-    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
-  }
+    const shouldSubmit = params.submit ?? true;
+    const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === 'true';
 
-  if (typeof module.submitAttestation !== 'function') {
-    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
-  }
+    if (shouldSubmit && !submissionEnabled) {
+      return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
 
-  try {
+    const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
+    if (!sourcePublicKey) {
+      throw createHttpError(503, 'SOROBAN_NOT_CONFIGURED', 'Soroban submission is not available right now.');
+    }
+
+    const modulePath = '../services/soroban/submitAttestation.js';
+    let module: {
+      submitAttestation?: (value: SorobanSubmitAttestationParams) => Promise<SorobanSubmitAttestationResult>;
+    };
+
+    try {
+      module = (await import(modulePath)) as typeof module;
+    } catch (_error) {
+      return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
+
+    if (typeof module.submitAttestation !== 'function') {
+      return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
+
     return await module.submitAttestation({ ...params, sourcePublicKey, submit: shouldSubmit });
   } catch (error) {
+    statusForMetric = 'error';
     const sorobanError = error as SorobanServiceError;
     const code = sorobanError?.code;
 
     if (code === 'VALIDATION_ERROR') {
+      statusForMetric = 'rejected';
       throw createHttpError(400, code, sorobanError.message);
     }
 
     if (code === 'MISSING_SIGNER' || code === 'SIGNER_MISMATCH') {
+      statusForMetric = 'rejected';
       throw createHttpError(503, code, 'Soroban submission is not available right now.');
     }
 
@@ -348,6 +354,9 @@ async function submitOnChain(
     }
 
     throw error;
+  } finally {
+    const durationSec = Number(process.hrtime.bigint() - startTime) / 1e9;
+    observeAttestationSubmitLatency(statusForMetric, durationSec);
   }
 }
 

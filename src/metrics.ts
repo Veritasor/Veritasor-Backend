@@ -245,3 +245,31 @@ export const redisCircuitBreakerFailuresTotal = new Counter({
   help: "Total number of Redis circuit breaker failures recorded",
   registers: [metricsRegistry],
 });
+
+/**
+ * Attestation submit latency histogram.
+ * Tuned to resolve well around the 50-200ms SLO.
+ *
+ * Boundaries (in seconds):
+ * 0.010, 0.025 - Fast requests
+ * 0.050, 0.075, 0.100, 0.150, 0.200 - SLO-focused resolution
+ * 0.250, 0.500, 1.0, 2.5, 5.0 - Outliers
+ */
+export const attestationSubmitLatency = new Histogram({
+  name: "attestation_submit_latency_seconds",
+  help: "Latency of attestation submissions to the blockchain",
+  labelNames: ["status"] as const,
+  buckets: [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1, 2.5, 5],
+  registers: [metricsRegistry],
+});
+
+const validAttestationSubmitStatuses = new Set(["success", "error", "timeout", "rejected"]);
+
+/**
+ * Observes attestation submit latency.
+ * Includes a bucket cardinality guard to ensure only valid statuses are recorded.
+ */
+export function observeAttestationSubmitLatency(status: string, durationSec: number): void {
+  const safeStatus = validAttestationSubmitStatuses.has(status) ? status : "unknown";
+  attestationSubmitLatency.observe({ status: safeStatus }, durationSec);
+}

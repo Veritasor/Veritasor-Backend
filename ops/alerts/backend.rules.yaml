@@ -138,6 +138,25 @@ groups:
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
 
       # ── PgBouncer queue depth ────────────────────────────────────────────────
+      - record: sli:attestation_submit_latency_seconds:p95
+        expr: >
+          histogram_quantile(0.95,
+            rate(attestation_submit_latency_seconds_bucket[5m])
+          )
+
+      - alert: AttestationSubmitLatencyHigh
+        expr: sli:attestation_submit_latency_seconds:p95 > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Attestation submit latency p95 > 200ms"
+          description: >
+            Attestation submission latency 95th percentile is {{ $value | humanizeDuration }}.
+            This is above our 200ms SLO.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#attestationsubmitlatencyhigh"
+
       - alert: PgBouncerQueueDepthWarning
         expr: pgbouncer_waiting_clients > 10
         for: 30s
