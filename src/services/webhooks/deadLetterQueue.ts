@@ -4,10 +4,24 @@ import { webhookDlqOldestEntryAge } from '../../metrics.js'
 
 export const MAX_PAYLOAD_SIZE = 100 * 1024 // 100KB
 export const DEFAULT_QUARANTINE_THRESHOLD = 3
+export const UNKNOWN_INTEGRATION_SHARD = 'unknown'
+
+export interface DeadLetterEntry {
+  id?: number
+  provider: string
+  integration: string
+  event_id: string
+  payload_hash: string
+  error_code: string
+  attempt_count: number
+  created_at?: Date
+  updated_at?: Date
+}
 
 export interface QuarantinedLetter {
   id?: number
   provider: string
+  integration: string
   event_id: string
   payload_hash: string
   error_code: string
@@ -17,6 +31,23 @@ export interface QuarantinedLetter {
   quarantined_at?: Date
   released_at?: Date | null
   released_by?: string | null
+}
+
+export interface DLQWorkerResult {
+  processed: number
+  succeeded: number
+  failed: number
+  errors: Array<{ eventId: string; error: string }>
+}
+
+export function resolveIntegrationShard(provider?: string, integration?: string): string {
+  if (integration && typeof integration === 'string' && integration.trim().length > 0) {
+    return integration.trim().toLowerCase()
+  }
+  if (provider && typeof provider === 'string' && provider.trim().length > 0) {
+    return provider.trim().toLowerCase()
+  }
+  return UNKNOWN_INTEGRATION_SHARD
 }
 
 export interface DlqBackpressureState {
@@ -160,8 +191,10 @@ export async function saveDeadLetter(
   eventId: string,
   payload: any,
   error: unknown,
-  threshold: number = DEFAULT_QUARANTINE_THRESHOLD
-): Promise<{ status: 'saved' | 'quarantined'; attemptCount: number; fingerprint: string }> {
+  threshold: number = DEFAULT_QUARANTINE_THRESHOLD,
+  integration?: string
+): Promise<{ status: 'saved' | 'quarantined'; attemptCount: number; fingerprint: string; integration: string }> {
+  const shard = resolveIntegrationShard(provider, integration)
   const payloadHash = computePayloadHash(payload)
   const errorCode = error instanceof Error ? (error as any).code ?? error.message : String(error)
   const rawFingerprint = computeFailureFingerprint(provider, payloadHash, errorCode)
@@ -217,45 +250,47 @@ export async function saveDeadLetter(
     )
 
     await db.query(
-      `INSERT INTO webhook_quarantine (provider, event_id, payload_hash, error_code, fingerprint, attempt_count, quarantine_reason, quarantined_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'poison_pill_threshold_exceeded', NOW())
+      `INSERT INTO webhook_quarantine (provider, integration, event_id, payload_hash, error_code, fingerprint, attempt_count, quarantine_reason, quarantined_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'poison_pill_threshold_exceeded', NOW())
        ON CONFLICT (provider, event_id)
        DO UPDATE SET
          attempt_count = EXCLUDED.attempt_count,
          fingerprint = EXCLUDED.fingerprint,
+         integration = EXCLUDED.integration,
          quarantined_at = NOW()`,
-      [provider, eventId, payloadHash, errorCode, fingerprint, effectiveAttempts]
+      [provider, shard, eventId, payloadHash, errorCode, fingerprint, effectiveAttempts]
     )
 
-    return { status: 'quarantined', attemptCount: effectiveAttempts, fingerprint }
+    return { status: 'quarantined', attemptCount: effectiveAttempts, fingerprint, integration: shard }
   }
 
   await db.query(
-    `INSERT INTO webhook_dead_letters (provider, event_id, payload_hash, error_code, attempt_count, updated_at)
-     VALUES ($1, $2, $3, $4, 1, NOW())
+    `INSERT INTO webhook_dead_letters (provider, integration, event_id, payload_hash, error_code, attempt_count, updated_at)
+     VALUES ($1, $2, $3, $4, $5, 1, NOW())
      ON CONFLICT (provider, event_id)
      DO UPDATE SET
        attempt_count = webhook_dead_letters.attempt_count + 1,
        error_code = EXCLUDED.error_code,
+       integration = EXCLUDED.integration,
        updated_at = NOW()`,
-    [provider, eventId, payloadHash, errorCode]
+    [provider, shard, eventId, payloadHash, errorCode]
   )
 
-  return { status: 'saved', attemptCount: effectiveAttempts, fingerprint }
+  return { status: 'saved', attemptCount: effectiveAttempts, fingerprint, integration: shard }
 }
 
 export async function getDeadLetter(
   provider: string,
   eventId: string
-): Promise<{ payload_hash: string; attempt_count?: number } | null> {
+): Promise<DeadLetterEntry | null> {
   const result = await db.query(
-    'SELECT payload_hash, attempt_count FROM webhook_dead_letters WHERE provider = $1 AND event_id = $2',
+    'SELECT id, provider, integration, event_id, payload_hash, error_code, attempt_count, created_at, updated_at FROM webhook_dead_letters WHERE provider = $1 AND event_id = $2',
     [provider, eventId]
   )
   if (!result || (result.rowCount ?? 0) === 0) {
     return null
   }
-  return result.rows[0] as { payload_hash: string; attempt_count?: number }
+  return result.rows[0] as DeadLetterEntry
 }
 
 export async function deleteDeadLetter(provider: string, eventId: string): Promise<void> {

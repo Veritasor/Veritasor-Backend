@@ -1,11 +1,22 @@
 import crypto from "crypto";
 import { staleWebhookDeliveries } from "../../metrics.js";
+import { createAuditLog } from "../../repositories/auditLogRepository.js";
+
+export class WebhookPayloadTooLargeError extends Error {
+  public readonly code = 'PAYLOAD_TOO_LARGE';
+  public readonly statusCode = 413;
+  constructor(message: string) {
+    super(message);
+    this.name = 'WebhookPayloadTooLargeError';
+  }
+}
 
 export interface WebhookSubscription {
   id: string;
   businessId: string;
   url: string;
   secret: string;
+  maxPayloadSize?: number;
 }
 
 export interface WebhookDeliveryReceipt {
@@ -23,8 +34,28 @@ export function signAndPrepareDelivery(
   subscription: WebhookSubscription,
   attempt: number = 1
 ): { headers: Record<string, string>; receipt: WebhookDeliveryReceipt } {
-  const deliveryId = crypto.randomUUID();
   const serializedPayload = JSON.stringify(payload);
+  
+  if (subscription.maxPayloadSize !== undefined) {
+    const payloadSize = Buffer.byteLength(serializedPayload, 'utf8');
+    if (payloadSize > subscription.maxPayloadSize) {
+      createAuditLog({
+        userId: subscription.businessId,
+        action: 'webhook_delivery_rejected',
+        resource: 'webhook_subscription',
+        resourceId: subscription.id,
+        metadata: {
+          reason: 'PAYLOAD_TOO_LARGE',
+          payloadSize,
+          maxPayloadSize: subscription.maxPayloadSize,
+        }
+      }).catch(err => console.error('Failed to write audit log', err));
+      
+      throw new WebhookPayloadTooLargeError(`Webhook payload size (${payloadSize} bytes) exceeds maximum allowed size (${subscription.maxPayloadSize} bytes)`);
+    }
+  }
+
+  const deliveryId = crypto.randomUUID();
   const timestamp = Math.floor(Date.now() / 1000).toString();
   
   // Compute standard HMAC-SHA256 signature over the payload with the business subscription secret

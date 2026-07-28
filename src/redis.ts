@@ -153,6 +153,74 @@ export function hashTag(businessId: string): string {
   return `{${businessId}}`;
 }
 
+export interface ClusterRedirectionInfo {
+  type: "MOVED" | "ASK";
+  slot: number;
+  targetHost: string;
+  targetPort: number;
+  targetAddress: string;
+}
+
+export function parseClusterRedirectionError(err: unknown): ClusterRedirectionInfo | null {
+  if (!err) return null;
+  const message = typeof err === "string" ? err : (err as Error).message || String(err);
+  if (!message) return null;
+
+  const match = /^(MOVED|ASK)\s+(\d+)\s+([^\s:]+):(\d+)/i.exec(message.trim());
+  if (!match) return null;
+
+  const [, typeRaw, slotStr, host, portStr] = match;
+  return {
+    type: typeRaw.toUpperCase() as "MOVED" | "ASK",
+    slot: Number.parseInt(slotStr, 10),
+    targetHost: host,
+    targetPort: Number.parseInt(portStr, 10),
+    targetAddress: `${host}:${portStr}`,
+  };
+}
+
+export function isClusterRedirectionError(err: unknown): boolean {
+  return parseClusterRedirectionError(err) !== null;
+}
+
+export async function resolveTargetClient(
+  mainClient: any,
+  redirect: ClusterRedirectionInfo
+): Promise<any> {
+  if (!mainClient) return mainClient;
+  let targetNode: any = null;
+
+  if (typeof mainClient.nodes === "function") {
+    const nodes: any[] = mainClient.nodes("all") || [];
+    targetNode = nodes.find((n) => {
+      const options = n.options || {};
+      const host = options.host || n.host;
+      const port = Number(options.port || n.port);
+      return host === redirect.targetHost && port === redirect.targetPort;
+    });
+  }
+
+  if (!targetNode && mainClient.options) {
+    const host = mainClient.options.host || mainClient.host;
+    const port = Number(mainClient.options.port || mainClient.port);
+    if (host === redirect.targetHost && port === redirect.targetPort) {
+      targetNode = mainClient;
+    }
+  }
+
+  if (!targetNode) {
+    targetNode = mainClient;
+  }
+
+  if (redirect.type === "ASK") {
+    if (typeof targetNode.asking === "function") {
+      await targetNode.asking().catch(() => {});
+    }
+  }
+
+  return targetNode;
+}
+
 /**
  * Circuit Breaker state
  */
@@ -191,7 +259,9 @@ export class RedisCircuitBreaker {
   }
 
   private updateMetrics(): void {
-    redisCircuitBreakerState.set(this.state);
+    if (redisCircuitBreakerState && typeof redisCircuitBreakerState.set === "function") {
+      redisCircuitBreakerState.set(this.state);
+    }
   }
 
   private transition(newState: CircuitState): void {
@@ -226,19 +296,11 @@ export class RedisCircuitBreaker {
       }
     }
 
-    // In HALF_OPEN state, only allow one probe? Actually, a simple approach is letting
-    // calls through and the first one will determine success/failure.
-    // If we want strict half-open storm prevention, we could track if a probe is in flight,
-    // but the issue says "Half-open storm prevention".
-    // Let's implement half-open storm prevention by failing fast for other requests while probing.
-
     if (this.state === CircuitState.HALF_OPEN) {
       if (this.nextAttemptMs > Date.now()) {
-        // We set nextAttemptMs to a future time when a probe starts so others fail fast
         if (fallback) return fallback();
         throw new RedisCircuitBreakerError("Redis circuit breaker is HALF_OPEN (probe in flight)");
       }
-      // Set nextAttemptMs to a small future time to debounce multiple probes
       this.nextAttemptMs = Date.now() + this.resetTimeoutMs;
     }
 
@@ -251,13 +313,17 @@ export class RedisCircuitBreaker {
       }
       return result;
     } catch (err) {
-      this.recordFailure();
+      if (!isClusterRedirectionError(err)) {
+        this.recordFailure();
+      }
       throw err;
     }
   }
 
   private recordFailure(): void {
-    redisCircuitBreakerFailuresTotal.inc();
+    if (redisCircuitBreakerFailuresTotal && typeof redisCircuitBreakerFailuresTotal.inc === "function") {
+      redisCircuitBreakerFailuresTotal.inc();
+    }
     
     if (this.state === CircuitState.HALF_OPEN) {
       // Probe failed, go back to OPEN

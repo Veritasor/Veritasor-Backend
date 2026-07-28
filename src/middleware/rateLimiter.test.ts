@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { SlidingWindowRedisStore, SlidingWindowMemoryStore } from "./rateLimiter.js";
+import { RedisStore, SlidingWindowRedisStore, SlidingWindowMemoryStore } from "./rateLimiter.js";
 
 /**
  * Minimal fake ioredis client sufficient to drive WATCH/MULTI/EXEC logic
@@ -167,5 +167,197 @@ describe("SlidingWindowMemoryStore", () => {
     store.reset();
     const r = store.increment("k", 1000);
     expect(r.count).toBe(1);
+  });
+});
+
+describe("RedisStore slot migration (MOVED / ASK)", () => {
+  it("handles MOVED redirection, updates target node, and increments metric", async () => {
+    const targetNode = {
+      eval: vi.fn().mockResolvedValue([1, 10000]),
+    };
+    const primaryClient = {
+      eval: vi.fn().mockRejectedValueOnce(new Error("MOVED 12345 127.0.0.1:7001")),
+      refreshSlotsCache: vi.fn().mockResolvedValue(undefined),
+      nodes: vi.fn().mockReturnValue([targetNode]),
+    };
+    (targetNode as any).options = { host: "127.0.0.1", port: 7001 };
+
+    const store = new RedisStore(primaryClient as any);
+    const record = await store.increment("user:1", 10000);
+
+    expect(record.count).toBe(1);
+    expect(primaryClient.refreshSlotsCache).toHaveBeenCalledOnce();
+    expect(targetNode.eval).toHaveBeenCalledOnce();
+  });
+
+  it("handles ASK redirection by sending ASKING to target node before retrying", async () => {
+    const askingMock = vi.fn().mockResolvedValue("OK");
+    const targetNode = {
+      options: { host: "127.0.0.1", port: 7002 },
+      asking: askingMock,
+      eval: vi.fn().mockResolvedValue([2, 5000]),
+    };
+    const primaryClient = {
+      eval: vi.fn().mockRejectedValueOnce(new Error("ASK 12345 127.0.0.1:7002")),
+      nodes: vi.fn().mockReturnValue([targetNode]),
+    };
+
+    const store = new RedisStore(primaryClient as any);
+    const record = await store.increment("user:2", 10000);
+
+    expect(record.count).toBe(2);
+    expect(askingMock).toHaveBeenCalledOnce();
+    expect(targetNode.eval).toHaveBeenCalledOnce();
+  });
+
+  it("prevents infinite MOVED redirection loops and throws an error", async () => {
+    const loopingClient = {
+      eval: vi.fn().mockRejectedValue(new Error("MOVED 12345 127.0.0.1:7001")),
+      options: { host: "127.0.0.1", port: 7001 },
+      nodes: vi.fn().mockReturnValue([]),
+    };
+
+    const store = new RedisStore(loopingClient as any, 5);
+    await expect(store.increment("user:loop", 10000)).rejects.toThrow(
+      /infinite redirection loop detected/
+    );
+  });
+});
+
+describe("SlidingWindowRedisStore slot migration (MOVED / ASK)", () => {
+  it("handles MOVED redirection during WATCH/MULTI/EXEC", async () => {
+    const targetMulti = {
+      zremrangebyscore: vi.fn().mockReturnThis(),
+      zadd: vi.fn().mockReturnThis(),
+      zcard: vi.fn().mockReturnThis(),
+      pexpire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([
+        [null, "OK"],
+        [null, "OK"],
+        [null, 1],
+        [null, "OK"],
+      ]),
+    };
+    const targetNode = {
+      options: { host: "127.0.0.1", port: 7001 },
+      watch: vi.fn().mockResolvedValue("OK"),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+      multi: vi.fn().mockReturnValue(targetMulti),
+    };
+
+    const primaryClient = {
+      watch: vi.fn().mockRejectedValueOnce(new Error("MOVED 5555 127.0.0.1:7001")),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+      refreshSlotsCache: vi.fn().mockResolvedValue(undefined),
+      nodes: vi.fn().mockReturnValue([targetNode]),
+    };
+
+    const store = new SlidingWindowRedisStore(primaryClient as any);
+    const record = await store.increment("slide:key", 10000);
+
+    expect(record.count).toBe(1);
+    expect(targetNode.watch).toHaveBeenCalledWith("slide:key");
+    expect(targetMulti.exec).toHaveBeenCalledOnce();
+  });
+
+  it("handles ASK redirection in SlidingWindowRedisStore with ASKING command", async () => {
+    const askingMock = vi.fn().mockResolvedValue("OK");
+    const targetMulti = {
+      zremrangebyscore: vi.fn().mockReturnThis(),
+      zadd: vi.fn().mockReturnThis(),
+      zcard: vi.fn().mockReturnThis(),
+      pexpire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([
+        [null, "OK"],
+        [null, "OK"],
+        [null, 3],
+        [null, "OK"],
+      ]),
+    };
+    const targetNode = {
+      options: { host: "127.0.0.1", port: 7003 },
+      asking: askingMock,
+      watch: vi.fn().mockResolvedValue("OK"),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+      multi: vi.fn().mockReturnValue(targetMulti),
+    };
+
+    const primaryClient = {
+      watch: vi.fn().mockResolvedValue("OK"),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+      multi: vi.fn().mockReturnValue({
+        zremrangebyscore: vi.fn().mockReturnThis(),
+        zadd: vi.fn().mockReturnThis(),
+        zcard: vi.fn().mockReturnThis(),
+        pexpire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockRejectedValueOnce(new Error("ASK 5555 127.0.0.1:7003")),
+      }),
+      nodes: vi.fn().mockReturnValue([targetNode]),
+    };
+
+    const store = new SlidingWindowRedisStore(primaryClient as any);
+    const record = await store.increment("slide:ask", 10000);
+
+    expect(record.count).toBe(3);
+    expect(askingMock).toHaveBeenCalledOnce();
+    expect(targetNode.watch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("cleanupSlidingStore & helper edge cases", () => {
+  it("cleans up expired timestamps in sliding store", async () => {
+    const { cleanupSlidingStore } = await import("./rateLimiter.js");
+    const store = new SlidingWindowMemoryStore();
+    store.increment("test:key", 100);
+
+    cleanupSlidingStore(Date.now() + 200, 100);
+    const result = store.increment("test:key", 100);
+    expect(result.count).toBe(1);
+  });
+
+  it("handles null / non-redirection errors in parseClusterRedirectionError", async () => {
+    const { parseClusterRedirectionError, isClusterRedirectionError } = await import("../redis.js");
+    expect(parseClusterRedirectionError(null)).toBeNull();
+    expect(parseClusterRedirectionError(undefined)).toBeNull();
+    expect(parseClusterRedirectionError("GENERIC_ERROR")).toBeNull();
+    expect(isClusterRedirectionError("MOVED 100 127.0.0.1:7001")).toBe(true);
+    expect(isClusterRedirectionError("SOMETHING_ELSE")).toBe(false);
+  });
+
+  it("handles error in sync rateLimiter middleware without crashing app", async () => {
+    const { rateLimiter, memoryStore } = await import("./rateLimiter.js");
+    vi.spyOn(memoryStore, "increment").mockImplementationOnce(() => {
+      throw new Error("Sync store explosion");
+    });
+
+    const middleware = rateLimiter();
+    const req = { method: "GET", path: "/test", headers: {}, socket: {} } as any;
+    const res = { setHeader: vi.fn() } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("handles zcard error inside SlidingWindowRedisStore multi.exec results", async () => {
+    const client = {
+      watch: vi.fn().mockResolvedValue("OK"),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+      multi: vi.fn().mockReturnValue({
+        zremrangebyscore: vi.fn().mockReturnThis(),
+        zadd: vi.fn().mockReturnThis(),
+        zcard: vi.fn().mockReturnThis(),
+        pexpire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([
+          [null, "OK"],
+          [null, "OK"],
+          [new Error("zcard failure"), 0],
+          [null, "OK"],
+        ]),
+      }),
+    };
+
+    const store = new SlidingWindowRedisStore(client as any, 1);
+    await expect(store.increment("test:zcardErr", 1000)).rejects.toThrow("zcard failure");
   });
 });

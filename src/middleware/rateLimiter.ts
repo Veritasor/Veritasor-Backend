@@ -1,7 +1,15 @@
 import { Request, Response, NextFunction } from "express";
+import { randomUUID } from "node:crypto";
 import { logger } from "../utils/logger.js";
-import { rateLimitRejections } from "../metrics.js";
-import { getRedisClient, hashTag, redisCircuitBreaker } from "../redis.js";
+import { rateLimitRejections, redisClusterRedirectionsTotal } from "../metrics.js";
+import {
+  getRedisClient,
+  hashTag,
+  redisCircuitBreaker,
+  parseClusterRedirectionError,
+  resolveTargetClient,
+} from "../redis.js";
+
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
@@ -67,30 +75,70 @@ export class MemoryStore implements RateLimitStore {
   }
 }
 
+const DEFAULT_MAX_REDIRECTIONS = 5;
+
 export class RedisStore implements RateLimitStore {
-  constructor(private client: ReturnType<typeof getRedisClient>) {}
+  constructor(
+    private client: ReturnType<typeof getRedisClient>,
+    private maxRedirections: number = DEFAULT_MAX_REDIRECTIONS,
+  ) {}
 
   async increment(key: string, windowMs: number): Promise<RateLimitRecord> {
     const now = Date.now();
+    let targetClient: any = this.client;
+    let redirectionCount = 0;
+    const visitedTargets = new Set<string>();
 
-    // ioredis eval: (script, numkeys, ...keys, ...args)
-    const result = await redisCircuitBreaker.execute(() => (this.client as any).eval(
-      `local current = redis.call('INCR', KEYS[1])
-       if current == 1 then
-         redis.call('PEXPIRE', KEYS[1], ARGV[1])
-       end
-       return {current, redis.call('PTTL', KEYS[1])}`,
-      1,           // numkeys
-      key,         // KEYS[1]
-      windowMs     // ARGV[1]
-    )) as [number, number];
+    while (true) {
+      try {
+        const result = await redisCircuitBreaker.execute(() =>
+          targetClient.eval(
+            `local current = redis.call('INCR', KEYS[1])
+             if current == 1 then
+               redis.call('PEXPIRE', KEYS[1], ARGV[1])
+             end
+             return {current, redis.call('PTTL', KEYS[1])}`,
+            1,           // numkeys
+            key,         // KEYS[1]
+            windowMs     // ARGV[1]
+          )
+        ) as [number, number];
 
-    const [count, pttl] = result;
-    const remainingTtl = pttl > 0 ? pttl : windowMs;
-    return {
-      count: Number(count),
-      resetTime: now + remainingTtl,
-    };
+        const [count, pttl] = result;
+        const remainingTtl = pttl > 0 ? pttl : windowMs;
+        return {
+          count: Number(count),
+          resetTime: now + remainingTtl,
+        };
+      } catch (err) {
+        const redirect = parseClusterRedirectionError(err);
+        if (redirect && redirectionCount < this.maxRedirections) {
+          redirectionCount++;
+
+          const targetKey = `${redirect.type}:${redirect.targetAddress}`;
+          if (visitedTargets.has(targetKey)) {
+            throw new Error(
+              `RedisStore: infinite redirection loop detected for key "${key}" to ${redirect.targetAddress}`
+            );
+          }
+          visitedTargets.add(targetKey);
+
+          redisClusterRedirectionsTotal.inc({
+            type: redirect.type.toLowerCase() as "moved" | "ask",
+            store: "fixed",
+          });
+
+          if (redirect.type === "MOVED" && typeof (this.client as any).refreshSlotsCache === "function") {
+            await (this.client as any).refreshSlotsCache().catch(() => {});
+          }
+
+          targetClient = await resolveTargetClient(this.client, redirect);
+          continue;
+        }
+
+        throw err;
+      }
+    }
   }
 }
 
@@ -131,6 +179,7 @@ export class SlidingWindowRedisStore implements RateLimitStore {
   constructor(
     private client: ReturnType<typeof getRedisClient>,
     private maxRetries: number = DEFAULT_MAX_WATCH_RETRIES,
+    private maxRedirections: number = DEFAULT_MAX_REDIRECTIONS,
   ) {}
 
   async increment(key: string, windowMs: number): Promise<RateLimitRecord> {
@@ -141,11 +190,17 @@ export class SlidingWindowRedisStore implements RateLimitStore {
     // sorted-set entry.
     const member = `${now}-${randomUUID()}`;
 
+    let targetClient: any = this.client;
+    let redirectionCount = 0;
+    const visitedTargets = new Set<string>();
+
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
-        await (this.client as any).watch(key);
+        if (typeof targetClient.watch === "function") {
+          await targetClient.watch(key);
+        }
 
-        const multi = (this.client as any).multi();
+        const multi = targetClient.multi();
         multi.zremrangebyscore(key, 0, windowStart);
         multi.zadd(key, now, member);
         multi.zcard(key);
@@ -161,12 +216,52 @@ export class SlidingWindowRedisStore implements RateLimitStore {
           continue;
         }
 
+        if (Array.isArray(results)) {
+          for (const res of results) {
+            if (Array.isArray(res) && res[0]) {
+              const redirectInResult = parseClusterRedirectionError(res[0]);
+              if (redirectInResult) {
+                throw res[0];
+              }
+            }
+          }
+        }
+
         const [zcardErr, count] = results[2] as [Error | null, number];
         if (zcardErr) throw zcardErr;
 
         return { count: Number(count), resetTime: now + windowMs };
       } catch (err) {
-        await (this.client as any).unwatch().catch(() => {});
+        if (typeof targetClient.unwatch === "function") {
+          await targetClient.unwatch().catch(() => {});
+        }
+
+        const redirect = parseClusterRedirectionError(err);
+        if (redirect && redirectionCount < this.maxRedirections) {
+          redirectionCount++;
+
+          const targetKey = `${redirect.type}:${redirect.targetAddress}`;
+          if (visitedTargets.has(targetKey)) {
+            throw new Error(
+              `SlidingWindowRedisStore: infinite redirection loop detected for key "${key}" to ${redirect.targetAddress}`
+            );
+          }
+          visitedTargets.add(targetKey);
+
+          redisClusterRedirectionsTotal.inc({
+            type: redirect.type.toLowerCase() as "moved" | "ask",
+            store: "sliding",
+          });
+
+          if (redirect.type === "MOVED" && typeof (this.client as any).refreshSlotsCache === "function") {
+            await (this.client as any).refreshSlotsCache().catch(() => {});
+          }
+
+          targetClient = await resolveTargetClient(this.client, redirect);
+          attempt--;
+          continue;
+        }
+
         if (attempt === this.maxRetries) throw err;
       }
     }
@@ -176,6 +271,8 @@ export class SlidingWindowRedisStore implements RateLimitStore {
     );
   }
 }
+
+const slidingStore = new Map<string, number[]>();
 
 /**
  * In-memory equivalent of the sliding-log algorithm, so "sliding" behaves
@@ -207,7 +304,6 @@ const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_MAX = 100;
 
 export const memoryStore = new MemoryStore();
-const slidingStore = new Map<string, number[]>();
 const storePromises = new Map<RateLimiterAlgorithm, Promise<RateLimitStore>>();
 
 export function getStore(algorithm: RateLimiterAlgorithm = "fixed"): Promise<RateLimitStore> {

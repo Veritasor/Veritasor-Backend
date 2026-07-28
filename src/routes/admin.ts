@@ -16,6 +16,7 @@ import {
   listQuarantinedLetters,
   releaseQuarantinedLetter,
   purgeQuarantinedLetter,
+  listDeadLetterShards,
 } from '../services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../services/webhooks/razorpayHandler.js'
 import { revokeBatchAttestations } from '../services/attestation/revokeBatch.js'
@@ -624,8 +625,26 @@ adminRouter.get(
   async (req, res) => {
     try {
       const provider = typeof req.query.provider === 'string' ? req.query.provider : undefined
-      const quarantined = await listQuarantinedLetters(provider)
+      const integration = typeof req.query.integration === 'string' ? req.query.integration : undefined
+      const quarantined = await listQuarantinedLetters(provider, integration)
       res.json({ data: quarantined })
+    } catch (error: any) {
+      res.status(500).json({ error: 'Internal Server Error', message: error.message })
+    }
+  }
+)
+
+/**
+ * GET /api/v1/admin/webhooks/shards
+ * List all DLQ shards and their entry counts
+ */
+adminRouter.get(
+  '/webhooks/shards',
+  requirePermissions(IntegrationPermission.ADMIN_READ_STATS),
+  async (req, res) => {
+    try {
+      const shards = await listDeadLetterShards()
+      res.json({ data: shards })
     } catch (error: any) {
       res.status(500).json({ error: 'Internal Server Error', message: error.message })
     }

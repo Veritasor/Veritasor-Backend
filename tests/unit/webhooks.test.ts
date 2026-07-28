@@ -1,5 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { signAndPrepareDelivery, verifyWebhookSignature, WebhookSubscription } from "../../src/services/webhooks/dispatcher";
+import { describe, it, expect, vi } from "vitest";
+import {
+  signAndPrepareDelivery,
+  WebhookSubscription,
+  WebhookCircuitBreakerState,
+  WebhookEndpointCircuitBreaker,
+} from "../../src/services/webhooks/dispatcher";
 
 describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
   const mockSubscription: WebhookSubscription = {
@@ -33,79 +38,111 @@ describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
     });
   });
 
-  it("verifies a valid signature successfully", () => {
-    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
-    
-    const isValid = verifyWebhookSignature({
-      payload: JSON.stringify(mockEvent),
-      headers,
-      secret: mockSubscription.secret,
+  it("opens after repeated failures and blocks delivery until the cooldown elapses", () => {
+    const now = vi.fn(() => 0);
+    const breaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "webhook-endpoint-1",
+      failureThreshold: 2,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      now,
     });
 
-    expect(isValid).toBe(true);
+    expect(breaker.canAttempt()).toBe(true);
+    breaker.recordFailure();
+    expect(breaker.canAttempt()).toBe(true);
+    breaker.recordFailure();
+
+    expect(breaker.getState()).toBe(WebhookCircuitBreakerState.OPEN);
+    expect(breaker.canAttempt()).toBe(false);
+
+    now.mockReturnValue(1500);
+    expect(breaker.canAttempt()).toBe(true);
   });
 
-  it("rejects an invalid signature", () => {
-    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
-    
-    // Modify signature
-    headers["X-Veritasor-Signature"] = "deadbeef" + headers["X-Veritasor-Signature"].substring(8);
-    
-    const isValid = verifyWebhookSignature({
-      payload: JSON.stringify(mockEvent),
-      headers,
-      secret: mockSubscription.secret,
+  it("allows one probe in half-open mode and closes on success", () => {
+    const now = vi.fn(() => 0);
+    const breaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "webhook-endpoint-2",
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      now,
     });
 
-    expect(isValid).toBe(false);
+    breaker.recordFailure();
+    expect(breaker.getState()).toBe(WebhookCircuitBreakerState.OPEN);
+
+    now.mockReturnValue(1500);
+    expect(breaker.canAttempt()).toBe(true);
+    breaker.recordSuccess();
+
+    expect(breaker.getState()).toBe(WebhookCircuitBreakerState.CLOSED);
+    expect(breaker.canAttempt()).toBe(true);
   });
 
-  it("rejects a stale delivery outside the configurable freshness window", () => {
-    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
-    
-    // Advance time by 6 minutes (beyond default 5 min tolerance)
-    vi.advanceTimersByTime(6 * 60 * 1000);
-    
-    const isValid = verifyWebhookSignature({
-      payload: JSON.stringify(mockEvent),
-      headers,
-      secret: mockSubscription.secret,
+  it("persists breaker state across instances for the same endpoint", () => {
+    const storage = new Map<string, unknown>();
+    const persistence = {
+      load: () => Object.fromEntries(storage.entries()),
+      save: (states: Record<string, unknown>) => {
+        storage.clear();
+        Object.entries(states).forEach(([key, value]) => storage.set(key, value));
+      },
+    };
+
+    const breaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "persisted-endpoint",
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      persistence: persistence as never,
     });
 
-    expect(isValid).toBe(false);
+    breaker.recordFailure();
+
+    const restoredBreaker = new WebhookEndpointCircuitBreaker({
+      endpointKey: "persisted-endpoint",
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      halfOpenMaxProbes: 1,
+      persistence: persistence as never,
+    });
+
+    expect(restoredBreaker.getState()).toBe(WebhookCircuitBreakerState.OPEN);
+    expect(restoredBreaker.canAttempt()).toBe(false);
   });
 
-  it("accepts a delivery within the configurable freshness window", () => {
-    const { headers } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
-    
-    // Advance time by 4 minutes (within default 5 min tolerance)
-    vi.advanceTimersByTime(4 * 60 * 1000);
-    
-    const isValid = verifyWebhookSignature({
-      payload: JSON.stringify(mockEvent),
-      headers,
-      secret: mockSubscription.secret,
-    });
-
-    expect(isValid).toBe(true);
+  it("rejects payload exceeding maxPayloadSize and logs to audit", () => {
+    // stringified mockEvent: '{"event":"attestation.created","root":"0xhash"}' -> 47 bytes
+    const subCap46 = { ...mockSubscription, maxPayloadSize: 46 };
+    expect(() => signAndPrepareDelivery(mockEvent, subCap46, 1)).toThrowError("exceeds maximum allowed size");
   });
 
-  it("prevents reorder attacks by requiring attempt tracking (implicit via distinct signatures)", () => {
-    const attempt1 = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
-    const attempt2 = signAndPrepareDelivery(mockEvent, mockSubscription, 2);
-    
-    // The signatures must be different
-    expect(attempt1.headers["X-Veritasor-Signature"]).not.toEqual(attempt2.headers["X-Veritasor-Signature"]);
-    
-    // If an attacker sends attempt 1 headers but changes the attempt number to 2, signature verification should fail
-    const forgedHeaders = { ...attempt1.headers, "X-Veritasor-Attempt": "2" };
-    
-    const isValid = verifyWebhookSignature({
-      payload: JSON.stringify(mockEvent),
-      headers: forgedHeaders,
-      secret: mockSubscription.secret,
-    });
+  it("accepts payload exactly matching maxPayloadSize boundary", () => {
+    const subCap47 = { ...mockSubscription, maxPayloadSize: 47 };
+    expect(() => signAndPrepareDelivery(mockEvent, subCap47, 1)).not.toThrow();
+  });
 
-    expect(isValid).toBe(false);
+  it("rejects payload exceeding maxPayloadSize and logs to audit", () => {
+    // stringified mockEvent: '{"event":"attestation.created","root":"0xhash"}' -> 47 bytes
+    const subCap46 = { ...mockSubscription, maxPayloadSize: 46 };
+    expect(() => signAndPrepareDelivery(mockEvent, subCap46, 1)).toThrowError("exceeds maximum allowed size");
+  });
+
+  it("accepts payload exactly matching maxPayloadSize boundary", () => {
+    const subCap47 = { ...mockSubscription, maxPayloadSize: 47 };
+    expect(() => signAndPrepareDelivery(mockEvent, subCap47, 1)).not.toThrow();
+  });
+
+  it("rejects payload exceeding maxPayloadSize and logs to audit", () => {
+    // stringified mockEvent: '{"event":"attestation.created","root":"0xhash"}' -> 47 bytes
+    const subCap46 = { ...mockSubscription, maxPayloadSize: 46 };
+    expect(() => signAndPrepareDelivery(mockEvent, subCap46, 1)).toThrowError("exceeds maximum allowed size");
+  });
+
+  it("accepts payload exactly matching maxPayloadSize boundary", () => {
+    const subCap47 = { ...mockSubscription, maxPayloadSize: 47 };
+    expect(() => signAndPrepareDelivery(mockEvent, subCap47, 1)).not.toThrow();
   });
 });

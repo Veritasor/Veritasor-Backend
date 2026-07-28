@@ -50,6 +50,13 @@ vi.mock("@opentelemetry/api", async (importOriginal) => {
     propagation: {
       ...actual.propagation,
       extract: extractMock,
+      getBaggage: vi.fn(),
+      setBaggage: vi.fn((ctx) => ctx),
+      createBaggage: vi.fn(() => ({
+        getEntry: vi.fn(),
+        setEntry: vi.fn().mockReturnThis(),
+        removeEntry: vi.fn().mockReturnThis(),
+      })),
     },
     trace: {
       ...actual.trace,
@@ -162,5 +169,41 @@ describe("OpenTelemetry tracing helpers", () => {
     });
     expect(JSON.stringify(spans[0].attributes)).not.toContain("secret");
     expect(spans[0].ended).toBe(true);
+  });
+
+  it("propagates tenant.id from baggage into span attributes", async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318/v1/traces";
+    const api = await import("@opentelemetry/api");
+    const { startHttpRequestSpan } = await import("../../src/tracing.js");
+
+    const mockBaggage = {
+      getEntry: vi.fn((key) => {
+        if (key === "tenant.id") return { value: "tenant-123" };
+        return undefined;
+      }),
+      setEntry: vi.fn().mockReturnThis(),
+      removeEntry: vi.fn().mockReturnThis(),
+    };
+    
+    vi.mocked(api.propagation.getBaggage).mockReturnValue(mockBaggage as any);
+    
+    const req = {
+      headers: {},
+      method: "GET",
+      path: "/api/v1/tenant-test",
+      ip: "127.0.0.1",
+      query: {},
+    };
+    const res = Object.assign(new EventEmitter(), {
+      statusCode: 200,
+      once: EventEmitter.prototype.once,
+    });
+    const next = vi.fn();
+
+    startHttpRequestSpan(req as never, res as never, "corr-test", next);
+    res.emit("finish");
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0].attributes["tenant.id"]).toBe("tenant-123");
   });
 });
