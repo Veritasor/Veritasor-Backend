@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { config } from "../config/index.js";
 import { mtlsRevocationChecker } from "./mtlsRevocation.js";
 import { logger } from "../utils/logger.js";
+import { mtlsHandshakeFailuresTotal } from "../metrics.js";
 
 export interface MtlsAuthenticatedRequest extends Request {
   clientCN?: string;
@@ -23,6 +24,7 @@ export function mtlsMiddleware(
   next: NextFunction,
 ): void {
   void handleMtls(req, res, next).catch((error) => {
+    mtlsHandshakeFailuresTotal.inc({ reason: "internal_error" });
     logger.error({
       event: "mtls_internal_error",
       error: error instanceof Error ? error.message : String(error),
@@ -47,6 +49,8 @@ async function handleMtls(
   const cert = req.socket.getPeerCertificate(true);
 
   if (!cert || !req.socket.authorized) {
+    const reason = !cert ? "no_client_cert" : "unauthorized";
+    mtlsHandshakeFailuresTotal.inc({ reason });
     logger.warn({
       event: "mtls_unauthorized",
       reason: req.socket.authorizationError || "no_client_cert",
@@ -63,6 +67,8 @@ async function handleMtls(
     cert,
   );
   if (!revocationDecision.ok) {
+    const reason = revocationDecision.status === "revoked" ? "cert_revoked" : "revocation_check_failed";
+    mtlsHandshakeFailuresTotal.inc({ reason });
     logger.warn({
       event: "mtls_certificate_revocation_rejected",
       source: revocationDecision.source,
@@ -86,6 +92,7 @@ async function handleMtls(
   const cn = cert.subject?.CN;
   if (config.mtls.cnAllowlist.length > 0) {
     if (!cn || !config.mtls.cnAllowlist.includes(cn)) {
+      mtlsHandshakeFailuresTotal.inc({ reason: "cn_not_allowed" });
       logger.warn({
         event: "mtls_cn_not_allowed",
         client_cn: cn,

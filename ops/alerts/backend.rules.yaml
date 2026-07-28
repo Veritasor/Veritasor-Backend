@@ -178,3 +178,18 @@ groups:
             Average wait time for a server connection is {{ $value | humanizeDuration }}
             in PgBouncer database {{ $labels.database }}. This indicates pool saturation.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
+
+      # ── mTLS ─────────────────────────────────────────────────────────────────
+      - alert: MtlsHandshakeFailuresSpike
+        expr: >
+          sum by (reason) (rate(mtls_handshake_failures_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "mTLS handshake failures spike ({{ $labels.reason }})"
+          description: >
+            High rate of mTLS handshake failures due to {{ $labels.reason }}.
+            This might indicate a misconfigured client, expired certificates, or an ongoing attack.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/security-alerts.md#mtlshandshakefailuresspike"
