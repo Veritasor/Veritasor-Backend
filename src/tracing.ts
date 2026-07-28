@@ -2,6 +2,7 @@ import {
   SpanKind,
   SpanStatusCode,
   context,
+  isSpanContextValid,
   propagation,
   trace,
   type Context,
@@ -49,13 +50,29 @@ export async function initializeOpenTelemetry(): Promise<
   }
 
   sdkStartPromise = (async () => {
-    const [{ NodeSDK }, { OTLPTraceExporter }] = await Promise.all([
+    const [
+      { NodeSDK },
+      { OTLPTraceExporter },
+      { OTLPLogExporter },
+      { BatchLogRecordProcessor }
+    ] = await Promise.all([
       import("@opentelemetry/sdk-node"),
       import("@opentelemetry/exporter-trace-otlp-http"),
+      import("@opentelemetry/exporter-logs-otlp-http"),
+      import("@opentelemetry/sdk-logs")
     ]);
 
+    const traceUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    const logUrl = traceUrl?.endsWith("/v1/traces")
+      ? traceUrl.replace(/\/v1\/traces$/, "/v1/logs")
+      : undefined;
+
     const rawExporter = new OTLPTraceExporter({
-      url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+      url: traceUrl,
+    });
+
+    const logExporter = new OTLPLogExporter({
+      url: logUrl,
     });
 
     const { SanitizingSpanExporter } = await import(
@@ -66,6 +83,7 @@ export async function initializeOpenTelemetry(): Promise<
     sdk = new NodeSDK({
       serviceName: process.env.OTEL_SERVICE_NAME ?? "veritasor-backend",
       traceExporter,
+      logRecordProcessor: new BatchLogRecordProcessor(logExporter),
     });
 
     sdk.start();
@@ -109,6 +127,19 @@ export function getHttpRequestContext(req: Request): Context {
   }
 
   return propagation.extract(context.active(), req.headers, HTTP_HEADER_GETTER);
+}
+
+export function getActiveTraceExemplarLabels(): Record<string, string> {
+  const activeSpan = trace.getActiveSpan();
+  const spanContext = activeSpan?.spanContext();
+
+  if (!spanContext || !isSpanContextValid(spanContext)) {
+    return {};
+  }
+
+  return {
+    trace_id: spanContext.traceId,
+  };
 }
 
 export function startHttpRequestSpan(
