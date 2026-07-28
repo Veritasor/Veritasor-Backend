@@ -1,11 +1,40 @@
-# Caching
+# Cache-Control policy matrix
 
-## Public Attestations
-Public attestation responses utilize the `stale-while-revalidate` Cache-Control directive to allow edge caches to serve slightly stale content while asynchronously revalidating in the background.
+All Cache-Control directives are defined in [`src/utils/cacheControl.ts`](../src/utils/cacheControl.ts)
+and applied via `setCacheControl(res, policy)` — the single source of truth.
 
-The `Cache-Control` header is constructed using a helper method to ensure consistent application of cache policies.
+## Policy table
 
-For observability, we emit an `Age` header. In a fresh response from the backend, the `Age` is 0. 
+| Policy name | Endpoint | Directive | Rationale |
+|---|---|---|---|
+| `PUBLIC_ATTESTATION_REVOKED` | `GET /api/v1/public/attestations/:hash` (revoked) | `public, max-age=15, stale-while-revalidate=60` | Revoked attestation — short TTL so clients learn of revocation quickly |
+| `PUBLIC_ATTESTATION_ACTIVE` | `GET /api/v1/public/attestations/:hash` (active) | `public, max-age=60, stale-while-revalidate=60` | Active attestation — medium TTL, paired with ETag for validation |
+| `WEBHOOK_EGRESS_IPS` | `GET /.well-known/webhook-egress-ips` | `public, max-age=3600, stale-while-revalidate=60` | Egress IP manifest — long TTL since the IP set changes infrequently |
+| `JWKS_DOCUMENT` | `GET /.well-known/jwks.json` | `public, max-age=<rotation-ttl>, stale-while-revalidate=60` | JWKS public keys — TTL driven by key rotation schedule |
+| `DATA_EXPORT_DOWNLOAD` | `GET /api/users/me/export/:token` | `no-cache, no-store, must-revalidate` | GDPR data export — must never be cached |
 
-### Revoked Attestations
-Revoked attestations also support `stale-while-revalidate` but typically have shorter or modified cache limits to ensure clients are quickly informed of the revocation, although currently we just serve them with `no-store` or a brief cache to prevent excessive backend load while maintaining security. Wait, actually, the PR requires "Revalidation on revoked attestation". So revoked attestations should also emit SWR cache headers so they can be cached at the edge but refreshed asynchronously.
+## Design
+
+Each policy is a `CachePolicy` object carrying a `name`, `value`, and `description`.
+Policies that accept parameters (e.g. `WEBHOOK_EGRESS_IPS(maxAge)`, `JWKS_DOCUMENT(maxAge)`)
+are factory functions; invariant policies are plain objects.
+
+The `stale-while-revalidate` seconds are configured via the
+`PUBLIC_CDN_STALE_WHILE_REVALIDATE` environment variable (default `60`).
+All public-cacheable endpoints use the same SWR duration so CDN edge and
+enterprise proxy behaviour is consistent across the API.
+
+## Adding a new policy
+
+1. Add a new entry to `CachePolicies` in `src/utils/cacheControl.ts`.
+2. Update this table.
+3. Call `setCacheControl(res, CachePolicies.YOUR_POLICY)` in the route handler.
+
+## Verification
+
+To verify that a response carries the expected `Cache-Control` header:
+
+```bash
+curl -sI https://api.example.com/.well-known/webhook-egress-ips \
+  | grep -i cache-control
+```

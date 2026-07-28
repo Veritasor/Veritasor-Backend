@@ -4,6 +4,7 @@ import type { Server as HttpsServer } from "node:https";
 import type { Request, Response, NextFunction } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
+import { CachePolicies, setCacheControl } from "./utils/cacheControl.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
@@ -166,7 +167,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
     const etag = jwksManager.getEtag()
     const cacheSeconds = jwksManager.getCacheTtlSeconds()
 
-    res.set("Cache-Control", `public, max-age=${cacheSeconds}, stale-while-revalidate=60`)
+    setCacheControl(res, CachePolicies.JWKS_DOCUMENT(cacheSeconds))
     res.set("ETag", etag)
     res.json(jwks)
   });

@@ -37,6 +37,7 @@ import {
   MANIFEST_CACHE_TTL_SECONDS,
 } from "../services/webhooks/egressIpAllowList.js";
 import { logger } from "../utils/logger.js";
+import { CachePolicies, setCacheControl } from "../utils/cacheControl.js";
 
 export const webhookEgressIpsRouter = Router();
 
@@ -46,10 +47,7 @@ webhookEgressIpsRouter.get(
     try {
       const signed = await getSignedManifest();
 
-      res.set(
-        "Cache-Control",
-        `public, max-age=${MANIFEST_CACHE_TTL_SECONDS}, stale-while-revalidate=60`
-      );
+      setCacheControl(res, CachePolicies.WEBHOOK_EGRESS_IPS(MANIFEST_CACHE_TTL_SECONDS));
       res.set("Content-Type", "application/json; charset=utf-8");
 
       res.json(signed);
