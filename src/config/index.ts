@@ -16,6 +16,7 @@ export const envSchema = z.object({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
   }).url("DATABASE_URL must be a valid URL"),
+  DATABASE_SESSION_URL: z.string().url("DATABASE_SESSION_URL must be a valid URL").optional(),
   PGPOOL_MAX: z.string().optional(),
   PG_IDLE_TIMEOUT_MS: z.string().optional(),
   PG_CONN_TIMEOUT_MS: z.string().optional(),
@@ -27,12 +28,21 @@ export const envSchema = z.object({
   SOROBAN_NETWORK_PASSPHRASE: z.string().default("Test SDF Network ; September 2015"),
   SOROBAN_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
   SOROBAN_REPLAY_MAX_AGE_DAYS: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_MIN_SIZE: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_MAX_SIZE: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SENSITIVITY: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
   SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
   SECRET_FILE_PATH: z.string().optional(),
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
+  OUTBOUND_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
+  OUTBOUND_RETRY_BUDGET_WINDOW_MS: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -114,6 +124,19 @@ function parsePositiveIntEnv(name: string, rawValue: string | undefined, default
   return value;
 }
 
+function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValue: number, min: number, max: number): number {
+  if (rawValue === undefined) {
+    return defaultValue;
+  }
+
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new ConfigValidationError(`${name} must be a number between ${min} and ${max}`);
+  }
+
+  return value;
+}
+
 let parsedEnv: z.infer<typeof envSchema>;
 
 try {
@@ -160,6 +183,7 @@ export const config = {
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {
     url: parsedEnv.DATABASE_URL,
+    sessionUrl: parsedEnv.DATABASE_SESSION_URL || parsedEnv.DATABASE_URL,
     poolMax: parsePositiveIntEnv("PGPOOL_MAX", parsedEnv.PGPOOL_MAX, 10),
     idleTimeoutMs: parsePositiveIntEnv("PG_IDLE_TIMEOUT_MS", parsedEnv.PG_IDLE_TIMEOUT_MS, 30_000),
     connectionTimeoutMs: parsePositiveIntEnv("PG_CONN_TIMEOUT_MS", parsedEnv.PG_CONN_TIMEOUT_MS, 2_000),
@@ -233,10 +257,63 @@ export const config = {
       parsedEnv.SOROBAN_REPLAY_MAX_AGE_DAYS,
       7,
     ),
+    adaptiveBatch: {
+      minBatchSize: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_MIN_SIZE",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_MIN_SIZE,
+        1,
+      ),
+      maxBatchSize: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_MAX_SIZE",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_MAX_SIZE,
+        100,
+      ),
+      ewmaAlpha: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA,
+        0.3,
+        0.01,
+        1.0,
+      ),
+      feeSpikeMultiplier: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER,
+        2.0,
+        1.0,
+        10.0,
+      ),
+      sensitivity: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SENSITIVITY",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SENSITIVITY,
+        0.5,
+        0.01,
+        2.0,
+      ),
+      volatilityDampening: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING,
+        0.5,
+        0.0,
+        1.0,
+      ),
+      sampleIntervalMs: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS,
+        60_000,
+      ),
+    },
   },
   secretLoader: {
     source: parsedEnv.SECRET_LOADER,
     filePath: parsedEnv.SECRET_FILE_PATH,
+    /**
+     * When `source` is `"vault"`, `VaultAdapter` (src/utils/secret-loader.ts)
+     * auto-renews any renewable dynamic-secret lease Vault returns at 70% of
+     * its `lease_duration` (with jitter), and falls back to a full reload —
+     * rotating in-memory secrets from a fresh lease — if Vault denies
+     * renewal. See `vault_lease_renewal_total` / `vault_lease_seconds_remaining`
+     * in src/metrics.ts for observability into this.
+     */
     vault: {
       baseUrl: parsedEnv.VAULT_BASE_URL,
       secretPath: parsedEnv.VAULT_SECRET_PATH,
@@ -249,5 +326,19 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+  },
+  integrations: {
+    retryBudget: {
+      maxRetries: parsePositiveIntEnv(
+        "OUTBOUND_RETRY_BUDGET_MAX_RETRIES",
+        parsedEnv.OUTBOUND_RETRY_BUDGET_MAX_RETRIES,
+        50,
+      ),
+      windowMs: parsePositiveIntEnv(
+        "OUTBOUND_RETRY_BUDGET_WINDOW_MS",
+        parsedEnv.OUTBOUND_RETRY_BUDGET_WINDOW_MS,
+        60_000,
+      ),
+    },
   },
 } as const;

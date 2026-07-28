@@ -16,15 +16,25 @@ describe("Business Fan-out Webhooks Dispatch Verification Matrix", () => {
 
   const mockEvent = { event: "attestation.created", root: "0xhash" };
 
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T00:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("constructs a signature receipt conforming to structured parameters", () => {
     const { headers, receipt } = signAndPrepareDelivery(mockEvent, mockSubscription, 1);
 
     expect(headers["X-Veritasor-Signature"]).toBeDefined();
+    expect(headers["X-Veritasor-Timestamp"]).toBeDefined();
     expect(receipt).toMatchObject({
       delivery_id: expect.any(String),
       attempt: 1,
       signature: headers["X-Veritasor-Signature"],
-      timestamp: expect.any(String),
+      timestamp: headers["X-Veritasor-Timestamp"],
     });
   });
 
