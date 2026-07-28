@@ -2,6 +2,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import { Request, Response } from 'express'
 import { z } from 'zod'
 import { integrationRepository } from '../../../repositories/integrations.js'
+import { executeWithRetry } from '../clientWrapper.js'
+import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
 
 const RAZORPAY_VERIFY_URL = 'https://api.razorpay.com/v1/payments'
 const RAZORPAY_OAUTH_URL = 'https://auth.razorpay.com/authorize'
@@ -332,10 +334,18 @@ export async function connectRazorpay(req: Request, res: Response) {
   url.searchParams.set('count', '1')
 
   try {
-    const resp = await fetch(url.toString(), {
-      headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
-      signal: AbortSignal.timeout(CREDENTIAL_TIMEOUT_MS),
-    })
+    const resp = await executeWithRetry(
+      () =>
+        fetch(url.toString(), {
+          headers: { Authorization: `Basic ${auth}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(CREDENTIAL_TIMEOUT_MS),
+        }),
+      {
+        provider: 'razorpay',
+        operation: 'verify_credentials',
+        maxRetries: 2,
+      },
+    )
 
     if (!resp.ok) {
       if (resp.status === 401 || resp.status === 403) {
@@ -348,7 +358,10 @@ export async function connectRazorpay(req: Request, res: Response) {
     if (!isRazorpayVerificationPayload(responseBody)) {
       return res.status(502).json({ error: 'Unexpected Razorpay verification response' })
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof GlobalRetryBudgetExceededError) {
+      return res.status(503).json({ error: 'Global outbound retry budget exhausted' })
+    }
     return res.status(502).json({ error: 'Failed to reach Razorpay API' })
   }
 
