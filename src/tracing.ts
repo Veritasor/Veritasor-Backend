@@ -77,14 +77,17 @@ export async function initializeOpenTelemetry(): Promise<
       url: logUrl,
     });
 
-    const { SanitizingSpanExporter } = await import(
-      "./tracing/sanitizer.js"
-    );
+    const [{ SanitizingSpanExporter }, { RouteAwareSampler }] = await Promise.all([
+      import("./tracing/sanitizer.js"),
+      import("./tracing/sampler.js"),
+    ]);
     const traceExporter = new SanitizingSpanExporter(rawExporter);
+    const sampler = new RouteAwareSampler();
 
     sdk = new NodeSDK({
       serviceName: process.env.OTEL_SERVICE_NAME ?? "veritasor-backend",
       traceExporter,
+      sampler,
       logRecordProcessor: new BatchLogRecordProcessor(logExporter),
     });
 
