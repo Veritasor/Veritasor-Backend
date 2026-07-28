@@ -10,6 +10,8 @@ import * as store from './store.js';
 import { logger } from '../../../utils/logger.js';
 import { computeShopifyHmac } from './utils.js';
 import { timingSafeEqual } from 'crypto';
+import { executeWithRetry } from '../clientWrapper.js';
+import { GlobalRetryBudgetExceededError } from '../retryBudget.js';
 
 
 export interface CallbackParams {
@@ -98,14 +100,27 @@ export async function handleCallback(params: CallbackParams): Promise<CallbackRe
 
   let res: Response;
   try {
-    res = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-      body: body.toString().replace(clientSecret, '[REDACTED]'),
-    });
+    res = await executeWithRetry(
+      () =>
+        fetch(tokenUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+          body: body.toString().replace(clientSecret, '[REDACTED]'),
+        }),
+      {
+        provider: 'shopify',
+        operation: 'oauth_token',
+        maxRetries: 2,
+      },
+    );
   } catch (err) {
     logger.error({ event: 'shopify_callback_token_exchange_error', shop, state, err: err instanceof Error ? err.message : String(err) }, 'Shopify token exchange request failed');
-    return { success: false, error: 'Token exchange request failed' };
+    return {
+      success: false,
+      error: err instanceof GlobalRetryBudgetExceededError
+        ? 'Global outbound retry budget exhausted'
+        : 'Token exchange request failed',
+    };
   }
 
   if (!res.ok) {
