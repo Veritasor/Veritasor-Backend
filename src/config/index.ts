@@ -136,61 +136,6 @@ function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValu
   return value;
 }
 
-function parseCsvList(rawValue: string | undefined): string[] {
-  if (!rawValue?.trim()) {
-    return [];
-  }
-
-  return rawValue
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-}
-
-function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
-  const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
-  const ocspEnabled = parseBooleanEnv(
-    "MTLS_OCSP_ENABLED",
-    parsedEnv.MTLS_OCSP_ENABLED,
-    false,
-  );
-
-  const caPath = parsedEnv.MTLS_CA_PATH?.trim();
-  const certPath = parsedEnv.MTLS_CERT_PATH?.trim();
-  const keyPath = parsedEnv.MTLS_KEY_PATH?.trim();
-  const crlPath = parsedEnv.MTLS_CRL_PATH?.trim();
-
-  if (enabled && (!caPath || !certPath || !keyPath)) {
-    throw new ConfigValidationError(
-      "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true",
-    );
-  }
-
-  if (enabled && ocspEnabled && !crlPath) {
-    throw new ConfigValidationError(
-      "MTLS_CRL_PATH must be set when MTLS_OCSP_ENABLED=true",
-    );
-  }
-
-  return {
-    enabled,
-    cnAllowlist: parseCsvList(parsedEnv.MTLS_CN_ALLOWLIST),
-    caPath,
-    certPath,
-    keyPath,
-    revocation: {
-      enabled: ocspEnabled,
-      ocspCacheTtlMs: parsePositiveIntEnv(
-        "MTLS_OCSP_CACHE_TTL_MS",
-        parsedEnv.MTLS_OCSP_CACHE_TTL_MS,
-        300_000,
-      ),
-      ocspIssuerPath: parsedEnv.MTLS_OCSP_ISSUER_PATH?.trim() || caPath,
-      crlPath,
-    },
-  };
-}
-
 let parsedEnv: z.infer<typeof envSchema>;
 
 try {
@@ -211,8 +156,6 @@ if (parsedEnv.NODE_ENV === "development" && !parsedEnv.JWT_SECRET) {
   logger.warn("JWT_SECRET is missing in development. Using a default unsafe secret.");
   parsedEnv.JWT_SECRET = "default_dev_secret_for_local_testing_only";
 }
-
-const mtlsConfig = parseMtlsConfig(parsedEnv);
 
 /**
  * CORS allowed origins.
@@ -351,6 +294,8 @@ export const config = {
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */
     rpcUrl: parsedEnv.SOROBAN_RPC_URL,
+    /** Backup Soroban RPC endpoint for hedged requests. Falls back to primary if unset. */
+    backupRpcUrl: process.env.SOROBAN_BACKUP_RPC_URL || parsedEnv.SOROBAN_RPC_URL,
     /** Deployed attestation contract address (C…). Required in production. */
     contractId: parsedEnv.SOROBAN_CONTRACT_ID,
     /**
