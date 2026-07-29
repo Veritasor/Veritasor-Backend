@@ -61,6 +61,14 @@ abstract class BaseSecretAdapter implements SecretAdapter {
 
   abstract get(key: string): Promise<string>
 
+  get allSecrets(): Map<string, string> {
+    return new Map(this.secrets)
+  }
+
+  set allSecrets(secrets: Map<string, string>) {
+    this.secrets = new Map(secrets)
+  }
+
   protected ensureLoaded(): void {
     if (!this.loaded) {
       throw new SecretNotLoadedError()
@@ -468,31 +476,158 @@ export class GsmSecretAdapter extends BaseSecretAdapter {
   }
 }
 
-class FailoverSecretLoader implements SecretAdapter {
-  private primaryAdapter: SecretAdapter
-  private fallbackAdapter: SecretAdapter
-  private timeout: number
+class KmsDiskCache {
+  private readonly algorithm = 'aes-256-gcm'
 
-  constructor(primaryAdapter: SecretAdapter, fallbackAdapter: SecretAdapter, timeout: number = 5000) {
+  constructor(
+    private readonly kmsKeyId: string,
+    private readonly cachePath: string,
+    private readonly ttlMinutes: number,
+    private readonly region: string = process.env.AWS_REGION || 'us-east-1'
+  ) {}
+
+  async save(secrets: Map<string, string>): Promise<void> {
+    try {
+      const { KMSClient, GenerateDataKeyCommand } = await import('@aws-sdk/client-kms')
+      const client = new KMSClient({ region: this.region })
+      
+      const dataKeyResponse = await client.send(
+        new GenerateDataKeyCommand({
+          KeyId: this.kmsKeyId,
+          KeySpec: 'AES_256',
+        })
+      )
+
+      if (!dataKeyResponse.Plaintext || !dataKeyResponse.CiphertextBlob) {
+        throw new Error('Failed to generate KMS data key')
+      }
+
+      const crypto = await import('node:crypto')
+      const iv = crypto.randomBytes(12)
+      const cipher = crypto.createCipheriv(this.algorithm, Buffer.from(dataKeyResponse.Plaintext), iv)
+      
+      const payloadStr = JSON.stringify(Object.fromEntries(secrets))
+      let encrypted = cipher.update(payloadStr, 'utf8', 'base64')
+      encrypted += cipher.final('base64')
+      const authTag = cipher.getAuthTag()
+
+      const cachePayload = {
+        ciphertextKey: Buffer.from(dataKeyResponse.CiphertextBlob).toString('base64'),
+        iv: iv.toString('base64'),
+        authTag: authTag.toString('base64'),
+        encryptedData: encrypted,
+        expiresAt: Date.now() + this.ttlMinutes * 60 * 1000,
+      }
+
+      const fs = await import('node:fs/promises')
+      const path = await import('node:path')
+      
+      await fs.mkdir(path.dirname(this.cachePath), { recursive: true })
+      await fs.writeFile(this.cachePath, JSON.stringify(cachePayload), { mode: 0o600 })
+    } catch (err) {
+      logger.error('Failed to save KMS encrypted cache', err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async load(): Promise<Map<string, string> | null> {
+    try {
+      const fs = await import('node:fs/promises')
+      let fileContent: string
+      try {
+        fileContent = await fs.readFile(this.cachePath, 'utf8')
+      } catch (err: any) {
+        if (err.code === 'ENOENT') return null
+        throw err
+      }
+
+      const parsed = JSON.parse(fileContent)
+      if (Date.now() > parsed.expiresAt) {
+        logger.warn('KMS cache expired, ignoring')
+        return null
+      }
+
+      const { KMSClient, DecryptCommand } = await import('@aws-sdk/client-kms')
+      const client = new KMSClient({ region: this.region })
+      
+      const decryptResponse = await client.send(
+        new DecryptCommand({
+          CiphertextBlob: Buffer.from(parsed.ciphertextKey, 'base64'),
+        })
+      )
+
+      if (!decryptResponse.Plaintext) {
+        throw new Error('Failed to decrypt KMS data key')
+      }
+
+      const crypto = await import('node:crypto')
+      const decipher = crypto.createDecipheriv(
+        this.algorithm,
+        Buffer.from(decryptResponse.Plaintext),
+        Buffer.from(parsed.iv, 'base64')
+      )
+      decipher.setAuthTag(Buffer.from(parsed.authTag, 'base64'))
+
+      let decrypted = decipher.update(parsed.encryptedData, 'base64', 'utf8')
+      decrypted += decipher.final('utf8')
+
+      const secretsRecord = JSON.parse(decrypted)
+      
+      // Audit cache hit
+      logger.info('Secret loader fell back to KMS-encrypted disk cache')
+      
+      const map = new Map<string, string>()
+      for (const [k, v] of Object.entries(secretsRecord)) {
+        map.set(k, v as string)
+      }
+      return map
+    } catch (err) {
+      logger.error('Failed to load or decrypt KMS cache (possible tampering or invalid format)', err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
+}
+
+class FailoverSecretLoader extends BaseSecretAdapter {
+  private primaryAdapter: BaseSecretAdapter
+  private fallbackAdapter: BaseSecretAdapter
+  private timeout: number
+  private diskCache?: KmsDiskCache
+
+  constructor(primaryAdapter: BaseSecretAdapter, fallbackAdapter: BaseSecretAdapter, timeout: number = 5000, diskCache?: KmsDiskCache) {
+    super()
     this.primaryAdapter = primaryAdapter
     this.fallbackAdapter = fallbackAdapter
     this.timeout = timeout
+    this.diskCache = diskCache
   }
 
   async reload(): Promise<void> {
     try {
       await this.withTimeout(this.primaryAdapter.reload(), this.timeout)
-    } catch {
+      this.allSecrets = this.primaryAdapter.allSecrets
+      this.loaded = true
+      
+      if (this.diskCache) {
+        await this.diskCache.save(this.allSecrets)
+      }
+    } catch (primaryErr) {
+      if (this.diskCache) {
+        const cached = await this.diskCache.load()
+        if (cached) {
+          this.allSecrets = cached
+          this.loaded = true
+          return
+        }
+      }
       await this.fallbackAdapter.reload()
+      this.allSecrets = this.fallbackAdapter.allSecrets
+      this.loaded = true
     }
   }
 
   async get(key: string): Promise<string> {
-    try {
-      return await this.withTimeout(this.primaryAdapter.get(key), this.timeout)
-    } catch {
-      return await this.fallbackAdapter.get(key)
-    }
+    this.ensureLoaded()
+    return this.toSecretValue(this.secrets.get(BaseSecretAdapter.normalizeSecretKey(key)), key)
   }
 
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -511,7 +646,7 @@ export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAda
   const fallbackEnabled = options.fallbackEnabled ?? true
   const fallbackAdapter = new EnvAdapter()
 
-  let primaryAdapter: SecretAdapter
+  let primaryAdapter: BaseSecretAdapter
   switch (provider) {
     case 'env':
       return fallbackAdapter
@@ -551,7 +686,21 @@ export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAda
   }
 
   if (fallbackEnabled) {
-    return new FailoverSecretLoader(primaryAdapter, fallbackAdapter, timeout)
+    const kmsKeyId = process.env.SECRET_CACHE_KMS_KEY_ID
+    const cachePath = process.env.SECRET_CACHE_PATH
+    const ttlMinutes = Number(process.env.SECRET_CACHE_TTL_MINUTES || 60 * 24)
+    
+    let diskCache: KmsDiskCache | undefined
+    if (kmsKeyId && cachePath) {
+      diskCache = new KmsDiskCache(
+        kmsKeyId,
+        cachePath,
+        ttlMinutes,
+        process.env.AWS_REGION
+      )
+    }
+
+    return new FailoverSecretLoader(primaryAdapter, fallbackAdapter, timeout, diskCache)
   }
 
   return primaryAdapter

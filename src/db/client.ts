@@ -260,6 +260,13 @@ export class PgClient {
 // Export a singleton instance
 let pgClient: PgClient | null = null;
 
+/** Lazy singleton database client. */
+export const db: PgClient = new Proxy({} as PgClient, {
+  get(_target, prop) {
+    return (getPgClient() as Record<string, unknown>)[prop as string];
+  },
+});
+
 export function getPgClient(): PgClient {
   if (!pgClient) {
     pgClient = new PgClient({
