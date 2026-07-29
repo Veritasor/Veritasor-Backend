@@ -384,6 +384,13 @@ export const statsdDualWriteDurationMs = new Histogram({
   registers: [metricsRegistry],
 });
 
+export const etagHitsTotal = new Counter({
+  name: "etag_hits_total",
+  help: "Total number of ETag-based cache decisions (hit = 304 served, miss = full response)",
+  labelNames: ["route", "result"] as const,
+  registers: [metricsRegistry],
+});
+
 export const statsdDualWriteMetricsCount = new Gauge({
   name: 'statsd_dual_write_metrics_count',
   help: 'Number of Prometheus metric values mirrored in the most recent StatsD dual-write cycle',
