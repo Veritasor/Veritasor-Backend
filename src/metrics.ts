@@ -30,6 +30,13 @@ export function observeHttpRequestDuration(
   });
 }
 
+export const mtlsHandshakeFailuresTotal = new Counter({
+  name: "mtls_handshake_failures_total",
+  help: "Total number of mTLS handshake failures",
+  labelNames: ["reason"] as const,
+  registers: [metricsRegistry],
+});
+
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
   help: "Total number of requests rejected by the rate limiter (HTTP 429)",
@@ -236,5 +243,27 @@ export const redisCircuitBreakerState = new Gauge({
 export const redisCircuitBreakerFailuresTotal = new Counter({
   name: "redis_circuit_breaker_failures_total",
   help: "Total number of Redis circuit breaker failures recorded",
+  registers: [metricsRegistry],
+});
+
+/**
+ * Webhook secret rotation rollout status.
+ *
+ * - `webhook_secret_rotation_status` (gauge, labels: subscription_id, business_id, status):
+ *   1 = subscription has adopted the latest secret version, 0 = lagging behind.
+ *
+ * Operators can sum or count by `status` to see how many subscriptions are
+ * current vs. lagging, and drill into individual lagging subscriptions by
+ * `subscription_id` / `business_id`.
+ *
+ * Implementation in `src/services/webhooks/secretRotation.ts` — see that
+ * module for the update loop and per-subscription resolution.
+ */
+export const webhookSecretRotationStatus = new Gauge({
+  name: "webhook_secret_rotation_status",
+  help:
+    "Rollout status of webhook secret rotation per subscription " +
+    "(1 = current / 0 = lagging)",
+  labelNames: ["subscription_id", "business_id", "status"] as const,
   registers: [metricsRegistry],
 });

@@ -138,6 +138,25 @@ groups:
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
 
       # ── PgBouncer queue depth ────────────────────────────────────────────────
+      - record: sli:attestation_submit_latency_seconds:p95
+        expr: >
+          histogram_quantile(0.95,
+            rate(attestation_submit_latency_seconds_bucket[5m])
+          )
+
+      - alert: AttestationSubmitLatencyHigh
+        expr: sli:attestation_submit_latency_seconds:p95 > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Attestation submit latency p95 > 200ms"
+          description: >
+            Attestation submission latency 95th percentile is {{ $value | humanizeDuration }}.
+            This is above our 200ms SLO.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#attestationsubmitlatencyhigh"
+
       - alert: PgBouncerQueueDepthWarning
         expr: pgbouncer_waiting_clients > 10
         for: 30s
@@ -178,3 +197,18 @@ groups:
             Average wait time for a server connection is {{ $value | humanizeDuration }}
             in PgBouncer database {{ $labels.database }}. This indicates pool saturation.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
+
+      # ── mTLS ─────────────────────────────────────────────────────────────────
+      - alert: MtlsHandshakeFailuresSpike
+        expr: >
+          sum by (reason) (rate(mtls_handshake_failures_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "mTLS handshake failures spike ({{ $labels.reason }})"
+          description: >
+            High rate of mTLS handshake failures due to {{ $labels.reason }}.
+            This might indicate a misconfigured client, expired certificates, or an ongoing attack.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/security-alerts.md#mtlshandshakefailuresspike"
