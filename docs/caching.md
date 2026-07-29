@@ -1,4 +1,4 @@
-# Caching
+# Cache-Control policy matrix
 
 ## Cache Policy Matrix
 
@@ -59,7 +59,13 @@ Public attestation responses utilize the `stale-while-revalidate` Cache-Control 
 
 The `Cache-Control` header is constructed from the canonical cache policy matrix rather than using ad hoc helper methods.
 
-For observability, we emit an `Age` header. In a fresh response from the backend, the `Age` is 0. 
+| Policy name | Endpoint | Directive | Rationale |
+|---|---|---|---|
+| `PUBLIC_ATTESTATION_REVOKED` | `GET /api/v1/public/attestations/:hash` (revoked) | `public, max-age=15, stale-while-revalidate=60` | Revoked attestation — short TTL so clients learn of revocation quickly |
+| `PUBLIC_ATTESTATION_ACTIVE` | `GET /api/v1/public/attestations/:hash` (active) | `public, max-age=60, stale-while-revalidate=60` | Active attestation — medium TTL, paired with ETag for validation |
+| `WEBHOOK_EGRESS_IPS` | `GET /.well-known/webhook-egress-ips` | `public, max-age=3600, stale-while-revalidate=60` | Egress IP manifest — long TTL since the IP set changes infrequently |
+| `JWKS_DOCUMENT` | `GET /.well-known/jwks.json` | `public, max-age=<rotation-ttl>, stale-while-revalidate=60` | JWKS public keys — TTL driven by key rotation schedule |
+| `DATA_EXPORT_DOWNLOAD` | `GET /api/users/me/export/:token` | `no-cache, no-store, must-revalidate` | GDPR data export — must never be cached |
 
 ### Revoked Attestations
 Revoked attestations also support `stale-while-revalidate` but with a shorter TTL (15s vs 60s for active) to ensure clients are quickly informed of revocation while still benefiting from edge caching.

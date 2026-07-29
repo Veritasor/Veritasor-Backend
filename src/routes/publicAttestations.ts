@@ -70,6 +70,7 @@ publicAttestationsRouter.get(
       return;
     }
 
+    setCacheControl(res, CachePolicies.PUBLIC_ATTESTATION_ACTIVE);
     res.set({
       'Cache-Control': activePolicy
         ? formatCacheControl(activePolicy.directives)

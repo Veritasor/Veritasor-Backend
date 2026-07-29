@@ -157,8 +157,20 @@ groups:
             This is above our 200ms SLO.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#attestationsubmitlatencyhigh"
 
+      - record: pgbouncer:waiting_clients:sum
+        expr: sum by (database) (pgbouncer_waiting_clients)
+
+      - record: pgbouncer:active_clients:sum
+        expr: sum by (database) (pgbouncer_active_clients)
+
+      - record: pgbouncer:server_connections:sum
+        expr: sum by (database, state) (pgbouncer_server_connections)
+
+      - record: pgbouncer:scrape_age_seconds
+        expr: time() - pgbouncer_last_successful_scrape_timestamp_seconds
+
       - alert: PgBouncerQueueDepthWarning
-        expr: pgbouncer_waiting_clients > 10
+        expr: pgbouncer:waiting_clients:sum > 10
         for: 30s
         labels:
           severity: warning
@@ -172,7 +184,7 @@ groups:
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
 
       - alert: PgBouncerQueueDepthCritical
-        expr: pgbouncer_waiting_clients > 50
+        expr: pgbouncer:waiting_clients:sum > 50
         for: 15s
         labels:
           severity: critical
@@ -185,19 +197,30 @@ groups:
             Immediate action required: scale PgBouncer or investigate query latency.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
 
-      - alert: PgBouncerAvgWaitTimeHigh
-        expr: pgbouncer_avg_wait_time_seconds > 0.5
+      - alert: PgBouncerMaxWaitTimeHigh
+        expr: max by (database) (pgbouncer_max_wait_seconds) > 0.5
         for: 30s
         labels:
           severity: warning
           team: backend
         annotations:
-          summary: "PgBouncer average wait time elevated ({{ $labels.database }})"
+          summary: "PgBouncer oldest client wait elevated ({{ $labels.database }})"
           description: >
-            Average wait time for a server connection is {{ $value | humanizeDuration }}
+            The oldest client has waited {{ $value | humanizeDuration }} for a server connection
             in PgBouncer database {{ $labels.database }}. This indicates pool saturation.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
 
+
+      - alert: PgBouncerMetricsScrapeFailed
+        expr: pgbouncer_scrape_success == 0 and on() pgbouncer_scraper_enabled == 1
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "PgBouncer metrics scraper is failing"
+          description: "The application cannot read the PgBouncer admin console. Check network access and the least-privilege admin credential."
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncer-metrics-scrape-failure"
       # ── mTLS ─────────────────────────────────────────────────────────────────
       - alert: MtlsHandshakeFailuresSpike
         expr: >

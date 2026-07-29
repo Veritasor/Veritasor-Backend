@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",
     "perf:k6:attestations": "k6 run ops/k6/peak-attestation.js",
+    "perf:k6:black-friday": "k6 run ops/k6/black-friday.js",
     "perf:k6:compare": "tsx scripts/compare-k6.ts --mode compare",
     "perf:k6:save-baseline": "tsx scripts/compare-k6.ts --mode save-baseline",
     "test": "vitest run",

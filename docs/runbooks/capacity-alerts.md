@@ -2,7 +2,7 @@
 
 ## WebhookDlqDepthWarning / WebhookDlqDepthCritical
 
-**Metric:** `webhook_dlq_depth{provider}`  
+**Metric:** `webhook_dlq_depth{provider}`
 **Thresholds:** warning > 50 for 5 m · critical > 200 for 2 m
 
 **What it means.** The `webhook_dead_letters` table is accumulating rows that
@@ -26,7 +26,7 @@ the consumer has not retried successfully.
 
 ## PgPoolHighUtilization / PgPoolSaturated
 
-**Metric:** `pg_pool_active_connections / pg_pool_max_connections`  
+**Metric:** `pg_pool_active_connections / pg_pool_max_connections`
 **Thresholds:** warning > 80 % for 3 m · critical > 95 % for 1 m
 
 **What it means.** The pg connection pool is near or at capacity. New requests
@@ -49,7 +49,7 @@ will block on `connectionTimeoutMillis` (default 2 s) then fail with 503.
 
 ## SorobanSubmitLagHigh / SorobanSubmitLagCritical / SorobanRetryBudgetExhausted
 
-**Metrics:** `soroban_submit_lag_seconds` (histogram) · `soroban_retry_budget_exhausted_total`  
+**Metrics:** `soroban_submit_lag_seconds` (histogram) · `soroban_retry_budget_exhausted_total`
 **SLO:** p95 on-chain confirmation < 60 s (warning) / < 180 s (critical)
 
 **What it means.** Attestations are taking longer than expected to confirm on
@@ -87,9 +87,9 @@ are being silently dropped.
 
 ---
 
-## PgBouncerQueueDepthWarning / PgBouncerQueueDepthCritical / PgBouncerAvgWaitTimeHigh
+## PgBouncerQueueDepthWarning / PgBouncerQueueDepthCritical / PgBouncerMaxWaitTimeHigh
 
-**Metrics:** `pgbouncer_waiting_clients` (gauge) · `pgbouncer_avg_wait_time_seconds` (gauge)  
+**Metrics:** `pgbouncer_waiting_clients` (gauge) · `pgbouncer_max_wait_seconds` (gauge)
 **Thresholds:** warning > 10 waiting for 30 s · critical > 50 waiting for 15 s · avg wait > 0.5 s for 30 s
 
 **What it means.** Clients are queuing for server connections in PgBouncer.
@@ -129,6 +129,16 @@ application-level symptoms appear.
    `max_client_conn` headroom. Monitor `pgbouncer_server_connections`
    gauge — if it hits `max_db_connections`, the pool is at hard capacity.
 
-6. For `PgBouncerAvgWaitTimeHigh`: average wait > 500 ms means clients
+6. For `PgBouncerMaxWaitTimeHigh`: average wait > 500 ms means clients
    spend significant time queued. Check `pgbouncer_avg_query_time_seconds`
    — if queries are slow, fix the query or add read replicas.
+
+## PgBouncer metrics scrape failure
+
+Check `pgbouncer_scrape_errors_total` by reason. For `authentication`, verify the
+dedicated exporter user is in PgBouncer `stats_users` and rotate its secret if
+needed. For `connection` or `timeout`, verify the application pod can reach the
+PgBouncer admin port and that the configured timeout is below the scrape
+interval. Never substitute the normal application database credential. The
+application continues serving traffic and retains the last good pool samples
+while the exporter is degraded.
