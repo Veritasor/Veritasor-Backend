@@ -1,0 +1,88 @@
+name: Migration rollback verification
+
+# Verifies that every migration touched by a PR applies cleanly (up) and
+# reverses cleanly (down) against a disposable scratch database, catching
+# down.sql files that are missing, broken, or that leave schema drift
+# behind. See docs/migration-rollback-verification.md.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/db/migrations/**"
+      - "src/db/migrate.ts"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-rollback:
+    name: Dry-run apply + rollback
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: scratch
+          POSTGRES_PASSWORD: scratch
+          POSTGRES_DB: migration_verify_scratch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scratch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Loopback host + a name containing "scratch" satisfies
+      # assertScratchDatabase()'s guard against running against real data.
+      DATABASE_URL: postgres://scratch:scratch@localhost:5432/migration_verify_scratch
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch for diff
+        run: git fetch origin ${{ github.base_ref }} --depth=1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+        timeout-minutes: 10
+
+      - name: Determine migrations changed in this PR
+        id: changed
+        run: |
+          node -e "
+            const { execSync } = require('node:child_process');
+            const raw = execSync('git diff --name-only origin/${{ github.base_ref }}...HEAD -- src/db/migrations').toString();
+            const files = raw.trim().split('\n').filter(Boolean);
+            const versions = new Set();
+            for (const f of files) {
+              const base = f.split('/').pop();
+              const version = base.replace(/\.(up|down)\.sql\$/, '').replace(/\.sql\$/, '');
+              versions.add(version);
+            }
+            console.log('versions=' + [...versions].join(','));
+          " >> "$GITHUB_OUTPUT"
+
+      - name: Verify migration rollback
+        run: |
+          if [ -n "${{ steps.changed.outputs.versions }}" ]; then
+            echo "Verifying changed migrations: ${{ steps.changed.outputs.versions }}"
+            npx tsx src/db/migrate.ts verify-rollback --only="${{ steps.changed.outputs.versions }}"
+          else
+            echo "migrate.ts changed with no migration file diffs; verifying all migrations."
+            npx tsx src/db/migrate.ts verify-rollback
+          fi

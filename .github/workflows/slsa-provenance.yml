@@ -1,0 +1,235 @@
+name: SLSA Provenance for Release Artifacts
+
+# Generates SLSA v1 provenance (in-toto attestation) for release artifacts,
+# signs artifacts via cosign keyless OIDC, verifies both before publishing,
+# and attaches everything to the GitHub release. See docs/slsa-provenance.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Default deny; each job requests only what it needs.
+permissions: {}
+
+env:
+  ARTIFACT_NAME: veritasor-backend-${{ github.ref_name }}.tgz
+
+jobs:
+  # ── 1. Reproducible build of the release artifact ──────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      # base64-encoded `sha256sum` output consumed by the SLSA generator
+      hashes: ${{ steps.hash.outputs.hashes }}
+      artifact-name: ${{ env.ARTIFACT_NAME }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack release artifact
+        run: |
+          npm pack
+          mv veritasor-backend-*.tgz "${ARTIFACT_NAME}"
+
+      - name: Compute subject digests
+        id: hash
+        run: |
+          echo "hashes=$(sha256sum "${ARTIFACT_NAME}" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p sbom
+          npx @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom/cyclonedx-sbom.json
+
+      - name: Generate SPDX SBOM and checksum
+        run: |
+          npx tsx scripts/generate-spdx.ts --input sbom/cyclonedx-sbom.json --output sbom/spdx-sbom.json
+          sha256sum sbom/spdx-sbom.json > sbom/spdx-sbom.json.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifact
+          path: ${{ env.ARTIFACT_NAME }}
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-files
+          path: sbom/
+          if-no-files-found: error
+          retention-days: 5
+
+  # ── 2. SLSA v1 provenance via the trusted reusable generator ───────────────
+  # The generator builds, signs (Sigstore keyless OIDC), and uploads the
+  # in-toto DSSE attestation; it also records it in the Rekor transparency log.
+  # MUST be referenced by tag per slsa-github-generator's verification model.
+  provenance:
+    needs: [build]
+    permissions:
+      actions: read # read workflow metadata for provenance
+      id-token: write # Sigstore keyless OIDC signing
+      contents: write # upload provenance to the release
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      provenance-name: veritasor-backend-${{ github.ref_name }}.intoto.jsonl
+      upload-assets: true
+
+  # ── 3. Cosign keyless signature over the artifact blob ─────────────────────
+  sign-artifact:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # cosign keyless OIDC
+      contents: read
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifact
+
+      - name: Sign artifact (keyless OIDC)
+        run: |
+          cosign sign-blob --yes \
+            --bundle "${ARTIFACT_NAME}.cosign.bundle" \
+            "${ARTIFACT_NAME}"
+
+      - name: Upload signature bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosign-bundle
+          path: ${{ env.ARTIFACT_NAME }}.cosign.bundle
+          if-no-files-found: error
+          retention-days: 5
+
+  # ── 4. Verification gate: release fails if provenance does not verify ──────
+  verify:
+    needs: [build, provenance, sign-artifact]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifact
+
+      - name: Download provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+
+      - name: Download signature bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cosign-bundle
+
+      - name: Install slsa-verifier
+        uses: slsa-framework/slsa-verifier/actions/installer@v2.7.0
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.5.0
+
+      # Cryptographic verification: Sigstore signature, certificate identity,
+      # and Rekor transparency-log inclusion.
+      - name: Verify provenance (slsa-verifier)
+        run: |
+          slsa-verifier verify-artifact "${ARTIFACT_NAME}" \
+            --provenance-path "veritasor-backend-${{ github.ref_name }}.intoto.jsonl" \
+            --source-uri "github.com/${{ github.repository }}" \
+            --source-tag "${{ github.ref_name }}"
+
+      - name: Verify cosign blob signature
+        run: |
+          cosign verify-blob \
+            --bundle "${ARTIFACT_NAME}.cosign.bundle" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${ARTIFACT_NAME}"
+
+      # Structural gate (digest binding, SLSA v1 predicate, trusted builder,
+      # source repo) — same checks exercised by the unit test suite.
+      - name: Verify provenance structure (repo gate)
+        run: |
+          npx tsx scripts/verify-provenance.ts \
+            --provenance "veritasor-backend-${{ github.ref_name }}.intoto.jsonl" \
+            --artifact "${ARTIFACT_NAME}" \
+            --source-repo "github.com/${{ github.repository }}"
+
+  # ── 5. Publish artifact + signature with the release ───────────────────────
+  # (provenance is uploaded by the generator via upload-assets)
+  release:
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create release / upload assets
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-artifact
+
+      - name: Download signature bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cosign-bundle
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-files
+          path: sbom/
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --generate-notes || true
+          gh release upload "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --clobber \
+            "${ARTIFACT_NAME}" \
+            "${ARTIFACT_NAME}.cosign.bundle" \
+            sbom/cyclonedx-sbom.json \
+            sbom/spdx-sbom.json \
+            sbom/spdx-sbom.json.sha256

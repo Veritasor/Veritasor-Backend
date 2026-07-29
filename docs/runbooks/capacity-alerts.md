@@ -69,3 +69,66 @@ are being silently dropped.
 5. Unconfirmed attestations remain with `status: pending` in the DB. Re-submit
    them once the network recovers via `PATCH /api/attestations/:id/resubmit`
    (admin only).
+
+---
+
+## AttestationSubmitLatencyHigh
+
+**Metrics:** `attestation_submit_latency_seconds` (histogram) · `sli:attestation_submit_latency_seconds:p95` (recording rule)
+**SLO:** p95 attestation API latency < 200ms
+
+**What it means.** The internal process for attestation submission (building, signing, and dispatching the transaction) is taking too long. This typically indicates resource starvation or an RPC slowdown before transaction confirmation.
+
+**Steps:**
+1. Check if PgBouncer queues or DB CPU are saturated. Database operations during the attestation process could be stalling.
+2. Check the Soroban RPC server responsiveness.
+3. Review if the adaptive batch size controller has throttled batch sizes due to high fees, which might cause queue build-up.
+4. Scale up the backend tasks to distribute the load.
+
+---
+
+## PgBouncerQueueDepthWarning / PgBouncerQueueDepthCritical / PgBouncerAvgWaitTimeHigh
+
+**Metrics:** `pgbouncer_waiting_clients` (gauge) · `pgbouncer_avg_wait_time_seconds` (gauge)  
+**Thresholds:** warning > 10 waiting for 30 s · critical > 50 waiting for 15 s · avg wait > 0.5 s for 30 s
+
+**What it means.** Clients are queuing for server connections in PgBouncer.
+This is a leading indicator of tail-latency incidents: when the pool is
+saturated, new requests wait for a connection slot, inflating p99 latency.
+The scraper runs at 1-second granularity, so these alerts fire before
+application-level symptoms appear.
+
+**Steps:**
+1. Check current queue depth and wait time:
+   ```sql
+   -- Connect to PgBouncer admin DB (port 6432, dbname=pgbouncer)
+   SHOW STATS;
+   ```
+   Look at `waiting_clients`, `avg_wait`, `active_clients`, `servers`.
+
+2. Correlate with PostgreSQL backend:
+   ```sql
+   -- On the PostgreSQL primary
+   SELECT pid, now() - query_start AS age, state, query
+   FROM pg_stat_activity
+   WHERE state != 'idle' ORDER BY age DESC LIMIT 10;
+   ```
+   Long-running queries hold server connections, starving the pool.
+
+3. If traffic has grown legitimately, scale PgBouncer:
+   - Increase `max_client_conn` in `pgbouncer.ini`
+   - Increase `default_pool_size` / `max_db_connections`
+   - Reload PgBouncer: `RELOAD;` on admin console or SIGHUP.
+
+4. If caused by a slow migration or runaway query, kill it:
+   ```sql
+   SELECT pg_terminate_backend(<pid>);
+   ```
+
+5. Consider enabling `pool_mode = transaction` (already default) and
+   `max_client_conn` headroom. Monitor `pgbouncer_server_connections`
+   gauge — if it hits `max_db_connections`, the pool is at hard capacity.
+
+6. For `PgBouncerAvgWaitTimeHigh`: average wait > 500 ms means clients
+   spend significant time queued. Check `pgbouncer_avg_query_time_seconds`
+   — if queries are slow, fix the query or add read replicas.

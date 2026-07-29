@@ -7,7 +7,7 @@ vi.mock("../../../src/db/client.js", () => ({
 }));
 
 // Import after mocks are set up
-const { checkDatabase, sanitiseDbError } = await import(
+const { checkDatabase, runStartupDependencyReadinessChecks, sanitiseDbError } = await import(
   "../../../src/startup/readiness.js"
 );
 
@@ -69,5 +69,42 @@ describe("sanitiseDbError", () => {
     expect(sanitiseDbError("ECONNREFUSED 127.0.0.1:5432")).toBe(
       "ECONNREFUSED 127.0.0.1:5432",
     );
+  });
+});
+
+describe("runStartupDependencyReadinessChecks mTLS", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("requires a CRL path when OCSP verification is enabled", async () => {
+    process.env.MTLS_ENABLED = "true";
+    process.env.MTLS_CA_PATH = "/tmp/ca.pem";
+    process.env.MTLS_CERT_PATH = "/tmp/server-cert.pem";
+    process.env.MTLS_KEY_PATH = "/tmp/server-key.pem";
+    process.env.MTLS_OCSP_ENABLED = "true";
+    delete process.env.MTLS_CRL_PATH;
+
+    const report = await runStartupDependencyReadinessChecks();
+    const mtlsCheck = report.checks.find((check) => check.dependency === "config/mtls");
+
+    expect(mtlsCheck?.ready).toBe(false);
+    expect(mtlsCheck?.reason).toMatch(/MTLS_CRL_PATH/);
+  });
+
+  it("accepts OCSP configuration when the CRL fallback is configured", async () => {
+    process.env.MTLS_ENABLED = "true";
+    process.env.MTLS_CA_PATH = "/tmp/ca.pem";
+    process.env.MTLS_CERT_PATH = "/tmp/server-cert.pem";
+    process.env.MTLS_KEY_PATH = "/tmp/server-key.pem";
+    process.env.MTLS_OCSP_ENABLED = "true";
+    process.env.MTLS_CRL_PATH = "/tmp/clients.crl";
+
+    const report = await runStartupDependencyReadinessChecks();
+    const mtlsCheck = report.checks.find((check) => check.dependency === "config/mtls");
+
+    expect(mtlsCheck).toEqual({ dependency: "config/mtls", ready: true });
   });
 });

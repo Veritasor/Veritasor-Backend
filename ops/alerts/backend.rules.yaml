@@ -30,6 +30,32 @@ groups:
             SLO breach imminent — investigate consumer failures immediately.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqdepthwarning--webhookdlqdepthcritical"
 
+      - alert: WebhookDlqAgeWarning
+        expr: webhook_dlq_oldest_entry_age_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Webhook DLQ oldest entry > 1 hour old ({{ $labels.provider }})"
+          description: >
+            Dead-letter queue for provider {{ $labels.provider }} has an entry
+            that is {{ $value | humanizeDuration }} old.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqagewarning--webhookdlqagecritical"
+
+      - alert: WebhookDlqAgeCritical
+        expr: webhook_dlq_oldest_entry_age_seconds > 14400
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Webhook DLQ oldest entry > 4 hours old — SLO breach ({{ $labels.provider }})"
+          description: >
+            Dead-letter queue for provider {{ $labels.provider }} has an entry
+            that is {{ $value | humanizeDuration }} old. SLO breached.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#webhookdlqagewarning--webhookdlqagecritical"
+
       # ── DB connection pool utilisation ───────────────────────────────────────
       - alert: PgPoolHighUtilization
         expr: >
@@ -110,3 +136,79 @@ groups:
             Submissions are being dropped. Check RPC connectivity and
             SOROBAN_RETRY_BUDGET_MAX_RETRIES configuration.
           runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#sorobansubmitlaghigh--sorobansubmitlagcritical--sorobanretrybudgetexhausted"
+
+      # ── PgBouncer queue depth ────────────────────────────────────────────────
+      - record: sli:attestation_submit_latency_seconds:p95
+        expr: >
+          histogram_quantile(0.95,
+            rate(attestation_submit_latency_seconds_bucket[5m])
+          )
+
+      - alert: AttestationSubmitLatencyHigh
+        expr: sli:attestation_submit_latency_seconds:p95 > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Attestation submit latency p95 > 200ms"
+          description: >
+            Attestation submission latency 95th percentile is {{ $value | humanizeDuration }}.
+            This is above our 200ms SLO.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#attestationsubmitlatencyhigh"
+
+      - alert: PgBouncerQueueDepthWarning
+        expr: pgbouncer_waiting_clients > 10
+        for: 30s
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "PgBouncer queue depth elevated ({{ $labels.database }})"
+          description: >
+            {{ $value }} clients waiting for a server connection in PgBouncer
+            database {{ $labels.database }}. This precedes tail-latency incidents.
+            Check for long-running queries or increase pool capacity.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
+
+      - alert: PgBouncerQueueDepthCritical
+        expr: pgbouncer_waiting_clients > 50
+        for: 15s
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "PgBouncer queue depth critical ({{ $labels.database }})"
+          description: >
+            {{ $value }} clients waiting for a server connection in PgBouncer
+            database {{ $labels.database }}. Connection timeouts are occurring.
+            Immediate action required: scale PgBouncer or investigate query latency.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
+
+      - alert: PgBouncerAvgWaitTimeHigh
+        expr: pgbouncer_avg_wait_time_seconds > 0.5
+        for: 30s
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "PgBouncer average wait time elevated ({{ $labels.database }})"
+          description: >
+            Average wait time for a server connection is {{ $value | humanizeDuration }}
+            in PgBouncer database {{ $labels.database }}. This indicates pool saturation.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/capacity-alerts.md#pgbouncerqueuedepthwarning--pgbouncerqueuedepthcritical"
+
+      # ── mTLS ─────────────────────────────────────────────────────────────────
+      - alert: MtlsHandshakeFailuresSpike
+        expr: >
+          sum by (reason) (rate(mtls_handshake_failures_total[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "mTLS handshake failures spike ({{ $labels.reason }})"
+          description: >
+            High rate of mTLS handshake failures due to {{ $labels.reason }}.
+            This might indicate a misconfigured client, expired certificates, or an ongoing attack.
+          runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/security-alerts.md#mtlshandshakefailuresspike"

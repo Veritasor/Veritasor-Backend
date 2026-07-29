@@ -2,6 +2,8 @@ import { Request, Response } from 'express'
 import { deleteById, listByBusinessId } from '../../../repositories/integration.js'
 import { deleteToken, isValidShopHost, normalizeShop } from './store.js'
 import { logger } from '../../../utils/logger.js'
+import { executeWithRetry } from '../clientWrapper.js'
+import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
 
 const SHOPIFY_UNINSTALL_PATH = '/admin/api_permissions/current.json'
 const ALREADY_REVOKED_STATUSES = new Set([401, 403, 404])
@@ -15,13 +17,21 @@ type RevokeResult = {
 
 async function revokeShopifyAccess(shop: string, accessToken: string): Promise<RevokeResult> {
   try {
-    const response = await fetch(`https://${shop}${SHOPIFY_UNINSTALL_PATH}`, {
-      method: 'DELETE',
-      headers: {
-        Accept: 'application/json',
-        'X-Shopify-Access-Token': accessToken,
+    const response = await executeWithRetry(
+      () =>
+        fetch(`https://${shop}${SHOPIFY_UNINSTALL_PATH}`, {
+          method: 'DELETE',
+          headers: {
+            Accept: 'application/json',
+            'X-Shopify-Access-Token': accessToken,
+          },
+        }),
+      {
+        provider: 'shopify',
+        operation: 'revoke_access',
+        maxRetries: 2,
       },
-    })
+    )
 
     if (response.ok) {
       return { success: true }
@@ -32,7 +42,10 @@ async function revokeShopifyAccess(shop: string, accessToken: string): Promise<R
     }
 
     return { success: false, errorCode: 'revocation_failed', error: 'Failed to revoke Shopify access' }
-  } catch {
+  } catch (err) {
+    if (err instanceof GlobalRetryBudgetExceededError) {
+      return { success: false, errorCode: 'network_error', error: 'Global outbound retry budget exhausted' }
+    }
     return { success: false, errorCode: 'network_error', error: 'Failed to reach Shopify API' }
   }
 }

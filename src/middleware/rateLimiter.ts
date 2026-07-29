@@ -1,7 +1,15 @@
 import { Request, Response, NextFunction } from "express";
+import { randomUUID } from "node:crypto";
 import { logger } from "../utils/logger.js";
-import { rateLimitRejections } from "../metrics.js";
-import { getRedisClient, hashTag } from "../redis.js";
+import { rateLimitRejections, redisClusterRedirectionsTotal } from "../metrics.js";
+import {
+  getRedisClient,
+  hashTag,
+  redisCircuitBreaker,
+  parseClusterRedirectionError,
+  resolveTargetClient,
+} from "../redis.js";
+
 
 type RateLimiterBucketResolver = string | ((req: Request) => string);
 
@@ -67,46 +75,245 @@ export class MemoryStore implements RateLimitStore {
   }
 }
 
+const DEFAULT_MAX_REDIRECTIONS = 5;
+
 export class RedisStore implements RateLimitStore {
-  constructor(private client: ReturnType<typeof getRedisClient>) {}
+  constructor(
+    private client: ReturnType<typeof getRedisClient>,
+    private maxRedirections: number = DEFAULT_MAX_REDIRECTIONS,
+  ) {}
 
   async increment(key: string, windowMs: number): Promise<RateLimitRecord> {
     const now = Date.now();
+    let targetClient: any = this.client;
+    let redirectionCount = 0;
+    const visitedTargets = new Set<string>();
 
-    // ioredis eval: (script, numkeys, ...keys, ...args)
-    const result = await (this.client as any).eval(
-      `local current = redis.call('INCR', KEYS[1])
-       if current == 1 then
-         redis.call('PEXPIRE', KEYS[1], ARGV[1])
-       end
-       return {current, redis.call('PTTL', KEYS[1])}`,
-      1,           // numkeys
-      key,         // KEYS[1]
-      windowMs     // ARGV[1]
-    ) as [number, number];
+    while (true) {
+      try {
+        const result = await redisCircuitBreaker.execute(() =>
+          targetClient.eval(
+            `local current = redis.call('INCR', KEYS[1])
+             if current == 1 then
+               redis.call('PEXPIRE', KEYS[1], ARGV[1])
+             end
+             return {current, redis.call('PTTL', KEYS[1])}`,
+            1,           // numkeys
+            key,         // KEYS[1]
+            windowMs     // ARGV[1]
+          )
+        ) as [number, number];
 
-    const [count, pttl] = result;
-    const remainingTtl = pttl > 0 ? pttl : windowMs;
-    return {
-      count: Number(count),
-      resetTime: now + remainingTtl,
-    };
+        const [count, pttl] = result;
+        const remainingTtl = pttl > 0 ? pttl : windowMs;
+        return {
+          count: Number(count),
+          resetTime: now + remainingTtl,
+        };
+      } catch (err) {
+        const redirect = parseClusterRedirectionError(err);
+        if (redirect && redirectionCount < this.maxRedirections) {
+          redirectionCount++;
+
+          const targetKey = `${redirect.type}:${redirect.targetAddress}`;
+          if (visitedTargets.has(targetKey)) {
+            throw new Error(
+              `RedisStore: infinite redirection loop detected for key "${key}" to ${redirect.targetAddress}`
+            );
+          }
+          visitedTargets.add(targetKey);
+
+          redisClusterRedirectionsTotal.inc({
+            type: redirect.type.toLowerCase() as "moved" | "ask",
+            store: "fixed",
+          });
+
+          if (redirect.type === "MOVED" && typeof (this.client as any).refreshSlotsCache === "function") {
+            await (this.client as any).refreshSlotsCache().catch(() => {});
+          }
+
+          targetClient = await resolveTargetClient(this.client, redirect);
+          continue;
+        }
+
+        throw err;
+      }
+    }
   }
 }
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Full-jitter exponential backoff, capped, for retrying a WATCH-aborted
+ * transaction. Jitter (not a fixed delay) avoids every contending client
+ * retrying in lockstep and re-colliding.
+ */
+
+
+function jitterBackoffMs(attempt: number, baseMs = 5, capMs = 50): number {
+  const exp = Math.min(capMs, baseMs * 2 ** attempt);
+  return Math.random() * exp;
+}
+
+const DEFAULT_MAX_WATCH_RETRIES = 10;
+
+/**
+ * Sliding-window rate limiter backed by a Redis sorted set (the "sliding
+ * log" pattern): each request adds its own timestamp as a member, entries
+ * older than the window are pruned, and the set's cardinality is the count.
+ *
+ * Pruning, adding, and counting are three separate Redis commands, so they
+ * are wrapped in WATCH/MULTI/EXEC: if another client mutates this exact key
+ * between WATCH and EXEC, ioredis returns `null` from `exec()` and we retry
+ * with jittered backoff, up to `maxRetries`, to guard against an abort loop
+ * under heavy contention on a single hot key.
+ *
+ * Single-key transaction, so this is Redis Cluster-safe without any hash
+ * tagging — WATCH/MULTI/EXEC only requires same-slot keys, and there is
+ * only ever one key involved here.
+ */
+export class SlidingWindowRedisStore implements RateLimitStore {
+  constructor(
+    private client: ReturnType<typeof getRedisClient>,
+    private maxRetries: number = DEFAULT_MAX_WATCH_RETRIES,
+    private maxRedirections: number = DEFAULT_MAX_REDIRECTIONS,
+  ) {}
+
+  async increment(key: string, windowMs: number): Promise<RateLimitRecord> {
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    // A unique member per request, even if two requests land in the same
+    // millisecond, so ZADD never silently collapses two requests into one
+    // sorted-set entry.
+    const member = `${now}-${randomUUID()}`;
+
+    let targetClient: any = this.client;
+    let redirectionCount = 0;
+    const visitedTargets = new Set<string>();
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        if (typeof targetClient.watch === "function") {
+          await targetClient.watch(key);
+        }
+
+        const multi = targetClient.multi();
+        multi.zremrangebyscore(key, 0, windowStart);
+        multi.zadd(key, now, member);
+        multi.zcard(key);
+        multi.pexpire(key, windowMs);
+
+        const results = await multi.exec();
+
+        if (results === null) {
+          // WATCH detected a concurrent write to this key between WATCH
+          // and EXEC — someone else's transaction won the race. Back off
+          // with jitter and retry rather than looping tightly.
+          await sleep(jitterBackoffMs(attempt));
+          continue;
+        }
+
+        if (Array.isArray(results)) {
+          for (const res of results) {
+            if (Array.isArray(res) && res[0]) {
+              const redirectInResult = parseClusterRedirectionError(res[0]);
+              if (redirectInResult) {
+                throw res[0];
+              }
+            }
+          }
+        }
+
+        const [zcardErr, count] = results[2] as [Error | null, number];
+        if (zcardErr) throw zcardErr;
+
+        return { count: Number(count), resetTime: now + windowMs };
+      } catch (err) {
+        if (typeof targetClient.unwatch === "function") {
+          await targetClient.unwatch().catch(() => {});
+        }
+
+        const redirect = parseClusterRedirectionError(err);
+        if (redirect && redirectionCount < this.maxRedirections) {
+          redirectionCount++;
+
+          const targetKey = `${redirect.type}:${redirect.targetAddress}`;
+          if (visitedTargets.has(targetKey)) {
+            throw new Error(
+              `SlidingWindowRedisStore: infinite redirection loop detected for key "${key}" to ${redirect.targetAddress}`
+            );
+          }
+          visitedTargets.add(targetKey);
+
+          redisClusterRedirectionsTotal.inc({
+            type: redirect.type.toLowerCase() as "moved" | "ask",
+            store: "sliding",
+          });
+
+          if (redirect.type === "MOVED" && typeof (this.client as any).refreshSlotsCache === "function") {
+            await (this.client as any).refreshSlotsCache().catch(() => {});
+          }
+
+          targetClient = await resolveTargetClient(this.client, redirect);
+          attempt--;
+          continue;
+        }
+
+        if (attempt === this.maxRetries) throw err;
+      }
+    }
+
+    throw new Error(
+      `SlidingWindowRedisStore: exceeded ${this.maxRetries} retries due to repeated WATCH aborts for key "${key}"`,
+    );
+  }
+}
+
+const slidingStore = new Map<string, number[]>();
+
+/**
+ * In-memory equivalent of the sliding-log algorithm, so "sliding" behaves
+ * identically whether or not Redis is configured (single process, so no
+ * WATCH/MULTI/EXEC is needed — the whole operation already runs
+ * synchronously and atomically with respect to Node's single-threaded
+ * event loop).
+ */
+export class SlidingWindowMemoryStore implements RateLimitStore {
+  constructor(private store: Map<string, number[]> = slidingStore) {}
+
+  increment(key: string, windowMs: number): RateLimitRecord {
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    const timestamps = (this.store.get(key) ?? []).filter((t) => t > windowStart);
+    timestamps.push(now);
+    this.store.set(key, timestamps);
+    return { count: timestamps.length, resetTime: now + windowMs };
+  }
+
+  reset(): void {
+    this.store.clear();
+  }
+}
+
+export const slidingWindowMemoryStore = new SlidingWindowMemoryStore();
 
 const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
 const DEFAULT_MAX = 100;
 
 export const memoryStore = new MemoryStore();
-const slidingStore = new Map<string, number[]>();
-let storePromise: Promise<RateLimitStore> | null = null;
+const storePromises = new Map<RateLimiterAlgorithm, Promise<RateLimitStore>>();
 
-export function getStore(): Promise<RateLimitStore> {
+export function getStore(algorithm: RateLimiterAlgorithm = "fixed"): Promise<RateLimitStore> {
+  let storePromise = storePromises.get(algorithm);
   if (!storePromise) {
     storePromise = (async () => {
       const hasRedis = process.env.REDIS_URL || process.env.REDIS_CLUSTER_NODES;
+      const fallback = algorithm === "sliding" ? slidingWindowMemoryStore : memoryStore;
       if (!hasRedis) {
-        return memoryStore;
+        return fallback;
       }
       try {
         const client = getRedisClient();
@@ -116,19 +323,20 @@ export function getStore(): Promise<RateLimitStore> {
           client.once("ready", resolve);
           client.once("error", reject);
         });
-        logger.info("Rate limiter initialized with Redis store.");
-        return new RedisStore(client);
+        logger.info(`Rate limiter initialized with Redis store (algorithm: ${algorithm}).`);
+        return algorithm === "sliding" ? new SlidingWindowRedisStore(client) : new RedisStore(client);
       } catch (err) {
         logger.error("Failed to initialize Redis rate limiter store, falling back to memory:", err);
-        return memoryStore;
+        return fallback;
       }
     })();
+    storePromises.set(algorithm, storePromise);
   }
   return storePromise;
 }
 
 export function resetStorePromise(): void {
-  storePromise = null;
+  storePromises.clear();
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -224,10 +432,14 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
     const key = `rate-limit:${bucket}:${identifier}`;
     const now = Date.now();
 
-    // Check synchronously if we are using the in-memory store
+   // Check synchronously if we are using the in-memory store
     if (!process.env.REDIS_URL && !process.env.REDIS_CLUSTER_NODES) {
       try {
-        const record = memoryStore.increment(key, windowMs);
+        const record =
+          algorithm === "sliding"
+            ? slidingWindowMemoryStore.increment(key, windowMs)
+            : memoryStore.increment(key, windowMs);
+
         applyRateLimitHeaders(res, bucket, max, record.count, record.resetTime, now);
 
         if (record.count > max) {
@@ -255,12 +467,14 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
       return;
     }
 
-    // Otherwise, async Redis path
-    getStore()
+   // Otherwise, async Redis path
+    getStore(algorithm)
       .then((store) => store.increment(key, windowMs))
       .catch((err) => {
         logger.error(`Rate limit store failed for key ${key}, falling back to memory:`, err);
-        return memoryStore.increment(key, windowMs);
+        return algorithm === "sliding"
+          ? slidingWindowMemoryStore.increment(key, windowMs)
+          : memoryStore.increment(key, windowMs);
       })
       .then((record) => {
         applyRateLimitHeaders(res, bucket, max, record.count, record.resetTime, now);
@@ -293,4 +507,5 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
 
 export function resetRateLimiterStore(): void {
   memoryStore.reset();
+  slidingWindowMemoryStore.reset();
 }
