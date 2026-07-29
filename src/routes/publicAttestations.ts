@@ -2,7 +2,8 @@ import { Request, Response, Router } from 'express';
 import { z } from 'zod';
 import * as attestationRepository from '../repositories/attestationRepository.js';
 import { db } from '../db/client.js';
-import { AppError } from '../types/errors.js';
+import { AppError, VRTErrorCodes } from '../types/errors.js';
+import { asyncErrorHandler } from '../middleware/errorHandler.js';
 
 const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
 
@@ -16,10 +17,10 @@ function getSwrCacheControl(maxAge: number) {
 
 publicAttestationsRouter.get(
   '/:hash',
-  async (req: Request, res: Response) => {
+  asyncErrorHandler(async (req: Request, res: Response) => {
     const hashResult = hashParamSchema.safeParse(req.params.hash);
     if (!hashResult.success) {
-      throw new AppError('Invalid attestation identifier', 400, 'VALIDATION_ERROR');
+      throw new AppError('Invalid attestation identifier', 400, VRTErrorCodes.VRT_0002);
     }
 
     const hash = hashResult.data;
@@ -76,5 +77,5 @@ publicAttestationsRouter.get(
       status: 'success',
       data: payload,
     });
-  },
+  }),
 );
