@@ -10,6 +10,7 @@ import {
 } from '../services/user/dataExportService.js'
 import { consumeDownloadToken } from '../repositories/dataExportRepository.js'
 import { logger } from '../utils/logger.js'
+import { CachePolicies, setCacheControl } from '../utils/cacheControl.js'
 
 export const usersRouter = Router()
 
@@ -96,7 +97,7 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
     res.setHeader('Content-Type', 'application/octet-stream')
     res.setHeader('Content-Disposition', `attachment; filename="gdpr-export-${exportId}.enc"`)
     res.setHeader('Content-Length', archiveData.length)
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    setCacheControl(res, CachePolicies.DATA_EXPORT_DOWNLOAD)
 
     return res.send(archiveData)
   } catch (err: any) {

@@ -1,11 +1,16 @@
 import { Router } from 'express';
-import { createYoga, createSchema, type YogaServerInstance } from 'graphql-yoga';
+import { createYoga, type YogaServerInstance } from 'graphql-yoga';
 import { GraphQLError, Kind, type DocumentNode, type FieldNode, type ValidationContext, type ASTVisitor } from 'graphql';
+import { usePersistedOperations } from '@graphql-yoga/plugin-persisted-operations';
+import DataLoader from 'dataloader';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { requirePermissions } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
 import * as businessRepository from '../repositories/business.js';
 import * as userRepository from '../repositories/userRepository.js';
+import * as attestationRepository from '../repositories/attestationRepository.js';
+import { gatewaySchema } from '../graphql/gateway.js';
+import { getPersistedQueryStore } from '../graphql/persistedQueries.js';
 import { Counter } from 'prom-client';
 import { metricsRegistry } from '../metrics.js';
 import { config } from '../config/index.js';
@@ -28,25 +33,38 @@ const graphqlIntrospectionRejections = new Counter({
   registers: [metricsRegistry],
 });
 
+export const graphqlPersistedQueryRejections = new Counter({
+  name: 'graphql_admin_persisted_query_rejections_total',
+  help: 'Total number of non-persisted queries rejected on admin GraphQL endpoint',
+  registers: [metricsRegistry],
+});
+
 const MAX_QUERY_DEPTH = 5;
-
-
 
 export function createDataLoaders() {
   return {
     userLoader: new DataLoader(async (ids: readonly string[]) => {
-      return userRepository.findUsersByIds(ids);
+      return userRepository.findUsersByIds(ids as string[]);
     }),
     businessLoader: new DataLoader(async (ids: readonly string[]) => {
-      return businessRepository.getByIds(ids);
+      return businessRepository.getByIds(ids as string[]);
     }),
     attestationsByBusinessLoader: new DataLoader(async (businessIds: readonly string[]) => {
-      return attestationRepository.listByBusinessIds(businessIds);
+      return attestationRepository.listByBusinessIds(businessIds as string[]);
     }),
   };
 }
 
-
+function extractPersistedKey(params: any): string | undefined {
+  if (!params) return undefined;
+  if (params.extensions?.persistedQuery?.sha256Hash) {
+    return params.extensions.persistedQuery.sha256Hash;
+  }
+  if (typeof params.extensions?.persistedQuery === 'string') {
+    return params.extensions.persistedQuery;
+  }
+  return params.documentId || params.queryId;
+}
 
 function getOperationDepth(document: DocumentNode): number {
   let maxDepth = 0;
@@ -135,16 +153,66 @@ function introspectionGateRule(context: ValidationContext): ASTVisitor {
 
 export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
   return createYoga({
-    schema,
+    schema: gatewaySchema,
     maskedErrors: true,
     parserAndValidationCache: { validationCache: false },
+    context: () => ({
+      loaders: createDataLoaders(),
+    }),
     plugins: [
+      {
+        onParams({ params, setResult }) {
+          if (!config.graphql.allowArbitraryOperations) {
+            const store = getPersistedQueryStore();
+            const key = extractPersistedKey(params);
+            if (!key && params.query) {
+              graphqlPersistedQueryRejections.inc();
+              setResult({
+                errors: [
+                  new GraphQLError('Persisted queries only allowed', {
+                    extensions: { code: 'PERSISTED_QUERY_ONLY' },
+                  }),
+                ],
+              });
+            } else if (key && !store.has(key)) {
+              graphqlPersistedQueryRejections.inc();
+              setResult({
+                errors: [
+                  new GraphQLError('Persisted query not found', {
+                    extensions: { code: 'PERSISTED_QUERY_NOT_FOUND' },
+                  }),
+                ],
+              });
+            }
+          }
+        },
+        async onResponse({ response, setResponse }) {
+          if (!config.graphql.allowArbitraryOperations && response.status === 200) {
+            const clone = response.clone();
+            try {
+              const body = await clone.json();
+              if (body?.errors && body.errors.length > 0) {
+                setResponse(
+                  new Response(JSON.stringify(body), {
+                    status: 400,
+                    headers: response.headers,
+                  })
+                );
+              }
+            } catch (e) {
+              // Ignore non-json responses
+            }
+          }
+        },
+      },
       usePersistedOperations({
-        getPersistedOperation: async (key: string) => {
-          const store = await getPersistedQueryStore();
+        getPersistedOperation: (key: string) => {
+          const store = getPersistedQueryStore();
           return store.get(key);
         },
-        allowArbitraryOperations: false,
+        allowArbitraryOperations: (_request) => {
+          return config.graphql.allowArbitraryOperations;
+        },
       }),
       {
         onValidate({ addValidationRule }: { addValidationRule: (rule: any) => void }) {
@@ -169,7 +237,7 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
                   graphqlDepthLimitRejections.inc();
                   setResult([
                     new GraphQLError(
-                      \`Query depth exceeds maximum allowed depth of \${MAX_QUERY_DEPTH}\`,
+                      `Query depth exceeds maximum allowed depth of ${MAX_QUERY_DEPTH}`,
                     ),
                   ]);
                   return;
@@ -178,32 +246,6 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
             }
           }
         },
-        async onExecute({ args, setResultAndStop }) {
-          const { document, contextValue } = args;
-          const cost = getOperationCost(document);
-          const req = (contextValue as any).req;
-          const res = (contextValue as any).res;
-          const userId = req?.user?.userId || 'anonymous';
-          const key = `graphql-budget:{${userId}}`;
-          
-          const maxTokens = 1000;
-          const refillRateMs = 1000 / 60000; // 1000 tokens per minute
-          
-          const { allowed, remaining } = await tokenBucketStore.consume(key, cost, maxTokens, refillRateMs);
-          
-          if (res && res.setHeader) {
-            res.setHeader('X-GraphQL-Cost', cost.toString());
-            res.setHeader('X-GraphQL-Budget-Remaining', remaining.toString());
-          }
-          
-          if (!allowed) {
-            graphqlCostExhaustionRejections.inc();
-            setResultAndStop({
-              errors: [new GraphQLError(`Query cost of ${cost} exceeds remaining budget of ${remaining}.`)]
-            });
-            return;
-          }
-        }
       },
     ],
   });

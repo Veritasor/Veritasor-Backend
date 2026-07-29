@@ -108,78 +108,88 @@ export const idempotencySweepRunsTotal = new Counter({
 });
 
 /**
- * PgBouncer queue depth and latency metrics.
- *
- * Scraped from `SHOW STATS` on the PgBouncer admin database at second granularity.
- * Key metrics exposed:
- *
- * - `pgbouncer_waiting_clients` (gauge, labels: database): clients waiting for a server connection.
- *   Spikes here precede tail-latency incidents.
- * - `pgbouncer_avg_wait_time_seconds` (gauge, labels: database): average wait time in seconds.
- *   Spikes indicate pool saturation.
- * - `pgbouncer_active_clients` (gauge, labels: database): currently active client connections.
- * - `pgbouncer_idle_clients` (gauge, labels: database): idle client connections.
- * - `pgbouncer_server_connections` (gauge, labels: database): active server connections.
- * - `pgbouncer_avg_query_time_seconds` (gauge, labels: database): average query execution time.
- * - `pgbouncer_total_requests_total` (counter, labels: database): total client requests.
- * - `pgbouncer_total_query_time_seconds_total` (counter, labels: database): cumulative query time.
+ * PgBouncer admin-console metrics. Pool series use the bounded
+ * (database,user) key returned by SHOW POOLS; stats use database only.
  */
 export const pgbouncerWaitingClients = new Gauge({
   name: "pgbouncer_waiting_clients",
-  help: "Number of clients waiting for a server connection in PgBouncer pool",
-  labelNames: ["database"] as const,
+  help: "Clients waiting for a server connection in a PgBouncer pool",
+  labelNames: ["database", "user"] as const,
   registers: [metricsRegistry],
 });
 
-export const pgbouncerAvgWaitTimeSeconds = new Gauge({
-  name: "pgbouncer_avg_wait_time_seconds",
-  help: "Average wait time for a server connection in seconds",
-  labelNames: ["database"] as const,
+export const pgbouncerMaxWaitSeconds = new Gauge({
+  name: "pgbouncer_max_wait_seconds",
+  help: "Age in seconds of the oldest waiting client in a PgBouncer pool",
+  labelNames: ["database", "user"] as const,
   registers: [metricsRegistry],
 });
 
 export const pgbouncerActiveClients = new Gauge({
   name: "pgbouncer_active_clients",
-  help: "Number of active client connections in PgBouncer",
-  labelNames: ["database"] as const,
-  registers: [metricsRegistry],
-});
-
-export const pgbouncerIdleClients = new Gauge({
-  name: "pgbouncer_idle_clients",
-  help: "Number of idle client connections in PgBouncer",
-  labelNames: ["database"] as const,
+  help: "Active client connections in a PgBouncer pool",
+  labelNames: ["database", "user"] as const,
   registers: [metricsRegistry],
 });
 
 export const pgbouncerServerConnections = new Gauge({
   name: "pgbouncer_server_connections",
-  help: "Number of active server connections in PgBouncer",
-  labelNames: ["database"] as const,
+  help: "Server connections in a PgBouncer pool by state",
+  labelNames: ["database", "user", "state"] as const,
   registers: [metricsRegistry],
 });
 
 export const pgbouncerAvgQueryTimeSeconds = new Gauge({
   name: "pgbouncer_avg_query_time_seconds",
-  help: "Average query execution time in seconds",
+  help: "Average PgBouncer query execution time in seconds",
   labelNames: ["database"] as const,
   registers: [metricsRegistry],
 });
 
-export const pgbouncerTotalRequestsTotal = new Counter({
-  name: "pgbouncer_total_requests_total",
-  help: "Total number of client requests processed by PgBouncer",
+export const pgbouncerTotalRequests = new Gauge({
+  name: "pgbouncer_total_requests",
+  help: "Current PgBouncer cumulative request count (may reset on restart or RELOAD)",
   labelNames: ["database"] as const,
   registers: [metricsRegistry],
 });
 
-export const pgbouncerTotalQueryTimeSecondsTotal = new Counter({
-  name: "pgbouncer_total_query_time_seconds_total",
-  help: "Cumulative query execution time in seconds",
+export const pgbouncerTotalQueryTimeSeconds = new Gauge({
+  name: "pgbouncer_total_query_time_seconds",
+  help: "Current PgBouncer cumulative query time in seconds (may reset on restart or RELOAD)",
   labelNames: ["database"] as const,
   registers: [metricsRegistry],
 });
 
+export const pgbouncerScraperEnabled = new Gauge({
+  name: "pgbouncer_scraper_enabled",
+  help: "Whether the PgBouncer admin scraper is configured and running (1 or 0)",
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerScrapeSuccess = new Gauge({
+  name: "pgbouncer_scrape_success",
+  help: "Whether the most recent PgBouncer admin scrape succeeded (1 or 0)",
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerScrapeDurationSeconds = new Gauge({
+  name: "pgbouncer_scrape_duration_seconds",
+  help: "Duration of the most recent PgBouncer admin scrape in seconds",
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerLastSuccessfulScrapeTimestampSeconds = new Gauge({
+  name: "pgbouncer_last_successful_scrape_timestamp_seconds",
+  help: "Unix timestamp of the most recent successful PgBouncer admin scrape",
+  registers: [metricsRegistry],
+});
+
+export const pgbouncerScrapeErrorsTotal = new Counter({
+  name: "pgbouncer_scrape_errors_total",
+  help: "Total failed PgBouncer admin scrapes",
+  labelNames: ["reason"] as const,
+  registers: [metricsRegistry],
+});
 /**
  * Adaptive batch-size tuning metrics for Soroban submissions.
  *
@@ -219,6 +229,51 @@ export const sorobanFeeSpikeProtectionsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Deficit Round-Robin (DRR) fair-batch-scheduler metrics.
+ *
+ * - `soroban_drr_queue_wait_ms` (histogram, labels: tenant): milliseconds an
+ *   item spent waiting in the per-tenant queue before being dequeued into a
+ *   batch. Useful for detecting starvation (tail latency per tenant).
+ *
+ * - `soroban_drr_queue_depth` (gauge, labels: tenant): current number of
+ *   items in the tenant's queue. Spikes indicate a noisy tenant is
+ *   enqueueing faster than the scheduler can drain.
+ *
+ * - `soroban_drr_scheduler_rounds_total` (counter): total DRR rounds
+ *   executed. One round visits every non-empty tenant once.
+ *
+ * - `soroban_drr_dequeues_total` (counter, labels: tenant): total items
+ *   removed from a tenant's queue and placed into a batch.
+ */
+export const sorobanDrrQueueWaitMs = new Histogram({
+  name: 'soroban_drr_queue_wait_ms',
+  help: 'Milliseconds an attestation item spent waiting in the DRR batch queue per tenant',
+  labelNames: ['tenant'] as const,
+  buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000],
+  registers: [metricsRegistry],
+});
+
+export const sorobanDrrQueueDepth = new Gauge({
+  name: 'soroban_drr_queue_depth',
+  help: 'Current number of attestation items waiting in the DRR batch queue per tenant',
+  labelNames: ['tenant'] as const,
+  registers: [metricsRegistry],
+});
+
+export const sorobanDrrSchedulerRoundsTotal = new Counter({
+  name: 'soroban_drr_scheduler_rounds_total',
+  help: 'Total number of Deficit Round-Robin scheduler rounds executed',
+  registers: [metricsRegistry],
+});
+
+export const sorobanDrrDequeuesTotal = new Counter({
+  name: 'soroban_drr_dequeues_total',
+  help: 'Total number of items dequeued from tenant queues by the DRR scheduler',
+  labelNames: ['tenant'] as const,
+  registers: [metricsRegistry],
+});
+
 export const webhookRetryAttempts = new Histogram({
   name: "webhook_retry_attempts",
   help: "Number of retry attempts made when processing a webhook event",
@@ -247,29 +302,23 @@ export const redisCircuitBreakerFailuresTotal = new Counter({
 });
 
 /**
- * Attestation submit latency histogram.
- * Tuned to resolve well around the 50-200ms SLO.
+ * Webhook secret rotation rollout status.
  *
- * Boundaries (in seconds):
- * 0.010, 0.025 - Fast requests
- * 0.050, 0.075, 0.100, 0.150, 0.200 - SLO-focused resolution
- * 0.250, 0.500, 1.0, 2.5, 5.0 - Outliers
+ * - `webhook_secret_rotation_status` (gauge, labels: subscription_id, business_id, status):
+ *   1 = subscription has adopted the latest secret version, 0 = lagging behind.
+ *
+ * Operators can sum or count by `status` to see how many subscriptions are
+ * current vs. lagging, and drill into individual lagging subscriptions by
+ * `subscription_id` / `business_id`.
+ *
+ * Implementation in `src/services/webhooks/secretRotation.ts` — see that
+ * module for the update loop and per-subscription resolution.
  */
-export const attestationSubmitLatency = new Histogram({
-  name: "attestation_submit_latency_seconds",
-  help: "Latency of attestation submissions to the blockchain",
-  labelNames: ["status"] as const,
-  buckets: [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1, 2.5, 5],
+export const webhookSecretRotationStatus = new Gauge({
+  name: "webhook_secret_rotation_status",
+  help:
+    "Rollout status of webhook secret rotation per subscription " +
+    "(1 = current / 0 = lagging)",
+  labelNames: ["subscription_id", "business_id", "status"] as const,
   registers: [metricsRegistry],
 });
-
-const validAttestationSubmitStatuses = new Set(["success", "error", "timeout", "rejected"]);
-
-/**
- * Observes attestation submit latency.
- * Includes a bucket cardinality guard to ensure only valid statuses are recorded.
- */
-export function observeAttestationSubmitLatency(status: string, durationSec: number): void {
-  const safeStatus = validAttestationSubmitStatuses.has(status) ? status : "unknown";
-  attestationSubmitLatency.observe({ status: safeStatus }, durationSec);
-}

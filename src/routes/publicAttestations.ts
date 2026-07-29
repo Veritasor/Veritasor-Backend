@@ -3,16 +3,19 @@ import { z } from 'zod';
 import * as attestationRepository from '../repositories/attestationRepository.js';
 import { db } from '../db/client.js';
 import { AppError } from '../types/errors.js';
-
-const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
+import { formatCacheControl, CACHE_POLICIES } from '../utils/cachePolicy.js';
 
 const hashParamSchema = z.string().min(1).max(512);
 
 export const publicAttestationsRouter = Router();
 
-function getSwrCacheControl(maxAge: number) {
-  return `public, max-age=${maxAge}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`;
-}
+// Resolve cache policy entries for this route once at module load
+const activePolicy = CACHE_POLICIES.find(
+  (p) => p.name === 'public-attestations-active',
+);
+const revokedPolicy = CACHE_POLICIES.find(
+  (p) => p.name === 'public-attestations-revoked',
+);
 
 publicAttestationsRouter.get(
   '/:hash',
@@ -36,7 +39,9 @@ publicAttestationsRouter.get(
 
     if (attestation.status === 'revoked') {
       res.set({
-        'Cache-Control': getSwrCacheControl(15),
+        'Cache-Control': revokedPolicy
+          ? formatCacheControl(revokedPolicy.directives)
+          : 'public, max-age=15, stale-while-revalidate=60',
         'Age': '0'
       });
       res.status(410).json({
@@ -65,8 +70,11 @@ publicAttestationsRouter.get(
       return;
     }
 
+    setCacheControl(res, CachePolicies.PUBLIC_ATTESTATION_ACTIVE);
     res.set({
-      'Cache-Control': getSwrCacheControl(60),
+      'Cache-Control': activePolicy
+        ? formatCacheControl(activePolicy.directives)
+        : 'public, max-age=60, stale-while-revalidate=60',
       'ETag': etag,
       'Last-Modified': lastModified,
       'Age': '0'

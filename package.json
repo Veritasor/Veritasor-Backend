@@ -9,6 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src",
     "perf:k6:attestations": "k6 run ops/k6/peak-attestation.js",
+    "perf:k6:black-friday": "k6 run ops/k6/black-friday.js",
     "perf:k6:compare": "tsx scripts/compare-k6.ts --mode compare",
     "perf:k6:save-baseline": "tsx scripts/compare-k6.ts --mode save-baseline",
     "test": "vitest run",
@@ -19,6 +20,8 @@
     "migrate:verify-rollback": "tsx src/db/migrate.ts verify-rollback",
     "docs:routes": "tsx scripts/generate-routes.ts",
     "docs:openapi": "tsx scripts/generate-openapi.ts",
+    "docs:vcl": "tsx scripts/generate-vcl.ts",
+    "docs:vcl:check": "tsx scripts/generate-vcl.ts --check",
     "audit:ci": "pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts",
     "rebuild:indexer": "tsx scripts/rebuild-indexer.ts",
     "pact:can-i-deploy": "tsx scripts/can-i-deploy.ts"

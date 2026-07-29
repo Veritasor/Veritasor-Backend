@@ -4,6 +4,7 @@ import type { Server as HttpsServer } from "node:https";
 import type { Request, Response, NextFunction } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
+import { CachePolicies, setCacheControl } from "./utils/cacheControl.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
@@ -29,6 +30,7 @@ import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import { publicAttestationsRouter } from "./routes/publicAttestations.js";
 import usersRouter from "./routes/users.js";
 import { jwksManager } from "./utils/jwks.js";
+import { formatCacheControl, CACHE_POLICIES } from "./utils/cachePolicy.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import adminRouter from "./routes/admin.js";
@@ -46,44 +48,11 @@ import {
   stopIdempotencySweeper,
 } from "./middleware/idempotency.js";
 import {
-  startPgBouncerScraper,
-  stopPgBouncerScraper,
   startPgBouncerScraperIfNeeded,
-  stopPgBouncerScraperIfNeeded,
 } from "./services/pgbouncerScraper.js";
-
-/**
- * Handle to the running PgBouncer scraper timer.
- * Stored at module scope so the production boot path and tests can share
- * a single instance, and so `stopPgBouncerScraper()` is idempotent.
- */
-let pgbouncerScraperTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Active SPIFFE SVID provider when mTLS uses the Workload API. */
 let activeSvidProvider: SvidProvider | undefined;
-
-/**
- * Start the PgBouncer stats scraper.
- *
- * No-op in test environments so unit tests can drive the scraper manually
- * without racing a real interval.
- */
-export async function startPgBouncerScraperIfNeeded(): Promise<void> {
-  if (process.env.NODE_ENV === 'test') return;
-  if (pgbouncerScraperTimer) return;
-  await startPgBouncerScraper();
-  pgbouncerScraperTimer = setTimeout(() => {}, 0); // placeholder to track started state
-}
-
-/**
- * Stop the PgBouncer stats scraper, if one was started.
- * Safe to call multiple times.
- */
-export async function stopPgBouncerScraperIfNeeded(): Promise<void> {
-  if (!pgbouncerScraperTimer && process.env.NODE_ENV !== 'test') return;
-  await stopPgBouncerScraper();
-  pgbouncerScraperTimer = null;
-}
 
 export function stopSpiffeSvidProviderIfNeeded(): void {
   activeSvidProvider?.stop();
@@ -166,7 +135,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
     const etag = jwksManager.getEtag()
     const cacheSeconds = jwksManager.getCacheTtlSeconds()
 
-    res.set("Cache-Control", `public, max-age=${cacheSeconds}, stale-while-revalidate=60`)
+    const jwksPolicy = CACHE_POLICIES.find((p) => p.name === 'jwks');
+    res.set(
+      "Cache-Control",
+      jwksPolicy
+        ? formatCacheControl(jwksPolicy.directives)
+        : `public, max-age=${cacheSeconds}, stale-while-revalidate=60`,
+    );
     res.set("ETag", etag)
     res.json(jwks)
   });
