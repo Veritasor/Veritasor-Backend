@@ -22,6 +22,14 @@ export const envSchema = z.object({
   PG_CONN_TIMEOUT_MS: z.string().optional(),
   PGSSL: z.string().optional(),
   PGSSL_REJECT_UNAUTHORIZED: z.string().optional(),
+  PGBOUNCER_METRICS_ADMIN_URL: z.string().url(
+    "PGBOUNCER_METRICS_ADMIN_URL must be a valid URL",
+  ).refine(
+    (value) => value.startsWith("postgres://") || value.startsWith("postgresql://"),
+    "PGBOUNCER_METRICS_ADMIN_URL must use postgres or postgresql",
+  ).optional(),
+  PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS: z.string().optional(),
+  PGBOUNCER_METRICS_QUERY_TIMEOUT_MS: z.string().optional(),
   STELLAR_NETWORK: z.enum(["testnet", "public", "futurenet"]).default("testnet"),
   SOROBAN_RPC_URL: z.string().url().default("https://soroban-testnet.stellar.org"),
   SOROBAN_CONTRACT_ID: z.string().default(""),
@@ -256,6 +264,19 @@ export const config = {
         }
       : undefined,
   },
+  pgbouncerMetrics: {
+    adminUrl: parsedEnv.PGBOUNCER_METRICS_ADMIN_URL,
+    scrapeIntervalMs: parsePositiveIntEnv(
+      "PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS",
+      parsedEnv.PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS,
+      15_000,
+    ),
+    queryTimeoutMs: parsePositiveIntEnv(
+      "PGBOUNCER_METRICS_QUERY_TIMEOUT_MS",
+      parsedEnv.PGBOUNCER_METRICS_QUERY_TIMEOUT_MS,
+      2_000,
+    ),
+  },
   stellar: {
     network: parsedEnv.STELLAR_NETWORK,
   },
@@ -298,6 +319,8 @@ export const config = {
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */
     rpcUrl: parsedEnv.SOROBAN_RPC_URL,
+    /** Backup Soroban RPC endpoint for hedged requests. Falls back to primary if unset. */
+    backupRpcUrl: process.env.SOROBAN_BACKUP_RPC_URL || parsedEnv.SOROBAN_RPC_URL,
     /** Deployed attestation contract address (C…). Required in production. */
     contractId: parsedEnv.SOROBAN_CONTRACT_ID,
     /**

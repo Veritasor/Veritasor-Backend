@@ -1,165 +1,211 @@
 /**
- * PgBouncer stats scraper for real-time queue depth monitoring.
+ * Low-overhead PgBouncer admin-console scraper.
  *
- * Scrapes `SHOW STATS` from the PgBouncer admin database at second granularity
- * and exports metrics to Prometheus for alerting on queue depth spikes.
- *
- * Key metrics exposed:
- * - pgbouncer_waiting_clients (gauge): clients waiting for a server connection
- * - pgbouncer_avg_wait_time_seconds (gauge): average wait time in seconds
- * - pgbouncer_active_clients (gauge): active client connections
- * - pgbouncer_idle_clients (gauge): idle client connections
- * - pgbouncer_server_connections (gauge): active server connections
- * - pgbouncer_avg_query_time_seconds (gauge): average query execution time
- * - pgbouncer_total_requests_total (counter): total client requests
- * - pgbouncer_total_query_time_seconds_total (counter): cumulative query time
- *
- * Self-throttling: if scraping takes longer than the interval, skips the next
- * cycle to prevent overlapping scrapes under load.
+ * The admin URL is deliberately independent from DATABASE_URL: an application
+ * database credential must never be promoted to a PgBouncer admin credential.
+ * One connection and a completion-based timer prevent overlap under load.
  */
-
 import pg from "pg";
 import { config } from "../config/index.js";
 import { logger } from "../utils/logger.js";
 import {
-  pgbouncerWaitingClients,
-  pgbouncerAvgWaitTimeSeconds,
   pgbouncerActiveClients,
-  pgbouncerIdleClients,
-  pgbouncerServerConnections,
   pgbouncerAvgQueryTimeSeconds,
-  pgbouncerTotalRequestsTotal,
-  pgbouncerTotalQueryTimeSecondsTotal,
+  pgbouncerLastSuccessfulScrapeTimestampSeconds,
+  pgbouncerMaxWaitSeconds,
+  pgbouncerScrapeDurationSeconds,
+  pgbouncerScrapeErrorsTotal,
+  pgbouncerScraperEnabled,
+  pgbouncerScrapeSuccess,
+  pgbouncerServerConnections,
+  pgbouncerTotalQueryTimeSeconds,
+  pgbouncerTotalRequests,
+  pgbouncerWaitingClients,
 } from "../metrics.js";
 
-export const SCRAPE_INTERVAL_MS = 1000;
-export const SCRAPE_TIMEOUT_MS = 500;
+export const MIN_SCRAPE_INTERVAL_MS = 1_000;
+export const MAX_SCRAPE_INTERVAL_MS = 300_000;
+export const MIN_QUERY_TIMEOUT_MS = 100;
+export const MAX_QUERY_TIMEOUT_MS = 30_000;
 
-interface PgBouncerStatsRow {
-  database: string;
-  total_requests: number;
-  total_received: number;
-  total_sent: number;
-  total_query_time: number;
-  avg_req: number;
-  avg_recv: number;
-  avg_sent: number;
-  avg_query: number;
-  avg_wait: number;
-  waiting_clients: number;
-  idle_clients: number;
-  active_clients: number;
-  servers: number;
+type AdminValue = string | number | null | undefined;
+type AdminRow = Record<string, AdminValue>;
+
+let pool: pg.Pool | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
+let started = false;
+let scrapeInProgress = false;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
-let scrapeTimer: ReturnType<typeof setTimeout> | null = null;
-let isScraping = false;
-let pgbouncerPool: pg.Pool | null = null;
+export function getPgBouncerScrapeIntervalMs(): number {
+  return clamp(config.pgbouncerMetrics.scrapeIntervalMs, MIN_SCRAPE_INTERVAL_MS, MAX_SCRAPE_INTERVAL_MS);
+}
 
+export function getPgBouncerQueryTimeoutMs(): number {
+  return clamp(
+    config.pgbouncerMetrics.queryTimeoutMs,
+    MIN_QUERY_TIMEOUT_MS,
+    Math.min(MAX_QUERY_TIMEOUT_MS, getPgBouncerScrapeIntervalMs()),
+  );
+}
+
+/** Return the explicitly configured admin URL without deriving or logging it. */
 export function getPgBouncerAdminUrl(): string | null {
-  const dbUrl = new URL(config.db.url);
-  const adminUrl = new URL(dbUrl.toString());
-  adminUrl.pathname = "/pgbouncer";
-  adminUrl.searchParams.set("statement_cache_size", "0");
-  return adminUrl.toString();
+  const value = config.pgbouncerMetrics.adminUrl?.trim();
+  if (!value) return null;
+  const parsed = new URL(value);
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new Error("PgBouncer admin URL must use postgres or postgresql");
+  }
+  return value;
 }
 
-export async function scrapeOnce(): Promise<void> {
-  if (isScraping) {
-    logger.debug("PgBouncer scrape skipped: previous scrape still running");
-    return;
-  }
-
-  const adminUrl = getPgBouncerAdminUrl();
-  if (!adminUrl) {
-    logger.debug("PgBouncer admin URL not configured, skipping scrape");
-    return;
-  }
-
-  isScraping = true;
-  const startTime = Date.now();
-
-  try {
-    if (!pgbouncerPool) {
-      pgbouncerPool = new pg.Pool({
-        connectionString: adminUrl,
-        max: 1,
-        idleTimeoutMillis: 5000,
-        connectionTimeoutMillis: SCRAPE_TIMEOUT_MS,
-      });
+function numeric(row: AdminRow, ...names: string[]): number {
+  for (const name of names) {
+    const value = row[name];
+    if (value !== null && value !== undefined && value !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
     }
+  }
+  return 0;
+}
 
-    const client = await pgbouncerPool.connect();
-    try {
-      const result = await Promise.race([
-        client.query<PgBouncerStatsRow>("SHOW STATS"),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("scrape timeout")), SCRAPE_TIMEOUT_MS),
-        ),
-      ]);
+function label(value: AdminValue): string {
+  const result = String(value ?? "unknown").trim();
+  return result || "unknown";
+}
 
-      for (const row of result.rows) {
-        const dbLabel = row.database || "default";
+function classifyError(error: unknown): string {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  if (code === "28P01" || code === "28000") return "authentication";
+  if (code === "ETIMEDOUT" || code === "57014") return "timeout";
+  if (["ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENOTFOUND"].includes(code)) return "connection";
+  if (code) return "query";
+  return "unknown";
+}
 
-        pgbouncerWaitingClients.set({ database: dbLabel }, row.waiting_clients);
-        pgbouncerAvgWaitTimeSeconds.set({ database: dbLabel }, row.avg_wait / 1_000_000);
-        pgbouncerActiveClients.set({ database: dbLabel }, row.active_clients);
-        pgbouncerIdleClients.set({ database: dbLabel }, row.idle_clients);
-        pgbouncerServerConnections.set({ database: dbLabel }, row.servers);
-        pgbouncerAvgQueryTimeSeconds.set({ database: dbLabel }, row.avg_query / 1_000_000);
-        pgbouncerTotalRequestsTotal.inc({ database: dbLabel }, row.total_requests);
-        pgbouncerTotalQueryTimeSecondsTotal.inc(
-          { database: dbLabel },
-          row.total_query_time / 1_000_000,
-        );
-      }
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    logger.debug({ err: error }, "PgBouncer scrape failed");
-  } finally {
-    isScraping = false;
-    const elapsed = Date.now() - startTime;
+function getPool(): pg.Pool {
+  if (!pool) {
+    pool = new pg.Pool({
+      connectionString: getPgBouncerAdminUrl()!,
+      max: 1,
+      idleTimeoutMillis: getPgBouncerScrapeIntervalMs(),
+      connectionTimeoutMillis: getPgBouncerQueryTimeoutMs(),
+      query_timeout: getPgBouncerQueryTimeoutMs(),
+    });
+    pool.on("error", (error) => {
+      logger.warn({ event: "pgbouncer_admin_pool_error", code: classifyError(error) });
+    });
+  }
+  return pool;
+}
 
-    if (elapsed >= SCRAPE_INTERVAL_MS) {
-      logger.warn(
-        { elapsedMs: elapsed, intervalMs: SCRAPE_INTERVAL_MS },
-        "PgBouncer scrape exceeded interval, skipping next cycle (self-throttling)",
+function publish(pools: AdminRow[], stats: AdminRow[]): void {
+  pgbouncerWaitingClients.reset();
+  pgbouncerMaxWaitSeconds.reset();
+  pgbouncerActiveClients.reset();
+  pgbouncerServerConnections.reset();
+  pgbouncerAvgQueryTimeSeconds.reset();
+  pgbouncerTotalRequests.reset();
+  pgbouncerTotalQueryTimeSeconds.reset();
+
+  for (const row of pools) {
+    const labels = { database: label(row.database), user: label(row.user) };
+    pgbouncerWaitingClients.set(labels, numeric(row, "cl_waiting"));
+    pgbouncerMaxWaitSeconds.set(
+      labels,
+      numeric(row, "maxwait") + numeric(row, "maxwait_us") / 1_000_000,
+    );
+    pgbouncerActiveClients.set(labels, numeric(row, "cl_active"));
+    for (const state of ["active", "idle", "used", "tested", "login"] as const) {
+      pgbouncerServerConnections.set(
+        { ...labels, state },
+        numeric(row, `sv_${state}`),
       );
-      scheduleNextScrape(SCRAPE_INTERVAL_MS * 2);
-    } else {
-      scheduleNextScrape(Math.max(0, SCRAPE_INTERVAL_MS - elapsed));
     }
   }
+
+  for (const row of stats) {
+    const labels = { database: label(row.database) };
+    pgbouncerAvgQueryTimeSeconds.set(
+      labels,
+      numeric(row, "avg_query_time", "avg_query") / 1_000_000,
+    );
+    pgbouncerTotalRequests.set(
+      labels,
+      numeric(row, "total_query_count", "total_xact_count", "total_requests"),
+    );
+    pgbouncerTotalQueryTimeSeconds.set(
+      labels,
+      numeric(row, "total_query_time") / 1_000_000,
+    );
+  }
 }
 
-function scheduleNextScrape(delayMs: number): void {
-  if (scrapeTimer) {
-    clearTimeout(scrapeTimer);
+/** Perform one scrape. Failures are observable but never crash the application. */
+export async function scrapeOnce(): Promise<boolean> {
+  if (scrapeInProgress || !getPgBouncerAdminUrl()) return false;
+  scrapeInProgress = true;
+  const startedAt = Date.now();
+  try {
+    const adminPool = getPool();
+    const [poolsResult, statsResult] = await Promise.all([
+      adminPool.query("SHOW POOLS"),
+      adminPool.query("SHOW STATS"),
+    ]);
+    publish(poolsResult.rows as AdminRow[], statsResult.rows as AdminRow[]);
+    pgbouncerScrapeSuccess.set(1);
+    pgbouncerLastSuccessfulScrapeTimestampSeconds.set(Date.now() / 1_000);
+    return true;
+  } catch (error) {
+    const reason = classifyError(error);
+    pgbouncerScrapeSuccess.set(0);
+    pgbouncerScrapeErrorsTotal.inc({ reason });
+    logger.warn({ event: "pgbouncer_scrape_failed", reason });
+    return false;
+  } finally {
+    pgbouncerScrapeDurationSeconds.set((Date.now() - startedAt) / 1_000);
+    scrapeInProgress = false;
   }
-  scrapeTimer = setTimeout(scrapeOnce, delayMs);
 }
 
-export function startPgBouncerScraper(): void {
-  const adminUrl = getPgBouncerAdminUrl();
-  if (!adminUrl) {
-    logger.info("PgBouncer admin URL not configured, scraper not started");
-    return;
-  }
-
-  logger.info("Starting PgBouncer stats scraper (1s interval)");
-  scrapeOnce();
+async function runCycle(): Promise<void> {
+  await scrapeOnce();
+  if (started) timer = setTimeout(runCycle, getPgBouncerScrapeIntervalMs());
+  timer?.unref?.();
 }
 
-export function stopPgBouncerScraper(): void {
-  if (scrapeTimer) {
-    clearTimeout(scrapeTimer);
-    scrapeTimer = null;
+export function startPgBouncerScraper(): boolean {
+  if (started || !getPgBouncerAdminUrl()) return false;
+  started = true;
+  pgbouncerScraperEnabled.set(1);
+  logger.info({ intervalMs: getPgBouncerScrapeIntervalMs() }, "Starting PgBouncer metrics scraper");
+  void runCycle();
+  return true;
+}
+
+export async function stopPgBouncerScraper(): Promise<void> {
+  started = false;
+  pgbouncerScraperEnabled.set(0);
+  if (timer) clearTimeout(timer);
+  timer = null;
+  const currentPool = pool;
+  pool = null;
+  if (currentPool) await currentPool.end();
+}
+
+export function startPgBouncerScraperIfNeeded(): void {
+  if (process.env.NODE_ENV !== "test" && process.env.METRICS_ENABLED === "true") {
+    startPgBouncerScraper();
   }
-  if (pgbouncerPool) {
-    pgbouncerPool.end();
-    pgbouncerPool = null;
-  }
-  logger.info("PgBouncer stats scraper stopped");
+}
+
+export async function stopPgBouncerScraperIfNeeded(): Promise<void> {
+  await stopPgBouncerScraper();
 }

@@ -14,7 +14,8 @@
  */
 
 import 'dotenv/config';
-import { startServer, stopIdempotencySweeper, stopPgBouncerScraperIfNeeded } from './app.js';
+import { startServer, stopIdempotencySweeper } from './app.js';
+import { stopPgBouncerScraperIfNeeded } from './services/pgbouncerScraper.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';

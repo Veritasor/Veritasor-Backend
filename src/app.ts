@@ -46,44 +46,11 @@ import {
   stopIdempotencySweeper,
 } from "./middleware/idempotency.js";
 import {
-  startPgBouncerScraper,
-  stopPgBouncerScraper,
   startPgBouncerScraperIfNeeded,
-  stopPgBouncerScraperIfNeeded,
 } from "./services/pgbouncerScraper.js";
-
-/**
- * Handle to the running PgBouncer scraper timer.
- * Stored at module scope so the production boot path and tests can share
- * a single instance, and so `stopPgBouncerScraper()` is idempotent.
- */
-let pgbouncerScraperTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Active SPIFFE SVID provider when mTLS uses the Workload API. */
 let activeSvidProvider: SvidProvider | undefined;
-
-/**
- * Start the PgBouncer stats scraper.
- *
- * No-op in test environments so unit tests can drive the scraper manually
- * without racing a real interval.
- */
-export async function startPgBouncerScraperIfNeeded(): Promise<void> {
-  if (process.env.NODE_ENV === 'test') return;
-  if (pgbouncerScraperTimer) return;
-  await startPgBouncerScraper();
-  pgbouncerScraperTimer = setTimeout(() => {}, 0); // placeholder to track started state
-}
-
-/**
- * Stop the PgBouncer stats scraper, if one was started.
- * Safe to call multiple times.
- */
-export async function stopPgBouncerScraperIfNeeded(): Promise<void> {
-  if (!pgbouncerScraperTimer && process.env.NODE_ENV !== 'test') return;
-  await stopPgBouncerScraper();
-  pgbouncerScraperTimer = null;
-}
 
 export function stopSpiffeSvidProviderIfNeeded(): void {
   activeSvidProvider?.stop();

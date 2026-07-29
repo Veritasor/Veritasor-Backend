@@ -11,6 +11,30 @@ import {
 import { config } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
 import { createSorobanRpcServer } from "./client.js";
+import { hedgedRequest } from "../../utils/hedged-request.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * p95 latency estimate for Soroban `simulateTransaction` (milliseconds).
+ *
+ * Based on observed testnet behaviour: ~400–500 ms.  The hedge fires a backup
+ * RPC call if the primary has not responded within this window.
+ *
+ * Can be overridden via the `SOROBAN_HEDGE_DELAY_MS` environment variable.
+ */
+const DEFAULT_HEDGE_DELAY_MS = 500;
+
+function getHedgeDelayMs(): number {
+  const raw = process.env.SOROBAN_HEDGE_DELAY_MS;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_HEDGE_DELAY_MS;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +70,11 @@ const SIMULATION_SOURCE =
  *
  * Calls `get_attestation(business: Address, period: String)` via a
  * simulated (read-only) transaction — no signing or fee payment required.
+ *
+ * This function uses **hedged requests** to reduce tail latency: if the
+ * primary RPC node does not respond within the p95 latency window (default
+ * 500 ms), a backup request is fired to a secondary RPC endpoint
+ * (`SOROBAN_BACKUP_RPC_URL`).  The first response wins.
  *
  * ---
  * ## Caching and Staleness Contract
@@ -97,7 +126,8 @@ export async function getAttestation(
   business: string,
   period: string,
 ): Promise<AttestationResult | null> {
-  const { contractId, networkPassphrase } = config.soroban;
+  const { contractId, networkPassphrase, rpcUrl, backupRpcUrl } =
+    config.soroban;
 
   if (!contractId) {
     throw new Error(
@@ -106,7 +136,12 @@ export async function getAttestation(
     );
   }
 
-  const client = createSorobanRpcServer(config.soroban.rpcUrl);
+  const client = createSorobanRpcServer(rpcUrl);
+  const backupClient =
+    backupRpcUrl !== rpcUrl
+      ? createSorobanRpcServer(backupRpcUrl)
+      : client;
+
   const contract = new Contract(contractId);
 
   // Build a simulation-only transaction.
@@ -130,13 +165,19 @@ export async function getAttestation(
     .build();
 
   // Simulate — this is the read path; no transaction is broadcast.
+  // Hedged: if the primary RPC is slow, a backup request is fired.
   let simResult: rpc.Api.SimulateTransactionResponse;
   try {
-    simResult = await client.simulateTransaction(tx);
+    simResult = await hedgedRequest({
+      operationName: "simulateTransaction",
+      primary: () => client.simulateTransaction(tx),
+      hedge: () => backupClient.simulateTransaction(tx),
+      hedgeDelayMs: getHedgeDelayMs(),
+    });
   } catch (err) {
     logger.error(
       { err, business, period },
-      "soroban: simulateTransaction network error",
+      "soroban: hedged simulateTransaction failed (both attempts)",
     );
     throw err;
   }
