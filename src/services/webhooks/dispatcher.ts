@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { staleWebhookDeliveries } from "../../metrics.js";
 import { createAuditLog } from "../../repositories/auditLogRepository.js";
+import { createDeliveryReceipt } from "../../repositories/deliveryReceiptRepository.js";
 
 export class WebhookPayloadTooLargeError extends Error {
   public readonly code = 'PAYLOAD_TOO_LARGE';
@@ -17,6 +18,8 @@ export interface WebhookSubscription {
   url: string;
   secret: string;
   maxPayloadSize?: number;
+  /** Monotonically increasing version of the webhook secret, used for rotation tracking. */
+  secretVersion?: number;
 }
 
 export interface WebhookDeliveryReceipt {
@@ -158,4 +161,76 @@ export function verifyWebhookSignature(options: VerifyWebhookOptions): boolean {
   }
 
   return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+export interface SendWebhookDeliveryOptions {
+  subscription: WebhookSubscription;
+  payload: object;
+  attempt?: number;
+}
+
+export interface SendWebhookDeliveryResult {
+  deliveryId: string;
+  attempt: number;
+  statusCode: number;
+  latencyMs: number;
+  signature: string;
+  signatureVersion: number;
+  responseBody?: string;
+}
+
+export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): Promise<SendWebhookDeliveryResult> {
+  const { subscription, payload, attempt = 1 } = options;
+
+  const { headers, receipt } = signAndPrepareDelivery(payload, subscription, attempt);
+
+  const url = subscription.url;
+  const serializedPayload = JSON.stringify(payload);
+  const startedAt = Date.now();
+
+  let statusCode = 0;
+  let responseBody: string | undefined;
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "application/json",
+      },
+      body: serializedPayload,
+    });
+
+    statusCode = response.status;
+
+    const text = await response.text();
+    responseBody = text.length > 2048 ? text.slice(0, 2048) : text;
+  } catch {
+    statusCode = 0;
+  }
+
+  const latencyMs = Date.now() - startedAt;
+
+  await createDeliveryReceipt({
+    deliveryId: receipt.delivery_id,
+    attemptNumber: attempt,
+    subscriptionId: subscription.id,
+    businessId: subscription.businessId,
+    url,
+    statusCode,
+    latencyMs,
+    signatureVersion: 1,
+    signature: receipt.signature,
+    responseBody,
+  });
+
+  return {
+    deliveryId: receipt.delivery_id,
+    attempt,
+    statusCode,
+    latencyMs,
+    signature: receipt.signature,
+    signatureVersion: 1,
+    responseBody,
+  };
 }

@@ -19,6 +19,7 @@ import {
   listDeadLetterShards,
 } from '../services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../services/webhooks/razorpayHandler.js'
+import { queryDeliveryReceipts } from '../repositories/deliveryReceiptRepository.js'
 import { revokeBatchAttestations } from '../services/attestation/revokeBatch.js'
 import { createRolePromotionRequest, findRolePromotionRequestById, updateRolePromotionRequest, findPendingRolePromotionRequestsForTarget } from '../repositories/rolePromotionRequestRepository.js'
 
@@ -562,6 +563,28 @@ adminRouter.post(
     }
   }
 );
+
+/**
+ * GET /api/v1/admin/webhooks/receipts
+ * List webhook delivery receipts with optional filters
+ */
+adminRouter.get(
+  '/webhooks/receipts',
+  requirePermissions(IntegrationPermission.ADMIN_READ_STATS),
+  async (req, res) => {
+    try {
+      const businessId = typeof req.query.businessId === 'string' ? req.query.businessId : undefined;
+      const deliveryId = typeof req.query.deliveryId === 'string' ? req.query.deliveryId : undefined;
+      const subscriptionId = typeof req.query.subscriptionId === 'string' ? req.query.subscriptionId : undefined;
+      const limit = typeof req.query.limit === 'string' ? Math.min(parseInt(req.query.limit, 10) || 50, 100) : 50;
+
+      const result = await queryDeliveryReceipts({ businessId, deliveryId, subscriptionId, limit });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: 'Internal Server Error', message: error.message });
+    }
+  }
+)
 
 /**
  * POST /api/v1/admin/webhooks/replay
