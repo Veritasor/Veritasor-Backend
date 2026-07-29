@@ -25,7 +25,8 @@
     "audit:ci": "pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts",
     "rebuild:indexer": "tsx scripts/rebuild-indexer.ts",
     "pact:can-i-deploy": "tsx scripts/can-i-deploy.ts",
-    "license:ci": "tsx scripts/check-licenses.ts"
+    "pact:test": "vitest run tests/pact/",
+    "pact:publish": "tsx scripts/publish-pact.ts"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^5.6.0",

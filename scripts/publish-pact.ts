@@ -4,7 +4,7 @@ import { publishPactContract } from '../src/utils/pactBroker.js';
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
-const pactFilePath = path.resolve(currentDir, '../tests/pacts/frontend-backend.json');
+const pactFilePath = path.resolve(currentDir, '../tests/pacts/Veritasor-Frontend-Veritasor-Backend.json');
 
 await publishPactContract({
   pactFilePath,

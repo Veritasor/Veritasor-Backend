@@ -237,7 +237,7 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
                   graphqlDepthLimitRejections.inc();
                   setResult([
                     new GraphQLError(
-                      `Query depth exceeds maximum allowed depth of ${MAX_QUERY_DEPTH}`,
+                      'Query depth exceeds maximum allowed depth of ' + MAX_QUERY_DEPTH,
                     ),
                   ]);
                   return;

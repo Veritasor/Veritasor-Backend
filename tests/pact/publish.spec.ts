@@ -9,7 +9,7 @@ describe('publishPactContract', () => {
 
     await expect(
       publishPactContract({
-        pactFilePath: 'tests/pacts/frontend-backend.json',
+        pactFilePath: 'tests/pacts/Veritasor-Frontend-Veritasor-Backend.json',
         brokerBaseUrl: 'https://broker.example.test',
         consumerVersion: '1.2.3',
         consumerName: 'Veritasor-Frontend',
@@ -28,7 +28,7 @@ describe('publishPactContract', () => {
         '-y',
         'pact-broker',
         'publish',
-        'tests/pacts/frontend-backend.json',
+        'tests/pacts/Veritasor-Frontend-Veritasor-Backend.json',
         '--consumer-app-name',
         'Veritasor-Frontend',
         '--provider-app-name',
