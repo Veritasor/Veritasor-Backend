@@ -14,7 +14,7 @@ import {
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { compressionMiddleware } from "./middleware/compression.js";
-import { mtlsMiddleware } from "./middleware/mtls.js";
+import { mtlsMiddleware, registerMtlsServer } from "./middleware/mtls.js";
 import { createGrpcWorkloadApiClient } from "./spiffe/workloadApiClient.js";
 import { createSvidProvider, type SvidProvider } from "./spiffe/svidProvider.js";
 import { metricsRegistry } from "./metrics.js";
@@ -260,6 +260,9 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
         application
       );
       httpsServerRef.current = server as HttpsServer;
+      if (!config.mtls.spiffe.enabled) {
+        registerMtlsServer(httpsServerRef.current);
+      }
     } else {
       // Create regular HTTP server
       server = application.listen(port);

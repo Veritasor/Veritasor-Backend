@@ -45,8 +45,11 @@ export const envSchema = z.object({
   SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
   DRR_SCHEDULER_TIER_WEIGHTS: z.string().optional(),
   DRR_SCHEDULER_QUANTUM: z.string().optional(),
-  SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
+  SECRET_LOADER: z.enum(["env", "file", "vault", "aws", "gsm"]).default("env"),
   SECRET_FILE_PATH: z.string().optional(),
+  SECRET_CACHE_KMS_KEY_ID: z.string().optional(),
+  SECRET_CACHE_PATH: z.string().optional(),
+  SECRET_CACHE_TTL_MINUTES: z.string().optional(),
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
@@ -60,6 +63,11 @@ export const envSchema = z.object({
   STATSD_PREFIX: z.string().optional(),
   STATSD_DUAL_WRITE_ENABLED: z.string().optional(),
   STATSD_DUAL_WRITE_INTERVAL_MS: z.string().optional(),
+  OTEL_EXPORTER_PROTOCOL: z.enum(["http", "grpc"]).default("http"),
+  OTEL_GRPC_MTLS_ENABLED: z.string().optional(),
+  OTEL_MTLS_CA_PATH: z.string().optional(),
+  OTEL_MTLS_CERT_PATH: z.string().optional(),
+  OTEL_MTLS_KEY_PATH: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -260,6 +268,17 @@ export const config = {
         }
       : undefined,
   },
+  otel: {
+    exporterProtocol: parsedEnv.OTEL_EXPORTER_PROTOCOL,
+    grpc: {
+      mtls: {
+        enabled: parseBooleanEnv("OTEL_GRPC_MTLS_ENABLED", parsedEnv.OTEL_GRPC_MTLS_ENABLED, false),
+        caPath: parsedEnv.OTEL_MTLS_CA_PATH?.trim(),
+        certPath: parsedEnv.OTEL_MTLS_CERT_PATH?.trim(),
+        keyPath: parsedEnv.OTEL_MTLS_KEY_PATH?.trim(),
+      },
+    },
+  },
   pgbouncerMetrics: {
     adminUrl: parsedEnv.PGBOUNCER_METRICS_ADMIN_URL,
     scrapeIntervalMs: parsePositiveIntEnv(
@@ -414,6 +433,11 @@ export const config = {
       secretPath: parsedEnv.VAULT_SECRET_PATH,
       token: parsedEnv.VAULT_TOKEN,
     },
+    cache: {
+      kmsKeyId: parsedEnv.SECRET_CACHE_KMS_KEY_ID,
+      path: parsedEnv.SECRET_CACHE_PATH,
+      ttlMinutes: parsePositiveIntEnv("SECRET_CACHE_TTL_MINUTES", parsedEnv.SECRET_CACHE_TTL_MINUTES, 60 * 24), // default 24h
+    }
   },
   redis: {
     /** Single-node Redis URL (redis[s]://...). Ignored when clusterNodes is set. */

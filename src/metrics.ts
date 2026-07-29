@@ -37,6 +37,13 @@ export const mtlsHandshakeFailuresTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mtlsReloadsTotal = new Counter({
+  name: "mtls_reloads_total",
+  help: "Total number of mTLS certificate reloads",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});
+
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
   help: "Total number of requests rejected by the rate limiter (HTTP 429)",
@@ -381,6 +388,13 @@ export const statsdDualWriteDurationMs = new Histogram({
   name: 'statsd_dual_write_duration_ms',
   help: 'Duration of StatsD dual-write push cycles in milliseconds',
   buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  registers: [metricsRegistry],
+});
+
+export const etagHitsTotal = new Counter({
+  name: "etag_hits_total",
+  help: "Total number of ETag-based cache decisions (hit = 304 served, miss = full response)",
+  labelNames: ["route", "result"] as const,
   registers: [metricsRegistry],
 });
 
