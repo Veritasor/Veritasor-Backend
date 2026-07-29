@@ -247,29 +247,23 @@ export const redisCircuitBreakerFailuresTotal = new Counter({
 });
 
 /**
- * Attestation submit latency histogram.
- * Tuned to resolve well around the 50-200ms SLO.
+ * Webhook secret rotation rollout status.
  *
- * Boundaries (in seconds):
- * 0.010, 0.025 - Fast requests
- * 0.050, 0.075, 0.100, 0.150, 0.200 - SLO-focused resolution
- * 0.250, 0.500, 1.0, 2.5, 5.0 - Outliers
+ * - `webhook_secret_rotation_status` (gauge, labels: subscription_id, business_id, status):
+ *   1 = subscription has adopted the latest secret version, 0 = lagging behind.
+ *
+ * Operators can sum or count by `status` to see how many subscriptions are
+ * current vs. lagging, and drill into individual lagging subscriptions by
+ * `subscription_id` / `business_id`.
+ *
+ * Implementation in `src/services/webhooks/secretRotation.ts` — see that
+ * module for the update loop and per-subscription resolution.
  */
-export const attestationSubmitLatency = new Histogram({
-  name: "attestation_submit_latency_seconds",
-  help: "Latency of attestation submissions to the blockchain",
-  labelNames: ["status"] as const,
-  buckets: [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.5, 1, 2.5, 5],
+export const webhookSecretRotationStatus = new Gauge({
+  name: "webhook_secret_rotation_status",
+  help:
+    "Rollout status of webhook secret rotation per subscription " +
+    "(1 = current / 0 = lagging)",
+  labelNames: ["subscription_id", "business_id", "status"] as const,
   registers: [metricsRegistry],
 });
-
-const validAttestationSubmitStatuses = new Set(["success", "error", "timeout", "rejected"]);
-
-/**
- * Observes attestation submit latency.
- * Includes a bucket cardinality guard to ensure only valid statuses are recorded.
- */
-export function observeAttestationSubmitLatency(status: string, durationSec: number): void {
-  const safeStatus = validAttestationSubmitStatuses.has(status) ? status : "unknown";
-  attestationSubmitLatency.observe({ status: safeStatus }, durationSec);
-}
