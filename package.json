@@ -17,6 +17,7 @@
     "migrate": "tsx src/db/migrate.ts",
     "migrate:rollback": "tsx src/db/migrate.ts rollback",
     "migrate:verify-rollback": "tsx src/db/migrate.ts verify-rollback",
+    "migrate:lint-companions": "tsx src/db/migrate.ts lint-companions",
     "docs:routes": "tsx scripts/generate-routes.ts",
     "docs:openapi": "tsx scripts/generate-openapi.ts",
     "audit:ci": "pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts",
