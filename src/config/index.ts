@@ -60,6 +60,11 @@ export const envSchema = z.object({
   STATSD_PREFIX: z.string().optional(),
   STATSD_DUAL_WRITE_ENABLED: z.string().optional(),
   STATSD_DUAL_WRITE_INTERVAL_MS: z.string().optional(),
+  OTEL_EXPORTER_PROTOCOL: z.enum(["http", "grpc"]).default("http"),
+  OTEL_GRPC_MTLS_ENABLED: z.string().optional(),
+  OTEL_MTLS_CA_PATH: z.string().optional(),
+  OTEL_MTLS_CERT_PATH: z.string().optional(),
+  OTEL_MTLS_KEY_PATH: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -259,6 +264,17 @@ export const config = {
             ),
         }
       : undefined,
+  },
+  otel: {
+    exporterProtocol: parsedEnv.OTEL_EXPORTER_PROTOCOL,
+    grpc: {
+      mtls: {
+        enabled: parseBooleanEnv("OTEL_GRPC_MTLS_ENABLED", parsedEnv.OTEL_GRPC_MTLS_ENABLED, false),
+        caPath: parsedEnv.OTEL_MTLS_CA_PATH?.trim(),
+        certPath: parsedEnv.OTEL_MTLS_CERT_PATH?.trim(),
+        keyPath: parsedEnv.OTEL_MTLS_KEY_PATH?.trim(),
+      },
+    },
   },
   pgbouncerMetrics: {
     adminUrl: parsedEnv.PGBOUNCER_METRICS_ADMIN_URL,

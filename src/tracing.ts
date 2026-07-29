@@ -9,8 +9,57 @@ import {
   type Span,
 } from "@opentelemetry/api";
 import type { Request, Response } from "express";
-import { readFile } from 'node:fs/promises';
+import { watch } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import { logger } from "./utils/logger.js";
+import { secretLoader } from "./utils/secret-loader.js";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Exporter Protocol Selection
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// OTEL_EXPORTER_PROTOCOL controls which OTLP transport is used:
+//
+//   - "http" (default): Uses HTTP/protobuf via
+//     @opentelemetry/exporter-trace-otlp-http. Lower operational
+//     complexity; works through standard load balancers and proxies.
+//     Default endpoint: OTEL_EXPORTER_OTLP_ENDPOINT (typically :4318).
+//
+//   - "grpc": Uses gRPC via @opentelemetry/exporter-trace-otlp-grpc.
+//     Lower per-span overhead in high-throughput environments thanks to
+//     multiplexed HTTP/2 streams. Requires a collector that supports
+//     gRPC (default port 4317). When OTEL_GRPC_MTLS_ENABLED=true,
+//     mutual TLS is configured using client certificates.
+//
+// Trade-offs:
+//   - gRPC reduces connection churn and header overhead at scale.
+//   - gRPC load balancing requires an L4 proxy or collector-side
+//     routing; HTTP works through L7 reverse proxies out of the box.
+//   - mTLS adds per-connection handshake cost but provides transport
+//     authentication even within private networks.
+
+/**
+ * Resolve the OTLP exporter protocol from env.
+ *
+ * @returns "http" or "grpc". Defaults to "http".
+ */
+export function getExporterProtocol(): 'http' | 'grpc' {
+  const proto = process.env.OTEL_EXPORTER_PROTOCOL?.trim().toLowerCase();
+  if (proto === 'grpc') return 'grpc';
+  return 'http';
+}
+
+const TRUE_VALUES = new Set(["true", "1", "yes", "on"]);
+
+/**
+ * Whether gRPC mTLS is enabled for the OTLP exporter.
+ *
+ * Only meaningful when {@link getExporterProtocol} returns "grpc".
+ */
+export function isGrpcMtlsEnabled(): boolean {
+  const val = process.env.OTEL_GRPC_MTLS_ENABLED?.trim().toLowerCase() ?? '';
+  return TRUE_VALUES.has(val);
+}
 
 export const ALLOWED_BAGGAGE_KEYS = new Set(["tenant.id"]);
 
@@ -202,7 +251,7 @@ export async function detectGcpResources(
  */
 export async function detectKubernetesResources(
   signal: AbortSignal,
-  readFileImpl: (path: string) => Promise<string> = (p) => readFile(p, 'utf-8'),
+  readFileImpl: (path: string) => Promise<string> = (p) => readFileAsync(p, 'utf-8'),
 ): Promise<CloudResourceAttributes> {
   const attrs: CloudResourceAttributes = {}
 
@@ -258,7 +307,7 @@ export async function detectKubernetesResources(
 export async function detectCloudResources(
   timeoutMs: number = resolveCloudDetectorTimeoutMs(),
   fetchImpl: typeof fetch = fetch,
-  readFileImpl: (path: string) => Promise<string> = (p) => readFile(p, 'utf-8'),
+  readFileImpl: (path: string) => Promise<string> = (p) => readFileAsync(p, 'utf-8'),
 ): Promise<CloudResourceDetectionResult> {
   const [awsAttrs, gcpAttrs, k8sAttrs] = await Promise.all([
     detectWithTimeout((s) => detectAwsResources(s, fetchImpl), timeoutMs, 'aws'),
@@ -303,6 +352,198 @@ export function isOpenTelemetryEnabled(): boolean {
   return Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
 }
 
+// ─── gRPC mTLS credential management ───────────────────────────────────────
+
+/**
+ * Loaded gRPC mTLS credentials.
+ *
+ * `undefined` means mTLS is not enabled. When set, all three buffers
+ * contain the PEM-encoded CA, client certificate, and private key.
+ */
+let grpcMtlsCredentials: {
+  ca: Buffer;
+  cert: Buffer;
+  key: Buffer;
+} | undefined;
+
+/**
+ * Whether mTLS creds were loaded from file paths (true) or secret loader (false).
+ * Files are watched for rotation; secret-loader creds rotate via reload().
+ */
+let grpcMtlsFromFiles = false;
+
+/** Active file watchers for gRPC mTLS cert files. Cleared on SDK shutdown. */
+const grpcMtlsWatchers: Array<ReturnType<typeof watch>> = [];
+
+/** Debounce timer for file-watch-driven SDK reinitialization. */
+let grpcMtlsDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Guard against concurrent SDK reinitializations. */
+let grpcMtlsReinitInProgress = false;
+
+/**
+ * Attempt to load PEM credential material from the secret loader.
+ *
+ * Keys tried: `OTEL_MTLS_CA`, `OTEL_MTLS_CERT`, `OTEL_MTLS_KEY`.
+ * When all three resolve, the PEM strings are returned as Buffers.
+ * When any key is missing the function returns `undefined` so the
+ * caller can fall back to file-path loading.
+ */
+async function loadGrpcMtlsFromSecretLoader(): Promise<
+  { ca: Buffer; cert: Buffer; key: Buffer } | undefined
+> {
+  try {
+    const [ca, cert, key] = await Promise.all([
+      secretLoader.get("OTEL_MTLS_CA"),
+      secretLoader.get("OTEL_MTLS_CERT"),
+      secretLoader.get("OTEL_MTLS_KEY"),
+    ]);
+    if (!ca || !cert || !key) return undefined;
+    return {
+      ca: Buffer.from(ca, "utf-8"),
+      cert: Buffer.from(cert, "utf-8"),
+      key: Buffer.from(key, "utf-8"),
+    };
+  } catch {
+    // SecretNotLoadedError or SecretNotFoundError → fall back to files
+    return undefined;
+  }
+}
+
+/**
+ * Load gRPC mTLS credentials.
+ *
+ * Prefers the secret loader (keys `OTEL_MTLS_CA`, `OTEL_MTLS_CERT`,
+ * `OTEL_MTLS_KEY`) so operators can store PEM material in Vault, env,
+ * or a file backend. Falls back to reading from filesystem paths
+ * (`OTEL_MTLS_CA_PATH`, …) when the secret loader returns nothing.
+ *
+ * Returns `undefined` when mTLS is not enabled. Throws when mTLS is
+ * enabled but neither backend provides all three PEM values.
+ */
+async function loadGrpcMtlsCredentials(): Promise<
+  { ca: Buffer; cert: Buffer; key: Buffer } | undefined
+> {
+  if (!isGrpcMtlsEnabled()) return undefined;
+
+  // 1. Try secret loader (supports Vault, env, file backends)
+  const fromSecrets = await loadGrpcMtlsFromSecretLoader();
+  if (fromSecrets) {
+    grpcMtlsFromFiles = false;
+    return fromSecrets;
+  }
+
+  // 2. Fall back to file paths
+  const caPath = process.env.OTEL_MTLS_CA_PATH?.trim();
+  const certPath = process.env.OTEL_MTLS_CERT_PATH?.trim();
+  const keyPath = process.env.OTEL_MTLS_KEY_PATH?.trim();
+
+  if (!caPath || !certPath || !keyPath) {
+    throw new Error(
+      "OTEL_GRPC_MTLS_ENABLED=true but neither secret-loader keys " +
+        "(OTEL_MTLS_CA/CERT/KEY) nor file paths " +
+        "(OTEL_MTLS_CA_PATH/CERT_PATH/KEY_PATH) are fully configured.",
+    );
+  }
+
+  const [ca, cert, key] = await Promise.all([
+    readFileAsync(caPath),
+    readFileAsync(certPath),
+    readFileAsync(keyPath),
+  ]);
+
+  grpcMtlsFromFiles = true;
+  return { ca, cert, key };
+}
+
+/**
+ * Start file watchers on the gRPC mTLS certificate paths.
+ *
+ * Only active when credentials were loaded from files (not the secret
+ * loader). When any watched file changes, the exporter is reinitialised
+ * so that rotated certificates take effect without a process restart.
+ * A short debounce prevents storms when a certificate manager atomically
+ * replaces multiple files in quick succession.
+ */
+function startGrpcMtlsFileWatchers(): void {
+  if (!grpcMtlsFromFiles) return;
+
+  const paths = [
+    process.env.OTEL_MTLS_CA_PATH?.trim(),
+    process.env.OTEL_MTLS_CERT_PATH?.trim(),
+    process.env.OTEL_MTLS_KEY_PATH?.trim(),
+  ].filter((p): p is string => Boolean(p));
+
+  for (const filePath of paths) {
+    try {
+      const watcher = watch(filePath, (eventType) => {
+        if (eventType !== 'change') return;
+        if (grpcMtlsDebounceTimer) clearTimeout(grpcMtlsDebounceTimer);
+        grpcMtlsDebounceTimer = setTimeout(() => {
+          logger.info({
+            event: 'otel_grpc_mtls_cert_changed',
+            path: filePath,
+          });
+          reinitializeOtelSdk().catch((err) => {
+            logger.error({
+              event: 'otel_grpc_mtls_reinit_failed',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }, 500);
+      });
+      grpcMtlsWatchers.push(watcher);
+    } catch {
+      logger.debug({
+        event: 'otel_grpc_mtls_watcher_failed',
+        path: filePath,
+      });
+    }
+  }
+}
+
+/**
+ * Stop all gRPC mTLS file watchers and cancel any pending debounce timer.
+ */
+function stopGrpcMtlsFileWatchers(): void {
+  if (grpcMtlsDebounceTimer) {
+    clearTimeout(grpcMtlsDebounceTimer);
+    grpcMtlsDebounceTimer = undefined;
+  }
+  for (const watcher of grpcMtlsWatchers) {
+    try { watcher.close(); } catch { /* best-effort */ }
+  }
+  grpcMtlsWatchers.length = 0;
+}
+
+/**
+ * Reinitialize the OpenTelemetry SDK with fresh credentials.
+ *
+ * Used for certificate rotation without process restart. Shuts down
+ * the existing SDK (if any), clears cached state, and calls
+ * {@link initializeOpenTelemetry} to create a new SDK instance.
+ *
+ * Guards against concurrent calls via `grpcMtlsReinitInProgress`.
+ */
+async function reinitializeOtelSdk(): Promise<void> {
+  if (grpcMtlsReinitInProgress) return;
+  grpcMtlsReinitInProgress = true;
+  try {
+    if (sdkStarted && sdk) {
+      await sdk.shutdown();
+      sdkStarted = false;
+      sdk = undefined;
+    }
+    stopGrpcMtlsFileWatchers();
+    sdkStartPromise = undefined;
+    grpcMtlsCredentials = undefined;
+    grpcMtlsFromFiles = false;
+    await initializeOpenTelemetry();
+  } finally {
+    grpcMtlsReinitInProgress = false;
+  }
+}
+
 export async function initializeOpenTelemetry(): Promise<
   OpenTelemetrySdk | undefined
 > {
@@ -314,31 +555,72 @@ export async function initializeOpenTelemetry(): Promise<
     return sdkStartPromise;
   }
 
+  const protocol = getExporterProtocol();
+
   sdkStartPromise = (async () => {
+    // ── Load credentials for gRPC mTLS ───────────────────────────────
+    if (protocol === 'grpc') {
+      grpcMtlsCredentials = await loadGrpcMtlsCredentials();
+    }
+
+    // ── Dynamic imports per protocol ─────────────────────────────────
+    let OTLPTraceExporter: new (opts: Record<string, unknown>) => unknown;
+    let OTLPLogExporter: new (opts: Record<string, unknown>) => unknown;
+
     const [
       { NodeSDK },
-      { OTLPTraceExporter },
-      { OTLPLogExporter },
-      { BatchLogRecordProcessor }
+      { BatchLogRecordProcessor },
     ] = await Promise.all([
       import("@opentelemetry/sdk-node"),
-      import("@opentelemetry/exporter-trace-otlp-http"),
-      import("@opentelemetry/exporter-logs-otlp-http"),
-      import("@opentelemetry/sdk-logs")
+      import("@opentelemetry/sdk-logs"),
     ]);
 
-    const traceUrl = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-    const logUrl = traceUrl?.endsWith("/v1/traces")
-      ? traceUrl.replace(/\/v1\/traces$/, "/v1/logs")
-      : undefined;
+    if (protocol === 'grpc') {
+      const [traceMod, logMod] = await Promise.all([
+        import("@opentelemetry/exporter-trace-otlp-grpc"),
+        import("@opentelemetry/exporter-logs-otlp-grpc"),
+      ]);
+      OTLPTraceExporter = traceMod.OTLPTraceExporter;
+      OTLPLogExporter = logMod.OTLPLogExporter;
+    } else {
+      const [traceMod, logMod] = await Promise.all([
+        import("@opentelemetry/exporter-trace-otlp-http"),
+        import("@opentelemetry/exporter-logs-otlp-http"),
+      ]);
+      OTLPTraceExporter = traceMod.OTLPTraceExporter;
+      OTLPLogExporter = logMod.OTLPLogExporter;
+    }
 
-    const rawExporter = new OTLPTraceExporter({
-      url: traceUrl,
-    });
+    // ── Build exporter options ───────────────────────────────────────
+    const traceUrl =
+      protocol === 'grpc'
+        ? process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4317'
+        : process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
-    const logExporter = new OTLPLogExporter({
-      url: logUrl,
-    });
+    const logUrl =
+      protocol === 'grpc'
+        ? traceUrl
+        : traceUrl?.endsWith("/v1/traces")
+          ? traceUrl.replace(/\/v1\/traces$/, "/v1/logs")
+          : undefined;
+
+    const exporterOptions: Record<string, unknown> = { url: traceUrl };
+    const logExporterOptions: Record<string, unknown> = { url: logUrl };
+
+    // Wire gRPC mTLS credentials when enabled — shared across both exporters
+    if (protocol === 'grpc' && grpcMtlsCredentials) {
+      const { credentials: grpcCredentials } = await import("@grpc/grpc-js");
+      const sslCreds = grpcCredentials.createSsl(
+        grpcMtlsCredentials.ca,
+        grpcMtlsCredentials.key,
+        grpcMtlsCredentials.cert,
+      );
+      exporterOptions.credentials = sslCreds;
+      logExporterOptions.credentials = sslCreds;
+    }
+
+    const rawExporter = new OTLPTraceExporter(exporterOptions);
+    const logExporter = new OTLPLogExporter(logExporterOptions);
 
     const [{ SanitizingSpanExporter }, { RouteAwareSampler }] = await Promise.all([
       import("./tracing/sanitizer.js"),
@@ -382,15 +664,24 @@ export async function initializeOpenTelemetry(): Promise<
     sdk.start();
     sdkStarted = true;
 
+    // Start file watchers for gRPC mTLS cert rotation
+    if (protocol === 'grpc' && grpcMtlsCredentials) {
+      startGrpcMtlsFileWatchers();
+    }
+
     logger.info({
       type: "opentelemetry",
       enabled: true,
-      exporter: "otlp-http",
+      exporter: protocol === 'grpc' ? "otlp-grpc" : "otlp-http",
+      mtlsEnabled: protocol === 'grpc' && grpcMtlsCredentials != null,
     });
 
     return sdk;
   })().catch((error: unknown) => {
     sdkStartPromise = undefined;
+    grpcMtlsCredentials = undefined;
+    grpcMtlsFromFiles = false;
+    stopGrpcMtlsFileWatchers();
     logger.error(
       {
         type: "opentelemetry",
@@ -406,12 +697,16 @@ export async function initializeOpenTelemetry(): Promise<
 }
 
 export async function shutdownOpenTelemetry(): Promise<void> {
+  stopGrpcMtlsFileWatchers();
   if (!sdkStarted || !sdk) {
     return;
   }
 
   await sdk.shutdown();
   sdkStarted = false;
+  sdk = undefined;
+  grpcMtlsCredentials = undefined;
+  grpcMtlsFromFiles = false;
 }
 
 export function getHttpRequestContext(req: Request): Context {
