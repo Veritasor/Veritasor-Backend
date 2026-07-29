@@ -1,5 +1,28 @@
 version: '3.8'
 
+# ── Chaos Test Stack (Toxiproxy + Postgres + Redis) ────────────────────────
+#
+# Starts a Postgres instance, a Redis instance, and a Toxiproxy API server
+# with proxied listener ports for both upstream services.  The proxied
+# ports (5432 for PG, 6379 for Redis, 8000 for Soroban) are the ones the
+# app-under-test should point at — Toxiproxy injects toxics into those
+# streams while the raw upstream ports (5433 / 6380) are available for
+# initial DB setup / diagnostics.
+#
+# Additional *dedicated* proxy ports are exposed for the scenario suites so
+# they can run in parallel against independent proxies without clobbering
+# each other's toxics:
+#
+#   15432 → postgres_chaos proxy (used by tests/chaos/postgres-chaos.spec.ts)
+#   16379 → redis_chaos proxy    (used by tests/chaos/redis-chaos.spec.ts)
+#
+# Usage:
+#   docker compose -f tests/chaos/docker-compose.yml up -d
+#   CHAOS_TESTS=true pnpm test tests/chaos/
+#
+# Shutdown:
+#   docker compose -f tests/chaos/docker-compose.yml down -v
+
 services:
   postgres:
     image: postgres:15
@@ -7,22 +30,49 @@ services:
       POSTGRES_USER: veritasor
       POSTGRES_PASSWORD: testpassword
       POSTGRES_DB: veritasor_test
+    command: >
+      postgres
+      -c statement_timeout=6000
+      -c log_min_duration_statement=0
     ports:
-      - "5433:5432" # Direct access for setup
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veritasor -d veritasor_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   redis:
     image: redis:7
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
     ports:
       - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
 
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.9.0
     ports:
-      - "8474:8474" # API
-      - "5432:5432" # Proxied Postgres
-      - "6379:6379" # Proxied Redis
-      - "8000:8000" # Proxied Soroban
+      - "8474:8474"    # Toxiproxy HTTP API
+      - "5432:5432"    # Shared postgres proxy
+      - "6379:6379"    # Shared redis proxy
+      - "8000:8000"    # Shared soroban proxy
+      - "15432:15432"  # Dedicated postgres_chaos proxy
+      - "16379:16379"  # Dedicated redis_chaos proxy
     command: -host 0.0.0.0
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8474/version || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+      start_period: 2s

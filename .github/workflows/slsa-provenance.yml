@@ -48,15 +48,13 @@ jobs:
           npm pack
           mv veritasor-backend-*.tgz "${ARTIFACT_NAME}"
 
-      - name: Compute subject digests
+      - name: Generate CycloneDX SBOM
+        run: npm run sbom:generate -- --output sbom/cyclonedx-sbom.json
+
+      - name: Compute provenance subject digests
         id: hash
         run: |
-          echo "hashes=$(sha256sum "${ARTIFACT_NAME}" | base64 -w0)" >> "$GITHUB_OUTPUT"
-
-      - name: Generate CycloneDX SBOM
-        run: |
-          mkdir -p sbom
-          npx @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom/cyclonedx-sbom.json
+          echo "hashes=$(sha256sum "${ARTIFACT_NAME}" sbom/cyclonedx-sbom.json | base64 -w0)" >> "$GITHUB_OUTPUT"
 
       - name: Generate SPDX SBOM and checksum
         run: |
@@ -231,5 +229,6 @@ jobs:
             "${ARTIFACT_NAME}" \
             "${ARTIFACT_NAME}.cosign.bundle" \
             sbom/cyclonedx-sbom.json \
+            sbom/cyclonedx-sbom.json.sha256 \
             sbom/spdx-sbom.json \
             sbom/spdx-sbom.json.sha256

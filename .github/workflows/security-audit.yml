@@ -35,6 +35,9 @@ jobs:
       - name: Run pnpm audit with allowlist validation
         run: pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts
         timeout-minutes: 10
+      - name: Run license allow-list check
+        run: pnpm run license:ci
+        timeout-minutes: 10
 
       - name: Generate CycloneDX SBOM
         run: |

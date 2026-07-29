@@ -114,6 +114,203 @@ export class MigrationTimeoutError extends Error {
   }
 }
 
+// ─── expand/contract migration helpers ──────────────────────────────────────
+//
+// The expand/contract (a.k.a. "blue-green") pattern keeps database changes
+// backwards-compatible so deploys are zero-downtime:
+//
+//   1. EXPAND – add new schema elements (columns, tables, indexes) without
+//      removing anything the running code still relies on.
+//   2. CONTRACT – after *all* application instances have been updated to use
+//      only the new schema, a separate migration removes the old elements.
+//
+// These helpers provide:
+//   • A template for paired (up+down) migration files that document the phase.
+//   • A lint check that surfaces legacy .sql files that lack a .down.sql
+//     companion, nudging authors toward paired migrations by default.
+//   • A `versionHasCompanionDown` helper so CI can gate on this policy.
+
+/**
+ * Template for a new paired migration.
+ *
+ * Replace `{name}` with a short snake_case description and fill in the
+ * expand-phase DDL. The contract-phase `.down.sql` is generated automatically
+ * as the reverse — add the clean-up DDL that drops the elements introduced
+ * in the expand phase.
+ *
+ * Example:
+ *   generateExpandContractTemplate('add_businesses_verified_at')
+ *   → creates two SQL files in MIGRATIONS_DIR.
+ */
+export const EXPAND_CONTRACT_UP_TEMPLATE = `-- ${'{name}'}
+-- Phase: EXPAND
+--
+-- This is the expand phase of a two-phase expand/contract migration.
+-- The DDL *adds* schema elements (columns, tables, indexes, constraints)
+-- but does NOT drop anything.  After this migration is deployed everywhere
+-- and all code has been updated to use only the new schema, run the
+-- corresponding contract migration to clean up old artifacts.
+--
+-- Usage:
+--   1. Copy this file, rename to {seq}_{name}.up.sql
+--   2. Create a companion {seq}_{name}.down.sql with the reverse DDL.
+--   3. Run the migration.
+--   4. After all instances are on the new code, create a second paired
+--      migration (contract) that drops the old elements.
+
+-- Example DDL (replace with your schema change):
+-- ALTER TABLE businesses ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_businesses_verified_at ON businesses (verified_at);
+`
+
+/**
+ * Template for the contract-phase companion down migration.
+ * Generated alongside the up template so rollback works from day one.
+ */
+export const EXPAND_CONTRACT_DOWN_TEMPLATE = `-- ${'{name}'}
+-- Phase: ROLLBACK (reverses the EXPAND phase)
+--
+-- Reverses the DDL from the corresponding up migration.
+-- This MUST bring the schema back to exactly the state it was in before
+-- the up migration ran.
+
+-- Example DDL (replace with the reverse of your .up.sql):
+-- DROP INDEX CONCURRENTLY IF EXISTS idx_businesses_verified_at;
+-- ALTER TABLE businesses DROP COLUMN IF EXISTS verified_at;
+`
+
+/** Outcome of linting a single migration version. */
+export type MigrationLintResult = {
+  version: string
+  /** True when the version has a .down.sql companion. */
+  hasCompanion: boolean
+  /** True when the version uses the legacy .sql (up-only) format. */
+  isLegacy: boolean
+}
+
+/** Report returned by {@link lintAllMigrations}. */
+export type LintMigrationReport = {
+  total: number
+  /** Migrations that have a .down.sql companion. */
+  withCompanion: number
+  /** Migrations that are legacy (up-only, no rollback possible). */
+  legacy: number
+  /** Per-version details. */
+  results: MigrationLintResult[]
+}
+
+/**
+ * Check whether a migration version has a companion .down.sql file.
+ *
+ * Does NOT throw — returns `false` when the directory cannot be read or
+ * the file is absent. Callers can therefore use this in CI gates without
+ * worrying about filesystem flakes crashing the pipeline.
+ */
+export async function versionHasCompanionDown(
+  version: string,
+  dir: string = MIGRATIONS_DIR
+): Promise<boolean> {
+  try {
+    await access(join(dir, `${version}.down.sql`))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Lint a single migration version.
+ *
+ * Returns a {@link MigrationLintResult} describing whether the version:
+ *   - has a .down.sql companion (paired),
+ *   - is a legacy .sql file (up-only, no companion possible).
+ */
+export async function lintMigrationCompanion(
+  version: string,
+  dir: string = MIGRATIONS_DIR
+): Promise<MigrationLintResult> {
+  const hasCompanion = await versionHasCompanionDown(version, dir)
+  // Detect legacy format: a bare .sql file (not .up.sql and not .down.sql)
+  let isLegacy = false
+  try {
+    await access(join(dir, `${version}.sql`))
+    isLegacy = true
+  } catch {
+    // No legacy file — it's paired (or nonexistent)
+  }
+  return { version, hasCompanion, isLegacy }
+}
+
+/**
+ * Lint every discovered migration and return a report.
+ *
+ * This is the function you'd call from a CI step:
+ *   import { lintAllMigrations } from './db/migrate.js'
+ *   const report = await lintAllMigrations()
+ *   if (report.legacy > 0) process.exit(1)
+ *
+ * @param dir - Migration directory (defaults to MIGRATIONS_DIR).
+ * @returns A roll-up {@link LintMigrationReport}.
+ */
+export async function lintAllMigrations(
+  dir: string = MIGRATIONS_DIR
+): Promise<LintMigrationReport> {
+  const versions = await discoverMigrations(dir)
+  const results = await Promise.all(
+    versions.map((v) => lintMigrationCompanion(v, dir))
+  )
+  return {
+    total: results.length,
+    withCompanion: results.filter((r) => r.hasCompanion).length,
+    legacy: results.filter((r) => r.isLegacy).length,
+    results,
+  }
+}
+
+/**
+ * Renders a migration lint report as a human-readable string.
+ * Suitable for console output or CI annotations.
+ */
+export function formatLintMigrationReport(report: LintMigrationReport): string {
+  const lines: string[] = []
+  lines.push('Migration companion lint')
+  lines.push(`Total: ${report.total} | With companion: ${report.withCompanion} | Legacy (up-only): ${report.legacy}`)
+  lines.push('')
+
+  if (report.legacy === 0) {
+    lines.push('All migrations have companion .down.sql files.')
+    return lines.join('\n')
+  }
+
+  lines.push('Legacy migrations (no .down.sql companion):')
+  for (const r of report.results) {
+    if (r.isLegacy) {
+      lines.push(`  - ${r.version}`)
+    }
+  }
+  lines.push('')
+  lines.push('Create a companion .down.sql or migrate to the paired (.up.sql/.down.sql) format.')
+  return lines.join('\n')
+}
+
+/**
+ * Generate the content for a new paired migration (expand phase .up.sql).
+ *
+ * Returns the template string with `{name}` replaced by `migrationName`.
+ */
+export function generateExpandUpSql(migrationName: string): string {
+  return EXPAND_CONTRACT_UP_TEMPLATE.replaceAll('{name}', migrationName)
+}
+
+/**
+ * Generate the content for the companion contract-phase .down.sql.
+ *
+ * Returns the template string with `{name}` replaced by `migrationName`.
+ */
+export function generateExpandDownSql(migrationName: string): string {
+  return EXPAND_CONTRACT_DOWN_TEMPLATE.replaceAll('{name}', migrationName)
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 /** Returns all unique migration versions, sorted ascending. */
@@ -771,6 +968,33 @@ export function assertScratchDatabase(connectionString: string): void {
   )
 }
 
+// ─── migration companion lint CLI ───────────────────────────────────────────
+
+/**
+ * CLI entry point for migration companion lint.
+ *
+ * npm run migrate:lint-companions
+ *
+ * Exits with code 1 when any legacy (up-only) migration is found.
+ */
+export async function runMigrationCompanionLint(
+  dir: string = MIGRATIONS_DIR,
+  env: NodeJS.ProcessEnv = process.env,
+  exitFn: (code: number) => never = ((code) => process.exit(code)) as (code: number) => never
+): Promise<void> {
+  const report = await lintAllMigrations(dir)
+  const output = formatLintMigrationReport(report)
+  console.log(output)
+
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, output + '\n')
+  }
+
+  if (report.legacy > 0) {
+    exitFn(1)
+  }
+}
+
 // ─── CLI entry point ─────────────────────────────────────────────────────────
 
 /** True when this module is the process entrypoint (not imported by tests). */
@@ -804,7 +1028,10 @@ export async function runMigrateCli(
   const client = new ClientCtor({ connectionString })
   try {
     await client.connect()
-    if (command === 'rollback') {
+    if (command === 'lint-companions') {
+      await runMigrationCompanionLint(MIGRATIONS_DIR, env, exitFn)
+      return
+    } else if (command === 'rollback') {
       await runRollback(client, steps)
     } else if (command === 'verify-rollback') {
       assertScratchDatabase(connectionString)
