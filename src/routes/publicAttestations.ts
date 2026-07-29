@@ -3,16 +3,11 @@ import { z } from 'zod';
 import * as attestationRepository from '../repositories/attestationRepository.js';
 import { db } from '../db/client.js';
 import { AppError } from '../types/errors.js';
-
-const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
+import { CachePolicies, setCacheControl } from '../utils/cacheControl.js';
 
 const hashParamSchema = z.string().min(1).max(512);
 
 export const publicAttestationsRouter = Router();
-
-function getSwrCacheControl(maxAge: number) {
-  return `public, max-age=${maxAge}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`;
-}
 
 publicAttestationsRouter.get(
   '/:hash',
@@ -35,10 +30,8 @@ publicAttestationsRouter.get(
     }
 
     if (attestation.status === 'revoked') {
-      res.set({
-        'Cache-Control': getSwrCacheControl(15),
-        'Age': '0'
-      });
+      setCacheControl(res, CachePolicies.PUBLIC_ATTESTATION_REVOKED);
+      res.set('Age', '0');
       res.status(410).json({
         status: 'error',
         code: 'GONE',
@@ -65,8 +58,8 @@ publicAttestationsRouter.get(
       return;
     }
 
+    setCacheControl(res, CachePolicies.PUBLIC_ATTESTATION_ACTIVE);
     res.set({
-      'Cache-Control': getSwrCacheControl(60),
       'ETag': etag,
       'Last-Modified': lastModified,
       'Age': '0'

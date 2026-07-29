@@ -4,6 +4,7 @@ import type { Server as HttpsServer } from "node:https";
 import type { Request, Response, NextFunction } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
+import { CachePolicies, setCacheControl } from "./utils/cacheControl.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { requestLogger } from "./middleware/requestLogger.js";
@@ -14,6 +15,8 @@ import {
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { compressionMiddleware } from "./middleware/compression.js";
 import { mtlsMiddleware } from "./middleware/mtls.js";
+import { createGrpcWorkloadApiClient } from "./spiffe/workloadApiClient.js";
+import { createSvidProvider, type SvidProvider } from "./spiffe/svidProvider.js";
 import { metricsRegistry } from "./metrics.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -28,6 +31,7 @@ import { publicAttestationsRouter } from "./routes/publicAttestations.js";
 import usersRouter from "./routes/users.js";
 import { jwksManager } from "./utils/jwks.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
+import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import adminRouter from "./routes/admin.js";
 import adminGraphqlRouter from "./routes/admin.graphql.js";
 import {
@@ -43,40 +47,15 @@ import {
   stopIdempotencySweeper,
 } from "./middleware/idempotency.js";
 import {
-  startPgBouncerScraper,
-  stopPgBouncerScraper,
   startPgBouncerScraperIfNeeded,
-  stopPgBouncerScraperIfNeeded,
 } from "./services/pgbouncerScraper.js";
 
-/**
- * Handle to the running PgBouncer scraper timer.
- * Stored at module scope so the production boot path and tests can share
- * a single instance, and so `stopPgBouncerScraper()` is idempotent.
- */
-let pgbouncerScraperTimer: ReturnType<typeof setTimeout> | null = null;
+/** Active SPIFFE SVID provider when mTLS uses the Workload API. */
+let activeSvidProvider: SvidProvider | undefined;
 
-/**
- * Start the PgBouncer stats scraper.
- *
- * No-op in test environments so unit tests can drive the scraper manually
- * without racing a real interval.
- */
-export async function startPgBouncerScraperIfNeeded(): Promise<void> {
-  if (process.env.NODE_ENV === 'test') return;
-  if (pgbouncerScraperTimer) return;
-  await startPgBouncerScraper();
-  pgbouncerScraperTimer = setTimeout(() => {}, 0); // placeholder to track started state
-}
-
-/**
- * Stop the PgBouncer stats scraper, if one was started.
- * Safe to call multiple times.
- */
-export async function stopPgBouncerScraperIfNeeded(): Promise<void> {
-  if (!pgbouncerScraperTimer && process.env.NODE_ENV !== 'test') return;
-  await stopPgBouncerScraper();
-  pgbouncerScraperTimer = null;
+export function stopSpiffeSvidProviderIfNeeded(): void {
+  activeSvidProvider?.stop();
+  activeSvidProvider = undefined;
 }
 
 export const telemetryReady = initializeOpenTelemetry();
@@ -155,10 +134,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
     const etag = jwksManager.getEtag()
     const cacheSeconds = jwksManager.getCacheTtlSeconds()
 
-    res.set("Cache-Control", `public, max-age=${cacheSeconds}, stale-while-revalidate=60`)
+    setCacheControl(res, CachePolicies.JWKS_DOCUMENT(cacheSeconds))
     res.set("ETag", etag)
     res.json(jwks)
   });
+
+  // Webhook egress IP allow-list (issue #534)
+  app.use(webhookEgressIpsRouter);
 
   // 5. Error Handling
   app.use(errorHandler);
@@ -216,17 +198,42 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
 
   return new Promise(async (resolve) => {
     let server: Server | HttpsServer;
+    const httpsServerRef: { current?: HttpsServer } = {};
 
     if (config.mtls.enabled) {
-      // Load mTLS certificates
-      const [ca, cert, key] = await Promise.all([
-        fs.readFile(config.mtls.caPath!),
-        fs.readFile(config.mtls.certPath!),
-        fs.readFile(config.mtls.keyPath!),
-      ]);
-
-      // Create HTTPS server with mTLS
       const https = await import("node:https");
+      let ca: Buffer;
+      let cert: Buffer;
+      let key: Buffer;
+
+      if (config.mtls.spiffe.enabled) {
+        const svidProvider = createSvidProvider({
+          trustDomain: config.mtls.spiffe.trustDomain,
+          client: createGrpcWorkloadApiClient({
+            socketAddress: config.mtls.spiffe.workloadApiSocket,
+          }),
+          refreshRatio: config.mtls.spiffe.refreshRatio,
+          onRotate: (material) => {
+            httpsServerRef.current?.setSecureContext({
+              ca: material.ca,
+              cert: material.cert,
+              key: material.key,
+              requestCert: true,
+              rejectUnauthorized: false,
+            });
+          },
+        });
+        await svidProvider.start();
+        activeSvidProvider = svidProvider;
+        ({ ca, cert, key } = svidProvider.getTlsMaterial());
+      } else {
+        [ca, cert, key] = await Promise.all([
+          fs.readFile(config.mtls.caPath!),
+          fs.readFile(config.mtls.certPath!),
+          fs.readFile(config.mtls.keyPath!),
+        ]);
+      }
+
       server = https.createServer(
         {
           ca,
@@ -237,6 +244,7 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
         },
         application
       );
+      httpsServerRef.current = server as HttpsServer;
     } else {
       // Create regular HTTP server
       server = application.listen(port);

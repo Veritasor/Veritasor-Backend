@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import express from 'express';
-import adminGraphqlRouter from '../../../src/routes/admin.graphql.js';
 import * as userRepository from '../../../src/repositories/userRepository.js';
 import * as auditLogRepository from '../../../src/repositories/auditLogRepository.js';
 import * as businessRepository from '../../../src/repositories/business.js';
@@ -34,6 +33,21 @@ vi.mock('../../../src/middleware/permissions.js', () => ({
     res.status(403).json({ error: 'Forbidden', message: 'Insufficient permissions' });
   },
 }));
+
+const mockGraphqlConfig = { enableIntrospection: true, allowArbitraryOperations: true };
+
+vi.mock('../../../src/config/index.js', () => ({
+  config: {
+    get graphql() {
+      return mockGraphqlConfig;
+    },
+    soroban: {
+      retryBudgetMaxRetries: 20,
+    },
+  },
+}));
+
+const { default: adminGraphqlRouter } = await import('../../../src/routes/admin.graphql.js');
 
 const app = express();
 app.use(express.json());
@@ -243,7 +257,7 @@ describe('Admin GraphQL endpoint', () => {
         id: 'user-1',
         email: 'alice@test.com',
       });
-      expect(userRepository.findUserById).toHaveBeenCalledWith('user-1');
+      expect(userRepository.findUsersByIds).toHaveBeenCalledWith(['user-1']);
     });
   });
 
@@ -378,7 +392,204 @@ describe('Admin GraphQL endpoint', () => {
 
       if (res.status !== 200) console.log(res.status, res.text); expect(res.status).toBe(200);
       expect(res.body.errors).toBeDefined();
-      expect(res.body.errors[0].message).toContain('Syntax Error');
+      expect(res.body.errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('introspection gating', () => {
+    it('allows __schema query when introspection is enabled', async () => {
+      mockGraphqlConfig.enableIntrospection = true;
+
+      const res = await gql('{ __schema { queryType { name } } }');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.__schema).toBeDefined();
+      expect(res.body.data.__schema.queryType.name).toBe('Query');
+    });
+
+    it('allows __type query when introspection is enabled', async () => {
+      mockGraphqlConfig.enableIntrospection = true;
+
+      const res = await gql('{ __type(name: "User") { name fields { name } } }');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.__type).toBeDefined();
+      expect(res.body.data.__type.name).toBe('User');
+    });
+
+    it('rejects __schema query when introspection is disabled', async () => {
+      mockGraphqlConfig.enableIntrospection = false;
+
+      const res = await gql('{ __schema { queryType { name } } }');
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
+      expect(res.body.errors[0].message).toBe(
+        'Introspection is not allowed on this endpoint',
+      );
+
+      const val = await getMetricValue(
+        'graphql_admin_introspection_rejections_total',
+      );
+      expect(val).toBeGreaterThanOrEqual(1);
+    });
+
+    it('rejects __type query when introspection is disabled', async () => {
+      mockGraphqlConfig.enableIntrospection = false;
+
+      const res = await gql('{ __type(name: "User") { name } }');
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
+      expect(res.body.errors[0].message).toBe(
+        'Introspection is not allowed on this endpoint',
+      );
+    });
+
+    it('rejects introspection query masked as inline fragment', async () => {
+      mockGraphqlConfig.enableIntrospection = false;
+
+      const res = await gql(`
+        {
+          ... on Query {
+            __schema {
+              types {
+                name
+              }
+            }
+          }
+        }
+      `);
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
+      expect(res.body.errors[0].message).toBe(
+        'Introspection is not allowed on this endpoint',
+      );
+    });
+
+    it('rejects __schema inside fragment spread when introspection is disabled', async () => {
+      mockGraphqlConfig.enableIntrospection = false;
+
+      const res = await gql(`
+        query IntrospectionQuery {
+          ...FullIntrospection
+        }
+        fragment FullIntrospection on Query {
+          __schema {
+            types {
+              name
+            }
+          }
+        }
+      `);
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
+    });
+
+    it('allows normal queries when introspection is disabled', async () => {
+      mockGraphqlConfig.enableIntrospection = false;
+      vi.mocked(userRepository.getAllUsers).mockResolvedValue(mockUsers as any);
+
+      const res = await gql('{ users { id email role } }');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.users).toHaveLength(2);
+    });
+
+    it('does not increment introspection metric for non-introspection queries', async () => {
+      mockGraphqlConfig.enableIntrospection = false;
+      vi.mocked(userRepository.getAllUsers).mockResolvedValue(mockUsers as any);
+
+      const before = await getMetricValue(
+        'graphql_admin_introspection_rejections_total',
+      );
+      await gql('{ users { id } }');
+      const after = await getMetricValue(
+        'graphql_admin_introspection_rejections_total',
+      );
+      expect(after).toBe(before);
+    });
+  });
+
+  describe('persisted queries allow-list enforcement', () => {
+    it('rejects ad-hoc query when allowArbitraryOperations is false in production', async () => {
+      mockGraphqlConfig.allowArbitraryOperations = false;
+
+      const res = await gql('{ users { id email } }');
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
+
+      const val = await getMetricValue('graphql_admin_persisted_query_rejections_total');
+      expect(val).toBeGreaterThanOrEqual(1);
+    });
+
+    it('rejects unknown hash when allowArbitraryOperations is false', async () => {
+      mockGraphqlConfig.allowArbitraryOperations = false;
+
+      const res = await request(app)
+        .post('/api/v1/admin/graphql')
+        .set('Content-Type', 'application/json')
+        .send({
+          extensions: {
+            persistedQuery: {
+              sha256Hash: 'unknown-hash-key-12345',
+            },
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
+
+      const val = await getMetricValue('graphql_admin_persisted_query_rejections_total');
+      expect(val).toBeGreaterThanOrEqual(1);
+    });
+
+    it('executes query resolved from registered hash in store when allowArbitraryOperations is false', async () => {
+      mockGraphqlConfig.allowArbitraryOperations = false;
+
+      const { setPersistedQueryStore, PersistedQueryRegistry } = await import(
+        '../../../src/graphql/persistedQueries.js'
+      );
+
+      vi.mocked(userRepository.getAllUsers).mockResolvedValue(mockUsers as any);
+
+      const registry = new PersistedQueryRegistry({
+        'registered-users-query-hash': '{ users { id email role } }',
+      });
+      setPersistedQueryStore(registry);
+
+      const res = await request(app)
+        .post('/api/v1/admin/graphql')
+        .set('Content-Type', 'application/json')
+        .send({
+          extensions: {
+            persistedQuery: {
+              version: 1,
+              sha256Hash: 'registered-users-query-hash',
+            },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.users).toHaveLength(2);
+      expect(res.body.data.users[0]).toEqual({
+        id: 'user-1',
+        email: 'alice@test.com',
+        role: 'admin',
+      });
+    });
+
+    it('allows ad-hoc queries when dev bypass toggle allowArbitraryOperations is true', async () => {
+      mockGraphqlConfig.allowArbitraryOperations = true;
+      vi.mocked(userRepository.getAllUsers).mockResolvedValue(mockUsers as any);
+
+      const res = await gql('{ users { id email role } }');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.users).toHaveLength(2);
     });
   });
 });

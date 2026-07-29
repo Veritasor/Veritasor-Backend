@@ -3,6 +3,7 @@ import { createSorobanRpcServer, getSorobanConfig } from './client.js';
 import { getSorobanBatchedSubmissionFlag } from '../features/flags.js';
 import { logger } from '../../utils/logger.js';
 import { AdaptiveBatchSizeController, sampleSorobanFeeStats } from './adaptiveBatchSize.js';
+import { DrrScheduler, type BatchQueueItem, type TenantTier } from './drrScheduler.js';
 import {
   sorobanAdaptiveBatchSize,
   sorobanFeeEwma,
@@ -55,6 +56,23 @@ const TX_HASH_RE = /^[0-9a-f]{64}$/;
  * fee signal.
  */
 export const adaptiveBatchController = new AdaptiveBatchSizeController();
+
+// ---------------------------------------------------------------------------
+// DRR fair-batch scheduler singleton
+// ---------------------------------------------------------------------------
+
+/**
+ * Global singleton DRR fair-batch scheduler.
+ *
+ * Tenants enqueue attestation submissions here via
+ * {@link enqueueToBatchScheduler}. The scheduler interleaves items from
+ * competing tenants using Deficit Round-Robin, preventing any single noisy
+ * tenant from monopolising batch slots.
+ *
+ * Weights are resolved from the `DRR_SCHEDULER_TIER_WEIGHTS` env var (JSON)
+ * with built-in fallbacks: free=1, starter=2, growth=4, enterprise=8.
+ */
+export const drrBatchScheduler = new DrrScheduler<SubmitAttestationParams>();
 
 /**
  * Samples Soroban network fee stats and returns the current tuned batch
@@ -412,4 +430,120 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
       error,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// DRR scheduler public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Extended params for enqueueing into the DRR fair-batch scheduler.
+ */
+export type EnqueueParams = SubmitAttestationParams & {
+  /** Tenant identifier used for DRR queue assignment (typically businessId). */
+  tenantId: string;
+  /**
+   * Tenant tier used to determine DRR weight.
+   * @example 'free' | 'starter' | 'growth' | 'enterprise'
+   */
+  tier: TenantTier;
+};
+
+/**
+ * Enqueues a Soroban attestation submission into the global DRR fair-batch
+ * scheduler instead of submitting immediately.
+ *
+ * The item will be drained in a future call to {@link processBatchSchedulerDrain}.
+ * Using the scheduler guarantees that high-volume tenants cannot starve
+ * lower-volume tenants in the batch queue.
+ *
+ * **Security note:** This function is a thin queue wrapper. All input
+ * validation (key format, signer match, contract call) happens inside
+ * {@link submitAttestation} at drain time — inputs are not validated twice
+ * here to avoid inconsistent state if validation rules change.
+ *
+ * @param params - Attestation params plus `tenantId` and `tier`.
+ * @returns The number of items in the tenant's queue after enqueue.
+ */
+export function enqueueToBatchScheduler(params: EnqueueParams): number {
+  const item: BatchQueueItem<SubmitAttestationParams> = {
+    tenantId: params.tenantId,
+    tier: params.tier,
+    payload: params,
+    enqueuedAt: Date.now(),
+  };
+  drrBatchScheduler.enqueue(item);
+
+  const stats = drrBatchScheduler.stats();
+  const tenantDepth = stats.tenants[params.tenantId]?.depth ?? 0;
+
+  logger.info(
+    {
+      event: 'drr_enqueue',
+      tenantId: params.tenantId,
+      tier: params.tier,
+      tenantDepth,
+      totalDepth: stats.totalDepth,
+    },
+    'drr-scheduler: attestation enqueued',
+  );
+
+  return tenantDepth;
+}
+
+/**
+ * Drains up to `batchSize` items from the DRR scheduler and submits each
+ * one via {@link submitAttestation}.
+ *
+ * Results and errors are collected per-item — a single failure does not
+ * abort the rest of the batch, preserving fairness guarantees.
+ *
+ * Callers (e.g. a background job or the batched-submission flag handler)
+ * should size `batchSize` using the adaptive batch-size controller:
+ * ```ts
+ * const server = createSorobanRpcServer(rpcUrl);
+ * const size   = await getAdaptiveBatchSize(server);
+ * const items  = await processBatchSchedulerDrain(size);
+ * ```
+ *
+ * @param batchSize - Maximum number of items to drain and submit.
+ * @returns Array of settled results in DRR-fair order.
+ */
+export async function processBatchSchedulerDrain(
+  batchSize: number,
+): Promise<Array<{ tenantId: string; result?: SubmitAttestationResult; error?: unknown }>> {
+  const items = drrBatchScheduler.dequeueBatch(batchSize);
+
+  if (items.length === 0) {
+    return [];
+  }
+
+  logger.info(
+    {
+      event: 'drr_drain_start',
+      count: items.length,
+      batchSize,
+      schedulerStats: drrBatchScheduler.stats(),
+    },
+    'drr-scheduler: draining batch',
+  );
+
+  const settled = await Promise.allSettled(
+    items.map(async (item) => {
+      try {
+        const result = await submitAttestation(item.payload);
+        return { tenantId: item.tenantId, result };
+      } catch (error) {
+        logger.error(
+          { event: 'drr_item_error', tenantId: item.tenantId, error },
+          'drr-scheduler: item submission failed',
+        );
+        return { tenantId: item.tenantId, error };
+      }
+    }),
+  );
+
+  return settled.map((s) =>
+    s.status === 'fulfilled' ? s.value : { tenantId: 'unknown', error: s.reason },
+  );
 }

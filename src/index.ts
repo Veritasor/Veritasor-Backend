@@ -14,7 +14,8 @@
  */
 
 import 'dotenv/config';
-import { startServer, stopIdempotencySweeper, stopPgBouncerScraperIfNeeded } from './app.js';
+import { startServer, stopIdempotencySweeper } from './app.js';
+import { stopPgBouncerScraperIfNeeded } from './services/pgbouncerScraper.js';
 import { pool } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
@@ -85,6 +86,12 @@ async function bootstrap(): Promise<void> {
         await stopPgBouncerScraperIfNeeded();
       } catch (err) {
         console.warn(`[Shutdown] PgBouncer scraper stop error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        const { stopSpiffeSvidProviderIfNeeded } = await import('./app.js');
+        stopSpiffeSvidProviderIfNeeded();
+      } catch (err) {
+        console.warn(`[Shutdown] SPIFFE SVID provider stop error: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   });

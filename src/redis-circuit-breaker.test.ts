@@ -126,11 +126,104 @@ describe('RedisCircuitBreaker', () => {
   });
 
   it('metrics are recorded', async () => {
-    // Just verify we update the counter (without spying on prom-client internals, 
-    // we can use a spy on the method or just rely on it not throwing)
-    // We already verified the logic flow.
     const failingOp = async () => { throw new Error('Redis connection error'); };
     await expect(breaker.execute(failingOp)).rejects.toThrow();
-    // Assuming metrics don't throw, it's fine.
+  });
+
+  it('resets failure count on success in CLOSED state', async () => {
+    const failingOp = async () => { throw new Error('Redis connection error'); };
+    await expect(breaker.execute(failingOp)).rejects.toThrow();
+    await expect(breaker.execute(failingOp)).rejects.toThrow();
+
+    await breaker.execute(async () => 'recovery');
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+
+    await expect(breaker.execute(failingOp)).rejects.toThrow();
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('does not count cluster redirection errors as failures', async () => {
+    const redirectOp = async () => { throw new Error('MOVED 1234 127.0.0.1:6380'); };
+    for (let i = 0; i < 10; i++) {
+      await expect(breaker.execute(redirectOp)).rejects.toThrow('MOVED');
+    }
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('does not count ASK redirection errors as failures', async () => {
+    const askOp = async () => { throw new Error('ASK 5678 127.0.0.1:6381'); };
+    for (let i = 0; i < 10; i++) {
+      await expect(breaker.execute(askOp)).rejects.toThrow('ASK');
+    }
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('uses default options when none provided', () => {
+    const defaultBreaker = new RedisCircuitBreaker();
+    expect(defaultBreaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('reset() transitions back to CLOSED state', async () => {
+    const failOp = async () => { throw new Error('err'); };
+    for (let i = 0; i < 3; i++) {
+      await expect(breaker.execute(failOp)).rejects.toThrow();
+    }
+    expect(breaker.getState()).toBe(CircuitState.OPEN);
+    breaker.reset();
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('uses fallback when OPEN and returns immediately', async () => {
+    const failOp = async () => { throw new Error('err'); };
+    for (let i = 0; i < 3; i++) {
+      await expect(breaker.execute(failOp)).rejects.toThrow();
+    }
+    const fallback = vi.fn(() => 'cached_value');
+    const result = await breaker.execute(
+      async () => { throw new Error('should not run'); },
+      fallback
+    );
+    expect(result).toBe('cached_value');
+    expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses fallback in HALF_OPEN when another probe is in flight', async () => {
+    const failingOp = async () => { throw new Error('err'); };
+    for (let i = 0; i < 3; i++) {
+      await expect(breaker.execute(failingOp)).rejects.toThrow();
+    }
+    vi.advanceTimersByTime(10000);
+
+    let resolveProbe: (value: string) => void;
+    const probeOp = new Promise<string>((resolve) => { resolveProbe = resolve; });
+    const p1 = breaker.execute(() => probeOp);
+
+    const fallbackResult = await breaker.execute(
+      async () => 'should_not_run',
+      () => 'half_open_fallback'
+    );
+    expect(fallbackResult).toBe('half_open_fallback');
+
+    resolveProbe!('probe_success');
+    await p1;
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('handles fallback that throws during OPEN state', async () => {
+    const failOp = async () => { throw new Error('err'); };
+    for (let i = 0; i < 3; i++) {
+      await expect(breaker.execute(failOp)).rejects.toThrow();
+    }
+    const throwingFallback = async () => { throw new Error('fallback_error'); };
+    await expect(
+      breaker.execute(
+        async () => 'should_not_run',
+        throwingFallback
+      )
+    ).rejects.toThrow('fallback_error');
+  });
+
+  it('exposes state via getState()', () => {
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
   });
 });

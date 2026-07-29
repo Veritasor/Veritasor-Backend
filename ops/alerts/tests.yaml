@@ -230,3 +230,31 @@ tests:
       - eval_time: 4m
         alertname: SorobanRetryBudgetExhausted
         exp_alerts: []
+
+  # ── MtlsHandshakeFailuresSpike ─────────────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'mtls_handshake_failures_total{reason="no_client_cert"}'
+        values: "0 600 1200 1800 2400 3000 3600 4200"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MtlsHandshakeFailuresSpike
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: MtlsHandshakeFailuresSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: backend
+              reason: no_client_cert
+            exp_annotations:
+              runbook: "https://github.com/veritasor/backend/blob/main/docs/runbooks/security-alerts.md#mtlshandshakefailuresspike"
+
+  - interval: 1m
+    input_series:
+      - series: 'mtls_handshake_failures_total{reason="unauthorized"}'
+        values: "0 300 600 900"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MtlsHandshakeFailuresSpike
+        exp_alerts: []

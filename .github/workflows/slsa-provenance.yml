@@ -53,11 +53,29 @@ jobs:
         run: |
           echo "hashes=$(sha256sum "${ARTIFACT_NAME}" | base64 -w0)" >> "$GITHUB_OUTPUT"
 
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p sbom
+          npx @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom/cyclonedx-sbom.json
+
+      - name: Generate SPDX SBOM and checksum
+        run: |
+          npx tsx scripts/generate-spdx.ts --input sbom/cyclonedx-sbom.json --output sbom/spdx-sbom.json
+          sha256sum sbom/spdx-sbom.json > sbom/spdx-sbom.json.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-artifact
           path: ${{ env.ARTIFACT_NAME }}
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-files
+          path: sbom/
           if-no-files-found: error
           retention-days: 5
 
@@ -193,6 +211,12 @@ jobs:
         with:
           name: cosign-bundle
 
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-files
+          path: sbom/
+
       - name: Upload assets to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -205,4 +229,7 @@ jobs:
             --repo "${{ github.repository }}" \
             --clobber \
             "${ARTIFACT_NAME}" \
-            "${ARTIFACT_NAME}.cosign.bundle"
+            "${ARTIFACT_NAME}.cosign.bundle" \
+            sbom/cyclonedx-sbom.json \
+            sbom/spdx-sbom.json \
+            sbom/spdx-sbom.json.sha256
