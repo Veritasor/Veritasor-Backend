@@ -18,6 +18,8 @@ export interface WebhookSubscription {
   url: string;
   secret: string;
   maxPayloadSize?: number;
+  /** Monotonically increasing version of the webhook secret, used for rotation tracking. */
+  secretVersion?: number;
 }
 
 export interface WebhookDeliveryReceipt {
