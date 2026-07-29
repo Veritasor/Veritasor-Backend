@@ -7,6 +7,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger.js';
+import { createAuditLog } from '../repositories/auditLogRepository.js';
 import {
   IntegrationPermission,
   PermissionCheck,
@@ -15,6 +16,137 @@ import {
   ROLE_PERMISSIONS,
   UserRole
 } from '../types/permissions.js';
+
+/**
+ * A compact, auditable policy DSL. Rules are evaluated in order only for
+ * reporting; an applicable deny always wins over every applicable allow.
+ */
+export interface PolicyRule {
+  id: string;
+  effect: 'allow' | 'deny';
+  actions: readonly string[];
+  resources: readonly string[];
+  roles?: readonly UserRole[];
+  tenantScope?: 'same' | 'any';
+}
+
+export interface PolicyRequest {
+  action: string;
+  resource: string;
+  role: UserRole;
+  actorTenantId?: string;
+  resourceTenantId?: string;
+}
+
+export interface PolicyDecision {
+  allowed: boolean;
+  reason: string;
+  ruleId?: string;
+}
+
+/** Default least-privilege rules for business-scoped integration resources. */
+export const DEFAULT_POLICY: readonly PolicyRule[] = [
+  { id: 'integration-user-own', effect: 'allow', actions: ['read', 'create', 'update', 'delete'], resources: ['integration'], roles: ['user'], tenantScope: 'same' },
+  { id: 'integration-business-admin', effect: 'allow', actions: ['*'], resources: ['integration'], roles: ['business_admin'], tenantScope: 'same' },
+  { id: 'platform-admin', effect: 'allow', actions: ['*'], resources: ['*'], roles: ['admin'], tenantScope: 'any' },
+];
+
+function matches(value: string, values: readonly string[]): boolean {
+  return values.includes('*') || values.includes(value);
+}
+
+function ruleMatches(rule: PolicyRule, request: PolicyRequest): boolean {
+  if (!matches(request.action, rule.actions) || !matches(request.resource, rule.resources)) return false;
+  if (rule.roles && !rule.roles.includes(request.role)) return false;
+  if (rule.tenantScope === 'same') {
+    return Boolean(request.actorTenantId) && request.actorTenantId === request.resourceTenantId;
+  }
+  return true;
+}
+
+/** Evaluate a policy request. Explicit denies override allows; default is deny. */
+export function evaluatePolicy(
+  request: PolicyRequest,
+  rules: readonly PolicyRule[] = DEFAULT_POLICY,
+): PolicyDecision {
+  const matching = rules.filter((rule) => ruleMatches(rule, request));
+  const deny = matching.find((rule) => rule.effect === 'deny');
+  if (deny) return { allowed: false, ruleId: deny.id, reason: `Denied by policy rule: ${deny.id}` };
+
+  const allow = matching.find((rule) => rule.effect === 'allow');
+  if (allow) return { allowed: true, ruleId: allow.id, reason: `Allowed by policy rule: ${allow.id}` };
+
+  const tenantMismatch = request.resourceTenantId !== undefined &&
+    request.actorTenantId !== request.resourceTenantId;
+  return {
+    allowed: false,
+    reason: tenantMismatch ? 'Denied: resource belongs to a different tenant' : 'Denied: no matching policy rule',
+  };
+}
+
+async function auditPolicyDecision(
+  userId: string,
+  request: PolicyRequest,
+  decision: PolicyDecision,
+  resourceId?: string,
+): Promise<void> {
+  try {
+    await createAuditLog({
+      userId,
+      action: 'POLICY_DECISION',
+      resource: request.resource,
+      resourceId,
+      metadata: {
+        action: request.action,
+        allowed: decision.allowed,
+        reason: decision.reason,
+        ruleId: decision.ruleId,
+        actorTenantId: request.actorTenantId,
+        resourceTenantId: request.resourceTenantId,
+      },
+    });
+  } catch (error) {
+    // Audit availability must not convert an authorization decision into an allow.
+    logger.error(JSON.stringify({ event: 'policy.audit_failed', userId, error: String(error) }));
+  }
+}
+
+export interface PolicyMiddlewareOptions {
+  rules?: readonly PolicyRule[];
+  resourceId?: (req: Request) => string | undefined;
+  resourceTenantId?: (req: Request) => string | undefined | Promise<string | undefined>;
+}
+
+/**
+ * Require an explicit action-on-resource policy decision. Tenant IDs are read
+ * only from the business context attached by requireBusinessAuth, never from a
+ * caller-controlled header.
+ */
+export function requirePolicy(action: string, resource: string, options: PolicyMiddlewareOptions = {}) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!req.user?.userId) {
+      res.status(401).json({ error: 'Unauthorized', message: 'Authentication required' });
+      return;
+    }
+
+    const role = (req.user.role || 'user') as UserRole;
+    const request: PolicyRequest = {
+      action,
+      resource,
+      role,
+      actorTenantId: req.business?.id,
+      resourceTenantId: await options.resourceTenantId?.(req),
+    };
+    const decision = evaluatePolicy(request, options.rules);
+    await auditPolicyDecision(req.user.userId, request, decision, options.resourceId?.(req));
+
+    if (!decision.allowed) {
+      res.status(403).json({ error: 'Forbidden', message: 'Policy denied', details: decision.reason });
+      return;
+    }
+    next();
+  };
+}
 
 /**
  * Extend Express Request to include permission context

@@ -8,11 +8,14 @@ This directory codifies the nightly peak-load suite for `POST` and `GET` traffic
 - `spike`: short burst ramp to catch queueing and cold-path regressions.
 - `soak`: long-running constant load to surface leaks and latency creep.
 - `breakpoint`: rising arrival rate that makes the saturation point visible in the k6 summary and Grafana dashboard.
+- `black_friday`: multi-stage arrival-rate ramp that models a Black Friday traffic burst with two peak surges and a cooldown phase, asserting p99 latency SLO.
 
-All scenarios export the same SLO thresholds:
+## SLO thresholds
 
-- `p95 < 300ms`
-- `error rate < 0.1%`
+| Scenario | Threshold |
+|---|---|
+| steady, spike, soak, breakpoint | p95 < 300ms, error rate < 0.1% |
+| black_friday | p99 < 500ms, p95 < 300ms, error rate < 0.1% |
 
 ## Local run
 
@@ -28,13 +31,33 @@ k6 run ops/k6/peak-attestation.js
 
 The script keeps `submit=false` by default so the load stays on the API and database instead of sending on-chain Soroban transactions.
 
+### Black Friday local run
+
+```bash
+K6_BASE_URL=http://127.0.0.1:3000 \
+K6_AUTH_TOKEN=your-bearer-token \
+K6_BF_RUN_ID=local-dev \
+k6 run ops/k6/black-friday.js
+```
+
 ## Useful overrides
+
+### Peak attestation
 
 - `K6_ATT_WRITE_RATIO=0` makes the suite read-only.
 - `K6_ATT_WRITE_RATIO=0.5` runs a mixed list/submit workload.
 - `K6_ATT_SUBMIT_ON_CHAIN=true` enables live Soroban submissions.
 - `K6_ATT_SCENARIO_GAP_SEC=5` shortens gaps for faster local iteration.
 - `K6_ATT_SOAK_DURATION_SEC=300` reduces soak time for ad hoc checks.
+
+### Black Friday
+
+- `K6_BF_WRITE_RATIO=0` makes the suite read-only.
+- `K6_BF_PEAK_RATE_1=100` reduces the first peak rate.
+- `K6_BF_SURGE_RATE=200` reduces the flash-sale surge rate.
+- `K6_BF_P99_THRESHOLD_MS=800` relaxes the p99 SLO.
+- `K6_BF_RAMP_UP_SEC=30` shortens the ramp-up for faster iteration.
+- `K6_BF_COOLDOWN_DURATION_SEC=60` shortens the cooldown phase.
 
 ## Grafana
 

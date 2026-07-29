@@ -22,6 +22,14 @@ export const envSchema = z.object({
   PG_CONN_TIMEOUT_MS: z.string().optional(),
   PGSSL: z.string().optional(),
   PGSSL_REJECT_UNAUTHORIZED: z.string().optional(),
+  PGBOUNCER_METRICS_ADMIN_URL: z.string().url(
+    "PGBOUNCER_METRICS_ADMIN_URL must be a valid URL",
+  ).refine(
+    (value) => value.startsWith("postgres://") || value.startsWith("postgresql://"),
+    "PGBOUNCER_METRICS_ADMIN_URL must use postgres or postgresql",
+  ).optional(),
+  PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS: z.string().optional(),
+  PGBOUNCER_METRICS_QUERY_TIMEOUT_MS: z.string().optional(),
   STELLAR_NETWORK: z.enum(["testnet", "public", "futurenet"]).default("testnet"),
   SOROBAN_RPC_URL: z.string().url().default("https://soroban-testnet.stellar.org"),
   SOROBAN_CONTRACT_ID: z.string().default(""),
@@ -35,6 +43,8 @@ export const envSchema = z.object({
   SOROBAN_ADAPTIVE_BATCH_SENSITIVITY: z.string().optional(),
   SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING: z.string().optional(),
   SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
+  DRR_SCHEDULER_TIER_WEIGHTS: z.string().optional(),
+  DRR_SCHEDULER_QUANTUM: z.string().optional(),
   SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
   SECRET_FILE_PATH: z.string().optional(),
   VAULT_BASE_URL: z.string().url().optional(),
@@ -45,6 +55,16 @@ export const envSchema = z.object({
   GRAPHQL_DEV_BYPASS: z.string().optional(),
   ALLOW_ARBITRARY_OPERATIONS: z.string().optional(),
   PERSISTED_QUERY_SECRET: z.string().optional(),
+  STATSD_HOST: z.string().optional(),
+  STATSD_PORT: z.string().optional(),
+  STATSD_PREFIX: z.string().optional(),
+  STATSD_DUAL_WRITE_ENABLED: z.string().optional(),
+  STATSD_DUAL_WRITE_INTERVAL_MS: z.string().optional(),
+  OTEL_EXPORTER_PROTOCOL: z.enum(["http", "grpc"]).default("http"),
+  OTEL_GRPC_MTLS_ENABLED: z.string().optional(),
+  OTEL_MTLS_CA_PATH: z.string().optional(),
+  OTEL_MTLS_CERT_PATH: z.string().optional(),
+  OTEL_MTLS_KEY_PATH: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -137,17 +157,6 @@ function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValu
   }
 
   return value;
-}
-
-function parseCsvList(rawValue: string | undefined): string[] {
-  if (!rawValue?.trim()) {
-    return [];
-  }
-
-  return rawValue
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
 }
 
 let parsedEnv: z.infer<typeof envSchema>;
@@ -256,6 +265,30 @@ export const config = {
         }
       : undefined,
   },
+  otel: {
+    exporterProtocol: parsedEnv.OTEL_EXPORTER_PROTOCOL,
+    grpc: {
+      mtls: {
+        enabled: parseBooleanEnv("OTEL_GRPC_MTLS_ENABLED", parsedEnv.OTEL_GRPC_MTLS_ENABLED, false),
+        caPath: parsedEnv.OTEL_MTLS_CA_PATH?.trim(),
+        certPath: parsedEnv.OTEL_MTLS_CERT_PATH?.trim(),
+        keyPath: parsedEnv.OTEL_MTLS_KEY_PATH?.trim(),
+      },
+    },
+  },
+  pgbouncerMetrics: {
+    adminUrl: parsedEnv.PGBOUNCER_METRICS_ADMIN_URL,
+    scrapeIntervalMs: parsePositiveIntEnv(
+      "PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS",
+      parsedEnv.PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS,
+      15_000,
+    ),
+    queryTimeoutMs: parsePositiveIntEnv(
+      "PGBOUNCER_METRICS_QUERY_TIMEOUT_MS",
+      parsedEnv.PGBOUNCER_METRICS_QUERY_TIMEOUT_MS,
+      2_000,
+    ),
+  },
   stellar: {
     network: parsedEnv.STELLAR_NETWORK,
   },
@@ -298,6 +331,8 @@ export const config = {
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */
     rpcUrl: parsedEnv.SOROBAN_RPC_URL,
+    /** Backup Soroban RPC endpoint for hedged requests. Falls back to primary if unset. */
+    backupRpcUrl: process.env.SOROBAN_BACKUP_RPC_URL || parsedEnv.SOROBAN_RPC_URL,
     /** Deployed attestation contract address (C…). Required in production. */
     contractId: parsedEnv.SOROBAN_CONTRACT_ID,
     /**
@@ -361,6 +396,23 @@ export const config = {
         60_000,
       ),
     },
+    drrScheduler: {
+      /**
+       * JSON-serialised tier-weight table for the DRR scheduler.
+       * Example: '{"free":1,"starter":2,"growth":4,"enterprise":8}'
+       * Parsed and validated at runtime by {@link resolveTierWeights}.
+       */
+      tierWeightsRaw: parsedEnv.DRR_SCHEDULER_TIER_WEIGHTS,
+      /**
+       * DRR quantum — credits awarded per tenant per round.
+       * Higher quantum = larger burst slice per round, still fair overall.
+       */
+      quantum: parsePositiveIntEnv(
+        "DRR_SCHEDULER_QUANTUM",
+        parsedEnv.DRR_SCHEDULER_QUANTUM,
+        10,
+      ),
+    },
   },
   secretLoader: {
     source: parsedEnv.SECRET_LOADER,
@@ -385,6 +437,24 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+  },
+  statsd: {
+    host: parsedEnv.STATSD_HOST?.trim() ?? '127.0.0.1',
+    port: parsePositiveIntEnv('STATSD_PORT', parsedEnv.STATSD_PORT, 8125),
+    prefix: parsedEnv.STATSD_PREFIX?.trim() ?? 'veritasor.',
+    dualWriteEnabled: parseBooleanEnv(
+      'STATSD_DUAL_WRITE_ENABLED',
+      parsedEnv.STATSD_DUAL_WRITE_ENABLED,
+      false,
+    ),
+    dualWriteIntervalMs: Math.max(
+      1000,
+      parsePositiveIntEnv(
+        'STATSD_DUAL_WRITE_INTERVAL_MS',
+        parsedEnv.STATSD_DUAL_WRITE_INTERVAL_MS,
+        10_000,
+      ),
+    ),
   },
   graphql: {
     /**

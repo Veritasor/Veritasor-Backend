@@ -1,9 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
-import { requirePermissions } from '../middleware/permissions.js';
+import { requirePermissions, requirePolicy } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
-import { listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
+import { getById, listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
 
 const router = Router();
@@ -108,6 +108,7 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/connected',
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.READ_CONNECTED),
+  requirePolicy('read', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
       const businessId = req.business!.id;
@@ -151,6 +152,7 @@ router.get('/connected',
 router.post('/connect',
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.CONNECT),
+  requirePolicy('create', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
       const { provider, redirectUri } = connectIntegrationSchema.parse(req.body);
@@ -223,6 +225,10 @@ router.post('/connect',
 router.delete('/:integrationId',
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.DISCONNECT_OWN, { checkOwnership: true }),
+  requirePolicy('delete', 'integration', {
+    resourceId: (req) => req.params.integrationId,
+    resourceTenantId: async (req) => (await getById(req.params.integrationId))?.businessId,
+  }),
   async (req: Request, res: Response) => {
     try {
       const { integrationId } = req.params;
@@ -279,6 +285,10 @@ router.delete('/:integrationId',
 router.get('/:integrationId',
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.READ_OWN, { checkOwnership: true }),
+  requirePolicy('read', 'integration', {
+    resourceId: (req) => req.params.integrationId,
+    resourceTenantId: async (req) => (await getById(req.params.integrationId))?.businessId,
+  }),
   async (req: Request, res: Response) => {
     try {
       const { integrationId } = req.params;

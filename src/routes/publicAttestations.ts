@@ -1,17 +1,42 @@
+import crypto from 'node:crypto';
 import { Request, Response, Router } from 'express';
 import { z } from 'zod';
 import * as attestationRepository from '../repositories/attestationRepository.js';
 import { db } from '../db/client.js';
 import { AppError } from '../types/errors.js';
-
-const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
+import { formatCacheControl, CACHE_POLICIES } from '../utils/cachePolicy.js';
+import { etagHitsTotal } from '../metrics.js';
 
 const hashParamSchema = z.string().min(1).max(512);
 
 export const publicAttestationsRouter = Router();
 
-function getSwrCacheControl(maxAge: number) {
-  return `public, max-age=${maxAge}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`;
+const activePolicy = CACHE_POLICIES.find(
+  (p) => p.name === 'public-attestations-active',
+);
+const revokedPolicy = CACHE_POLICIES.find(
+  (p) => p.name === 'public-attestations-revoked',
+);
+
+function sortObjectKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.keys(obj).sort().reduce<Record<string, unknown>>((acc, key) => {
+    acc[key] = obj[key];
+    return acc;
+  }, {});
+}
+
+function computeEtag(payload: Record<string, unknown>): string {
+  const sorted = sortObjectKeys(payload);
+  const hash = crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('base64');
+  return `"${hash}"`;
+}
+
+function matchEtag(ifNoneMatch: string | undefined, etag: string): boolean {
+  if (!ifNoneMatch) return false;
+  const candidates = ifNoneMatch.split(',').map((s) => s.trim());
+  const stripWeak = (s: string) => (s.startsWith('W/') ? s.slice(2) : s);
+  const target = stripWeak(etag);
+  return candidates.some((c) => stripWeak(c) === target);
 }
 
 publicAttestationsRouter.get(
@@ -36,8 +61,10 @@ publicAttestationsRouter.get(
 
     if (attestation.status === 'revoked') {
       res.set({
-        'Cache-Control': getSwrCacheControl(15),
-        'Age': '0'
+        'Cache-Control': revokedPolicy
+          ? formatCacheControl(revokedPolicy.directives)
+          : 'public, max-age=15, stale-while-revalidate=60',
+        'Age': '0',
       });
       res.status(410).json({
         status: 'error',
@@ -57,19 +84,24 @@ publicAttestationsRouter.get(
       attestedAt: attestation.createdAt.toISOString(),
     };
 
-    const etag = `"${Buffer.from(JSON.stringify(payload)).toString('base64').slice(0, 32)}"`;
+    const etag = computeEtag(payload);
     const lastModified = attestation.createdAt.toUTCString();
 
-    if (req.headers['if-none-match'] === etag) {
+    if (matchEtag(req.headers['if-none-match'], etag)) {
+      etagHitsTotal.inc({ route: 'publicAttestations', result: 'hit' });
       res.status(304).end();
       return;
     }
 
+    etagHitsTotal.inc({ route: 'publicAttestations', result: 'miss' });
+
     res.set({
-      'Cache-Control': getSwrCacheControl(60),
+      'Cache-Control': activePolicy
+        ? formatCacheControl(activePolicy.directives)
+        : 'public, max-age=60, stale-while-revalidate=60',
       'ETag': etag,
       'Last-Modified': lastModified,
-      'Age': '0'
+      'Age': '0',
     });
 
     res.status(200).json({

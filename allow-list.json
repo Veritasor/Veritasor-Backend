@@ -1,0 +1,22 @@
+{
+  "allowedLicenses": [
+    "MIT",
+    "ISC",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "Python-2.0",
+    "Zlib",
+    "Unlicense"
+  ],
+  "exceptions": [
+    {
+      "package": "some-legacy-package@1.0.0",
+      "reason": "Approved by legal",
+      "approvedBy": "legal-team"
+    }
+  ]
+}

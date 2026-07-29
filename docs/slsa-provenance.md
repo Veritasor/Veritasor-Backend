@@ -16,11 +16,16 @@ Workflow: [`.github/workflows/slsa-provenance.yml`](../.github/workflows/slsa-pr
 | `veritasor-backend-<tag>.tgz` | Build artifact (`npm pack` of the compiled package) |
 | `veritasor-backend-<tag>.intoto.jsonl` | SLSA v1 provenance (in-toto DSSE attestation, Sigstore-signed) |
 | `veritasor-backend-<tag>.tgz.cosign.bundle` | Cosign keyless signature bundle for the artifact |
+| `cyclonedx-sbom.json` | CycloneDX JSON SBOM covering direct and transitive npm dependencies |
+| `cyclonedx-sbom.json.sha256` | SHA-256 checksum for the CycloneDX SBOM |
 
 ## How it works
 
 1. **build** — checks out the tag, builds, and packs the artifact; emits
-   base64-encoded `sha256sum` subjects.
+   generates a CycloneDX JSON SBOM from the locked npm dependency graph and emits
+   base64-encoded `sha256sum` subjects for both the artifact and SBOM. The
+   SBOM command uses `npx --no-install`, preventing an unpinned download at
+   release time.
 2. **provenance** — calls the trusted reusable workflow
    `slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0`
    (pinned by tag, as its verification model requires). The generator runs in

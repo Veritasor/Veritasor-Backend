@@ -83,6 +83,12 @@ export async function listByBusinessId(businessId: string): Promise<Integration[
   return businessIntegrations
 }
 
+/** Retrieve one integration so authorization can evaluate its tenant before use. */
+export async function getById(id: string): Promise<Integration | null> {
+  const integration = integrations.get(id)
+  return integration ? cloneIntegration(integration) : null
+}
+
 /**
  * Create a new integration record
  * 

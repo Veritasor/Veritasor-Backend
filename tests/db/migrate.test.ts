@@ -46,6 +46,14 @@ import {
   classifyTimeoutBreach,
   emitMigrationTimeoutAudit,
   MigrationTimeoutError,
+  versionHasCompanionDown,
+  lintMigrationCompanion,
+  lintAllMigrations,
+  formatLintMigrationReport,
+  generateExpandUpSql,
+  generateExpandDownSql,
+  EXPAND_CONTRACT_UP_TEMPLATE,
+  EXPAND_CONTRACT_DOWN_TEMPLATE,
   DEFAULT_MIGRATION_LOCK_TIMEOUT_MS,
   DEFAULT_MIGRATION_STATEMENT_TIMEOUT_MS,
   MAX_MIGRATION_TIMEOUT_MS,
@@ -1090,5 +1098,152 @@ describe('assertScratchDatabase', () => {
 
   it('rejects a non-URL connection string', () => {
     expect(() => assertScratchDatabase('not-a-url')).toThrow(/not a valid connection URL/)
+  })
+})
+
+// ─── expand/contract migration helpers ──────────────────────────────────────
+
+describe('versionHasCompanionDown', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('returns true when .down.sql exists', async () => {
+    mockAccess.mockResolvedValue(undefined)
+    expect(await versionHasCompanionDown('001_users', '/fake')).toBe(true)
+  })
+
+  it('returns false when .down.sql is missing', async () => {
+    mockAccess.mockRejectedValue(new Error('not found'))
+    expect(await versionHasCompanionDown('001_users', '/fake')).toBe(false)
+  })
+
+  it('never throws (swallows filesystem errors)', async () => {
+    mockAccess.mockRejectedValue(new Error('EACCES'))
+    // Should not throw, just return false
+    await expect(versionHasCompanionDown('001_users', '/fake')).resolves.toBe(false)
+  })
+})
+
+describe('lintMigrationCompanion', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('reports paired migration correctly', async () => {
+    mockAccess
+      .mockResolvedValueOnce(undefined)   // .down.sql exists
+      .mockRejectedValueOnce(new Error()) // no legacy .sql
+    const result = await lintMigrationCompanion('001_users', '/fake')
+    expect(result).toEqual({ version: '001_users', hasCompanion: true, isLegacy: false })
+  })
+
+  it('reports legacy (up-only) migration correctly', async () => {
+    mockAccess
+      .mockRejectedValueOnce(new Error()) // .down.sql missing
+      .mockResolvedValueOnce(undefined)   // legacy .sql exists
+    const result = await lintMigrationCompanion('001_users', '/fake')
+    expect(result).toEqual({ version: '001_users', hasCompanion: false, isLegacy: true })
+  })
+
+  it('reports a migration that has both companion and legacy files', async () => {
+    mockAccess.mockResolvedValue(undefined) // both .down.sql and .sql exist
+    const result = await lintMigrationCompanion('001_users', '/fake')
+    expect(result).toEqual({ version: '001_users', hasCompanion: true, isLegacy: true })
+  })
+})
+
+describe('lintAllMigrations', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('returns a report summarising all discovered migrations', async () => {
+    mockReaddir.mockResolvedValue(['001_users.up.sql', '001_users.down.sql', '002_posts.sql'])
+    // 001_users: companion exists, not legacy
+    mockAccess
+      .mockResolvedValueOnce(undefined)   // 001_users .down.sql exists
+      .mockRejectedValueOnce(new Error()) // 001_users: legacy .sql missing
+      // 002_posts: no companion, but legacy .sql exists
+      .mockRejectedValueOnce(new Error()) // 002_posts .down.sql missing
+      .mockResolvedValueOnce(undefined)   // 002_posts: legacy .sql exists
+
+    const report = await lintAllMigrations('/fake')
+    expect(report.total).toBe(2)
+    expect(report.withCompanion).toBe(1)
+    expect(report.legacy).toBe(1)
+    expect(report.results).toHaveLength(2)
+  })
+
+  it('returns empty report when no migrations exist', async () => {
+    mockReaddir.mockResolvedValue([])
+    const report = await lintAllMigrations('/fake')
+    expect(report.total).toBe(0)
+    expect(report.withCompanion).toBe(0)
+    expect(report.legacy).toBe(0)
+  })
+})
+
+describe('formatLintMigrationReport', () => {
+  it('reports success when all migrations have companions', () => {
+    const report = {
+      total: 2,
+      withCompanion: 2,
+      legacy: 0,
+      results: [
+        { version: '001_users', hasCompanion: true, isLegacy: false },
+        { version: '002_posts', hasCompanion: true, isLegacy: false },
+      ],
+    }
+    expect(formatLintMigrationReport(report)).toContain('All migrations have companion .down.sql files.')
+    expect(formatLintMigrationReport(report)).not.toContain('Legacy migrations')
+  })
+
+  it('lists legacy migrations when present', () => {
+    const report = {
+      total: 3,
+      withCompanion: 2,
+      legacy: 1,
+      results: [
+        { version: '001_users', hasCompanion: true, isLegacy: false },
+        { version: '002_posts', hasCompanion: true, isLegacy: false },
+        { version: '003_comments', hasCompanion: false, isLegacy: true },
+      ],
+    }
+    const output = formatLintMigrationReport(report)
+    expect(output).toContain('Legacy migrations (no .down.sql companion):')
+    expect(output).toContain('003_comments')
+  })
+})
+
+describe('generateExpandUpSql', () => {
+  it('replaces {name} in the template', () => {
+    const sql = generateExpandUpSql('add_businesses_verified_at')
+    expect(sql).toContain('add_businesses_verified_at')
+    expect(sql).toContain('Phase: EXPAND')
+    expect(sql).not.toContain('{name}')
+  })
+})
+
+describe('generateExpandDownSql', () => {
+  it('replaces {name} in the template', () => {
+    const sql = generateExpandDownSql('add_businesses_verified_at')
+    expect(sql).toContain('add_businesses_verified_at')
+    expect(sql).toContain('Phase: ROLLBACK')
+    expect(sql).not.toContain('{name}')
+  })
+})
+
+describe('EXPAND_CONTRACT_UP_TEMPLATE', () => {
+  it('contains the {name} placeholder', () => {
+    expect(EXPAND_CONTRACT_UP_TEMPLATE).toContain('{name}')
+  })
+
+  it('mentions the expand phase', () => {
+    expect(EXPAND_CONTRACT_UP_TEMPLATE).toContain('Phase: EXPAND')
+  })
+})
+
+describe('EXPAND_CONTRACT_DOWN_TEMPLATE', () => {
+  it('contains the {name} placeholder', () => {
+    expect(EXPAND_CONTRACT_DOWN_TEMPLATE).toContain('{name}')
+  })
+
+  it('mentions the rollback phase', () => {
+    expect(EXPAND_CONTRACT_DOWN_TEMPLATE).toContain('Phase: ROLLBACK')
   })
 })
