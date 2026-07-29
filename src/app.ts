@@ -18,6 +18,7 @@ import { mtlsMiddleware } from "./middleware/mtls.js";
 import { createGrpcWorkloadApiClient } from "./spiffe/workloadApiClient.js";
 import { createSvidProvider, type SvidProvider } from "./spiffe/svidProvider.js";
 import { metricsRegistry } from "./metrics.js";
+import { startStatsdDualWriteIfEnabled } from "./services/metrics/statsdBootstrap.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
 import { authRouter } from "./routes/auth.js";
@@ -199,6 +200,9 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
 
   // Start the PgBouncer stats scraper for real-time queue depth monitoring.
   await startPgBouncerScraperIfNeeded();
+
+  // Start StatsD dual-write when enabled (opt-in, default off).
+  startStatsdDualWriteIfEnabled();
 
   const application = createApp(readinessReport);
   const { attachAttestationStream } = await import("./ws/attestationStream.js");

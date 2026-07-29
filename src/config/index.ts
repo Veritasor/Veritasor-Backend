@@ -55,6 +55,11 @@ export const envSchema = z.object({
   GRAPHQL_DEV_BYPASS: z.string().optional(),
   ALLOW_ARBITRARY_OPERATIONS: z.string().optional(),
   PERSISTED_QUERY_SECRET: z.string().optional(),
+  STATSD_HOST: z.string().optional(),
+  STATSD_PORT: z.string().optional(),
+  STATSD_PREFIX: z.string().optional(),
+  STATSD_DUAL_WRITE_ENABLED: z.string().optional(),
+  STATSD_DUAL_WRITE_INTERVAL_MS: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
@@ -416,6 +421,24 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+  },
+  statsd: {
+    host: parsedEnv.STATSD_HOST?.trim() ?? '127.0.0.1',
+    port: parsePositiveIntEnv('STATSD_PORT', parsedEnv.STATSD_PORT, 8125),
+    prefix: parsedEnv.STATSD_PREFIX?.trim() ?? 'veritasor.',
+    dualWriteEnabled: parseBooleanEnv(
+      'STATSD_DUAL_WRITE_ENABLED',
+      parsedEnv.STATSD_DUAL_WRITE_ENABLED,
+      false,
+    ),
+    dualWriteIntervalMs: Math.max(
+      1000,
+      parsePositiveIntEnv(
+        'STATSD_DUAL_WRITE_INTERVAL_MS',
+        parsedEnv.STATSD_DUAL_WRITE_INTERVAL_MS,
+        10_000,
+      ),
+    ),
   },
   graphql: {
     /**

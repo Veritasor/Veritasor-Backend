@@ -346,3 +346,46 @@ export const webhookSecretRotationStatus = new Gauge({
   labelNames: ["subscription_id", "business_id", "status"] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * StatsD dual-write observability metrics.
+ *
+ * - `statsd_dual_write_runs_total` (counter, labels: outcome): total push
+ *   cycles. `outcome="ok"` means the cycle completed without errors;
+ *   `outcome="error"` means getMetricsAsJSON() threw.
+ *
+ * - `statsd_dual_write_errors_total` (counter, labels: reason): errors
+ *   encountered during dual-write push cycles.
+ *
+ * - `statsd_dual_write_duration_ms` (histogram): duration of each push
+ *   cycle in milliseconds.
+ *
+ * - `statsd_dual_write_metrics_count` (gauge): number of Prometheus
+ *   metric values mirrored in the last cycle.
+ */
+export const statsdDualWriteRunsTotal = new Counter({
+  name: 'statsd_dual_write_runs_total',
+  help: 'Total number of StatsD dual-write push cycles executed',
+  labelNames: ['outcome'] as const,
+  registers: [metricsRegistry],
+});
+
+export const statsdDualWriteErrorsTotal = new Counter({
+  name: 'statsd_dual_write_errors_total',
+  help: 'Total number of StatsD dual-write push cycle errors',
+  labelNames: ['reason'] as const,
+  registers: [metricsRegistry],
+});
+
+export const statsdDualWriteDurationMs = new Histogram({
+  name: 'statsd_dual_write_duration_ms',
+  help: 'Duration of StatsD dual-write push cycles in milliseconds',
+  buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  registers: [metricsRegistry],
+});
+
+export const statsdDualWriteMetricsCount = new Gauge({
+  name: 'statsd_dual_write_metrics_count',
+  help: 'Number of Prometheus metric values mirrored in the most recent StatsD dual-write cycle',
+  registers: [metricsRegistry],
+});

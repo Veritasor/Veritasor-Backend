@@ -22,6 +22,7 @@ import { secretLoader } from './utils/secret-loader.js';
 import { jwksManager } from './utils/jwks.js';
 import { createShutdownOrchestrator } from './shutdown.js';
 import { createRevenueConsumer } from './services/revenue/kafkaConsumer.js';
+import { stopStatsdDualWriteIfNeeded } from './services/metrics/statsdBootstrap.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -92,6 +93,11 @@ async function bootstrap(): Promise<void> {
         stopSpiffeSvidProviderIfNeeded();
       } catch (err) {
         console.warn(`[Shutdown] SPIFFE SVID provider stop error: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        await stopStatsdDualWriteIfNeeded();
+      } catch (err) {
+        console.warn(`[Shutdown] StatsD dual-write stop error: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   });
