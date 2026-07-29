@@ -296,6 +296,20 @@ export const webhookRetryExhaustedTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const dlqIngestTotal = new Counter({
+  name: "dlq_ingest_total",
+  help: "Total number of dead-letter queue items ingested",
+  labelNames: ["provider", "reason"] as const,
+  registers: [metricsRegistry],
+});
+
+export const dlqReplayTotal = new Counter({
+  name: "dlq_replay_total",
+  help: "Total number of dead-letter queue items replayed",
+  labelNames: ["provider", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
 export const redisCircuitBreakerState = new Gauge({
   name: "redis_circuit_breaker_state",
   help: "Redis circuit breaker state (0=CLOSED, 1=OPEN, 2=HALF_OPEN)",
