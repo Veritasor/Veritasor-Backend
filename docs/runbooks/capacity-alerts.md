@@ -72,6 +72,21 @@ are being silently dropped.
 
 ---
 
+## AttestationSubmitLatencyHigh
+
+**Metrics:** `attestation_submit_latency_seconds` (histogram) · `sli:attestation_submit_latency_seconds:p95` (recording rule)
+**SLO:** p95 attestation API latency < 200ms
+
+**What it means.** The internal process for attestation submission (building, signing, and dispatching the transaction) is taking too long. This typically indicates resource starvation or an RPC slowdown before transaction confirmation.
+
+**Steps:**
+1. Check if PgBouncer queues or DB CPU are saturated. Database operations during the attestation process could be stalling.
+2. Check the Soroban RPC server responsiveness.
+3. Review if the adaptive batch size controller has throttled batch sizes due to high fees, which might cause queue build-up.
+4. Scale up the backend tasks to distribute the load.
+
+---
+
 ## PgBouncerQueueDepthWarning / PgBouncerQueueDepthCritical / PgBouncerAvgWaitTimeHigh
 
 **Metrics:** `pgbouncer_waiting_clients` (gauge) · `pgbouncer_avg_wait_time_seconds` (gauge)  
