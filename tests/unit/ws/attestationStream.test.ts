@@ -20,11 +20,12 @@ vi.mock("../../../src/repositories/business.js", () => ({
 vi.mock("../../../src/metrics.js", () => ({
   wsConnections: { inc: vi.fn(), dec: vi.fn() },
   wsMessagesTotal: { inc: vi.fn() },
+  wsMessagesDroppedTotal: { inc: vi.fn() },
 }));
 
 import { verifyToken } from "../../../src/utils/jwt.js";
 import { businessRepository } from "../../../src/repositories/business.js";
-import { wsConnections, wsMessagesTotal } from "../../../src/metrics.js";
+import { wsConnections, wsMessagesTotal, wsMessagesDroppedTotal } from "../../../src/metrics.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — minimal WebSocket stub
@@ -133,6 +134,22 @@ describe("AttestationBroadcaster", () => {
     bc.publish(event);
     expect(s.send).not.toHaveBeenCalled();
     expect(wsMessagesTotal.inc).not.toHaveBeenCalled();
+    expect(wsMessagesDroppedTotal.inc).toHaveBeenCalledWith({ reason: "backpressure" });
+  });
+
+  it("publish() handles backpressure on slow subscriber while fast subscriber receives event", () => {
+    const fastSubscriber = makeSocket({ userId: "u-fast", businessId: "biz-1", bufferedAmount: 0 });
+    const slowSubscriber = makeSocket({ userId: "u-slow", businessId: "biz-1", bufferedAmount: 1000000 });
+
+    bc.add(fastSubscriber);
+    bc.add(slowSubscriber);
+
+    bc.publish(event);
+
+    expect(fastSubscriber.send).toHaveBeenCalledWith(JSON.stringify(event));
+    expect(slowSubscriber.send).not.toHaveBeenCalled();
+    expect(wsMessagesDroppedTotal.inc).toHaveBeenCalledWith({ reason: "backpressure" });
+    expect(wsMessagesTotal.inc).toHaveBeenCalledWith({ type: "attestation.submitted" });
   });
 
   it("publish() sends to multiple subscribers for the same business", () => {
@@ -311,3 +328,67 @@ describe("idle connection pruning", () => {
     expect(socket.isAlive).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// attachAttestationStream live HTTP server tests
+// ---------------------------------------------------------------------------
+
+import { createServer, type Server as HttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+describe("attachAttestationStream live server integration", () => {
+  let server: HttpServer;
+  let wss: ReturnType<typeof attachAttestationStream>;
+  let port: number;
+
+  beforeEach(async () => {
+    server = createServer();
+    wss = attachAttestationStream(server);
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        port = (server.address() as AddressInfo).port;
+        resolve();
+      });
+    });
+  });
+
+  afterEach(async () => {
+    wss.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("rejects unauthenticated WS upgrade with status 1008", async () => {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/v1/ws/attestations`);
+    const code = await new Promise<number>((resolve) => {
+      client.on("close", (c) => resolve(c));
+    });
+    expect(code).toBe(1008);
+  });
+
+  it("authenticates and establishes connection with query token", async () => {
+    (verifyToken as any).mockReturnValue({ userId: "u-integration", email: "i@test.com" });
+    (businessRepository.getByUserId as any).mockResolvedValue({ id: "biz-int" });
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/v1/ws/attestations?token=valid-jwt-token`);
+    const open = await new Promise<boolean>((resolve) => {
+      client.on("open", () => {
+        client.close();
+        resolve(true);
+      });
+      client.on("error", () => resolve(false));
+    });
+    expect(open).toBe(true);
+  });
+
+  it("rejects connection when user has no associated business", async () => {
+    (verifyToken as any).mockReturnValue({ userId: "u-nobiz", email: "nobiz@test.com" });
+    (businessRepository.getByUserId as any).mockResolvedValue(null);
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/api/v1/ws/attestations?token=nobiz-jwt`);
+    const code = await new Promise<number>((resolve) => {
+      client.on("close", (c) => resolve(c));
+    });
+    expect(code).toBe(1008);
+  });
+});
+

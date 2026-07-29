@@ -273,3 +273,27 @@ export function observeAttestationSubmitLatency(status: string, durationSec: num
   const safeStatus = validAttestationSubmitStatuses.has(status) ? status : "unknown";
   attestationSubmitLatency.observe({ status: safeStatus }, durationSec);
 }
+
+/**
+ * WebSocket metrics for subscription fan-out monitoring.
+ */
+export const wsConnections = new Gauge({
+  name: "ws_active_connections",
+  help: "Current number of active WebSocket connections",
+  registers: [metricsRegistry],
+});
+
+export const wsMessagesTotal = new Counter({
+  name: "ws_messages_total",
+  help: "Total number of WebSocket messages sent",
+  labelNames: ["type"] as const,
+  registers: [metricsRegistry],
+});
+
+export const wsMessagesDroppedTotal = new Counter({
+  name: "ws_messages_dropped_total",
+  help: "Total number of WebSocket messages dropped due to backpressure",
+  labelNames: ["reason"] as const,
+  registers: [metricsRegistry],
+});
+

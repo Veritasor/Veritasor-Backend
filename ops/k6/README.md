@@ -57,3 +57,25 @@ That emits the `k6_http_req_duration_p95` metric used by the latency panels.
 - `K6_PROMETHEUS_RW_SERVER_URL` if you want Grafana-backed time series
 - `K6_PROMETHEUS_RW_USERNAME` and `K6_PROMETHEUS_RW_PASSWORD` when the remote-write endpoint uses basic auth
 - `K6_PROMETHEUS_RW_BEARER_TOKEN` when the remote-write endpoint uses bearer auth
+
+## WebSocket Fan-out Saturation Test
+
+The WebSocket saturation test (`ops/k6/ws-saturation.js`) evaluates subscription fan-out performance by ramping N concurrent client connections to `/api/v1/ws/attestations`.
+
+### What is measured
+
+- `ws_message_latency_ms`: per-message fan-out delivery latency (SLO: `p95 < 200ms`).
+- `ws_drop_rate`: message drop rate due to backpressure or payload invalidation (SLO: `< 5%`).
+- `ws_connection_errors`: connection setup or upgrade failures (SLO: `< 5`).
+
+### Local run
+
+```bash
+K6_BASE_URL=http://127.0.0.1:3000 \
+K6_AUTH_TOKEN=your-bearer-token \
+K6_WS_TARGET_CLIENTS=100 \
+npm run perf:k6:ws-saturation
+```
+
+Results are exported as a JSON summary artifact at `ops/k6/results/ws-saturation-summary.json`.
+
