@@ -131,6 +131,55 @@ fast-check's shrinking automatically narrows any failing case to the minimal cou
 
 Expired allowlist entries are rejected.
 
+## Audit-log hash chain
+
+Audit-log entries in `src/repositories/auditLogRepository.ts` are linked by a tamper-evident HMAC-SHA-256 chain.
+
+### How it works
+
+Each entry carries a `chainHash`:
+
+```
+chainHash[0] = HMAC(GENESIS_SENTINEL || canonical(entry[0]))
+chainHash[N] = HMAC(chainHash[N-1]   || canonical(entry[N]))
+```
+
+`canonical(entry)` is a pipe-delimited string of all immutable fields including `seq`, `id`, `userId`, `action`, `resource`, `resourceId`, `contentHash`, `timestamp`, and a SHA-256 hash of `metadata`.
+
+Tampering with any field, deleting an entry, or re-ordering entries breaks the chain at that position.
+
+### Verify the chain
+
+```bash
+# Verify a live log export
+curl -s -H "Authorization: Bearer $TOKEN" \
+     http://localhost:3000/api/v1/admin/audit-logs \
+     | jq '.data' \
+     | npx tsx scripts/verify-audit-chain.ts --verbose
+
+# Verify a saved snapshot
+npx tsx scripts/verify-audit-chain.ts --file audit-export.json
+```
+
+Exit code `0` = chain intact; `1` = chain broken.
+
+### HMAC key
+
+Set `AUDIT_CHAIN_SECRET` in the environment (inject from a secrets manager in production). The module uses a deterministic fallback for tests when the env var is absent.
+
+### Chain root anchor
+
+`src/jobs/auditAnchorJob.ts` emits the current chain root to the structured logger every hour. Ship those logs to an append-only, off-system sink (CloudWatch Logs, Datadog, S3 with object lock). A discrepancy between the anchored root and the current computed root is evidence of tampering.
+
+Start the anchor job from `src/index.ts`:
+
+```typescript
+import { createAuditAnchorJob } from './jobs/auditAnchorJob.js'
+const anchorJob = createAuditAnchorJob()
+// Stop during graceful shutdown:
+anchorJob.stop()
+```
+
 ## Performance testing
 
 Peak-load k6 scenarios for `/api/v1/attestations` live in `ops/k6/`.
