@@ -74,7 +74,54 @@ export class FastlyClient implements CdnClient {
       }
     }
   }
-}
 
+  async purgeTag(tag: string): Promise<void> {
+    const path = `/service/${this.serviceId}/purge/${tag}`;
+    const options = {
+      method: "POST",
+      hostname: new URL(this.baseUrl).hostname,
+      path,
+      headers: {
+        "Fastly-Key": this.apiKey,
+        "Accept": "application/json",
+      },
+    };
+
+    const maxAttempts = 5;
+    let attempt = 0;
+    const backoff = (attempt: number) => Math.min(1000 * 2 ** attempt, 16000);
+
+    while (attempt < maxAttempts) {
+      attempt++;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const req = https.request(options, (res) => {
+            let data = "";
+            res.on("data", (chunk) => (data += chunk));
+            res.on("end", () => {
+              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                resolve();
+              } else {
+                const err = new Error(`Fastly tag purge failed with status ${res.statusCode}: ${data}`);
+                (err as any).transient = res.statusCode && res.statusCode >= 500;
+                reject(err);
+              }
+            });
+          });
+          req.on("error", reject);
+          req.end();
+        });
+        return;
+      } catch (err) {
+        const isTransient = (err as any).transient ?? false;
+        logger.error(`Fastly tag purge attempt ${attempt} failed: ${(err as Error).message}`);
+        if (!isTransient || attempt >= maxAttempts) {
+          throw err;
+        }
+        await new Promise((r) => setTimeout(r, backoff(attempt)));
+      }
+    }
+  }
+}
 // Export a singleton instance for injection
 export const fastlyClient = new FastlyClient();

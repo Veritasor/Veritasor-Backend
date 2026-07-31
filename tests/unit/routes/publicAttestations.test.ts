@@ -78,6 +78,13 @@ describe('GET /public/attestations/:hash', () => {
     expect(res.headers['etag']).toBeDefined();
     expect(res.headers['cache-control']).toContain('public');
     expect(res.headers['last-modified']).toBeDefined();
+    
+    // Assert surrogate keys are generated and multi-tag
+    expect(res.headers['surrogate-key']).toBeDefined();
+    const surrogateKeys = res.headers['surrogate-key'].split(' ');
+    expect(surrogateKeys).toHaveLength(2);
+    expect(surrogateKeys[0]).toMatch(/^biz_[a-zA-Z0-9_-]{16}$/);
+    expect(surrogateKeys[1]).toMatch(/^att_[a-zA-Z0-9_-]{16}$/);
   });
 
   it('returns 304 when If-None-Match matches the computed ETag', async () => {
@@ -91,6 +98,7 @@ describe('GET /public/attestations/:hash', () => {
 
     expect(res.status).toBe(304);
     expect(res.body).toStrictEqual({});
+    expect(res.headers['surrogate-key']).toBeDefined();
   });
 
   it('returns 200 when If-None-Match does not match', async () => {
@@ -157,6 +165,7 @@ describe('GET /public/attestations/:hash', () => {
     expect(res.status).toBe(410);
     expect(res.body.code).toBe('GONE');
     expect(res.headers['cache-control']).toContain('max-age=15');
+    expect(res.headers['surrogate-key']).toBeDefined();
   });
 
   it('returns 400 for invalid hash', async () => {

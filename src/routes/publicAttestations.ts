@@ -7,6 +7,7 @@ import { AppError, VRTErrorCodes } from '../types/errors.js';
 import { asyncErrorHandler } from '../middleware/errorHandler.js';
 import { CACHE_POLICIES, formatCacheControl, getJitteredTTL } from '../utils/cachePolicy.js';
 import { etagHitsTotal, negativeHitsTotal } from '../metrics.js';
+import { generateSurrogateKeys } from '../utils/surrogateKeys.js';
 
 const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
 
@@ -80,6 +81,7 @@ publicAttestationsRouter.get(
         'Cache-Control': revokedPolicy
           ? formatCacheControl(revokedPolicy.directives)
           : 'public, max-age=15, stale-while-revalidate=60',
+        'Surrogate-Key': generateSurrogateKeys(attestation.businessId, attestation.id),
         'Age': '0',
       });
       res.status(410).json({
@@ -102,9 +104,11 @@ publicAttestationsRouter.get(
 
     const etag = computeEtag(payload);
     const lastModified = attestation.createdAt.toUTCString();
+    const surrogateKeys = generateSurrogateKeys(attestation.businessId, attestation.id);
 
     if (matchEtag(req.headers['if-none-match'], etag)) {
       etagHitsTotal.inc({ route: 'publicAttestations', result: 'hit' });
+      res.set('Surrogate-Key', surrogateKeys);
       res.status(304).end();
       return;
     }
@@ -115,6 +119,7 @@ publicAttestationsRouter.get(
       'Cache-Control': activePolicy
         ? formatCacheControl(activePolicy.directives)
         : 'public, max-age=60, stale-while-revalidate=60',
+      'Surrogate-Key': surrogateKeys,
       'ETag': etag,
       'Last-Modified': lastModified,
       'Age': '0',

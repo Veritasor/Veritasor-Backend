@@ -9,6 +9,12 @@ export interface CdnClient {
    * @param urls Array of full URLs to purge.
    */
   purge(urls: string[]): Promise<void>;
+
+  /**
+   * Purge cached content by Surrogate-Key tag.
+   * @param tag The surrogate key to purge.
+   */
+  purgeTag(tag: string): Promise<void>;
 }
 
 // Import concrete implementation and expose as singleton
