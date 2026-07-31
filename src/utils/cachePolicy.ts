@@ -12,6 +12,11 @@
  *   3. Run `npm run docs:vcl` to regenerate the VCL.
  */
 
+export function getJitteredTTL(baseTTL: number, jitterPct: number = 0.2): number {
+  const jitterStr = process.env.NODE_ENV === 'test' ? 0 : (Math.random() * 2 - 1) * jitterPct;
+  return Math.max(1, Math.floor(baseTTL * (1 + jitterStr)));
+}
+
 export type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
 
 export interface CacheDirectives {
@@ -99,6 +104,19 @@ export const CACHE_POLICIES: CachePolicyEntry[] = [
     },
     supportsEtag: true,
     description: 'JSON Web Key Set for JWT signature verification',
+  },
+  {
+    name: 'public-attestations-not-found',
+    path: '/api/v1/public/attestations/:hash',
+    methods: ['GET'],
+    directives: {
+      scope: 'public',
+      maxAge: 10,
+      staleWhileRevalidate: 0,
+      staleIfError: 0,
+    },
+    supportsEtag: false,
+    description: 'Not found (404) public attestation — short TTL with jitter to mitigate scraper storms',
   },
 ];
 

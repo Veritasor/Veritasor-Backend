@@ -432,6 +432,13 @@ export const etagHitsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const negativeHitsTotal = new Counter({
+  name: "negative_hits_total",
+  help: "Total number of negative (404) cache events",
+  labelNames: ["route"] as const,
+  registers: [metricsRegistry],
+});
+
 export const statsdDualWriteMetricsCount = new Gauge({
   name: 'statsd_dual_write_metrics_count',
   help: 'Number of Prometheus metric values mirrored in the most recent StatsD dual-write cycle',

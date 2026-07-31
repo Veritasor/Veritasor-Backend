@@ -5,6 +5,8 @@ import * as attestationRepository from '../repositories/attestationRepository.js
 import { db } from '../db/client.js';
 import { AppError, VRTErrorCodes } from '../types/errors.js';
 import { asyncErrorHandler } from '../middleware/errorHandler.js';
+import { CACHE_POLICIES, formatCacheControl, getJitteredTTL } from '../utils/cachePolicy.js';
+import { etagHitsTotal, negativeHitsTotal } from '../metrics.js';
 
 const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
 
@@ -17,6 +19,9 @@ const activePolicy = CACHE_POLICIES.find(
 );
 const revokedPolicy = CACHE_POLICIES.find(
   (p) => p.name === 'public-attestations-revoked',
+);
+const notFoundPolicy = CACHE_POLICIES.find(
+  (p) => p.name === 'public-attestations-not-found',
 );
 
 function sortObjectKeys(obj: Record<string, unknown>): Record<string, unknown> {
@@ -52,6 +57,16 @@ publicAttestationsRouter.get(
     const attestation = await attestationRepository.getById(db, hash);
 
     if (!attestation) {
+      negativeHitsTotal.inc({ route: 'publicAttestations' });
+      
+      const maxAge = notFoundPolicy ? notFoundPolicy.directives.maxAge : 10;
+      const jitteredAge = getJitteredTTL(maxAge, 0.2);
+      
+      res.set({
+        'Cache-Control': `public, max-age=${jitteredAge}`,
+        'Age': '0',
+      });
+      
       res.status(404).json({
         status: 'error',
         code: 'NOT_FOUND',

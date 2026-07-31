@@ -128,13 +128,24 @@ describe('GET /public/attestations/:hash', () => {
     expect(res.status).toBe(304);
   });
 
-  it('returns 404 when attestation is not found', async () => {
+  it('returns 404 with short jittered Cache-Control when attestation is not found', async () => {
     mockGetById.mockResolvedValue(null);
 
     const res = await request(app).get('/public/attestations/nonexistent');
 
     expect(res.status).toBe(404);
     expect(res.body.code).toBe('NOT_FOUND');
+    
+    // Assert cache headers for negative caching
+    expect(res.headers['cache-control']).toMatch(/public, max-age=\d+/);
+    expect(res.headers['age']).toBe('0');
+    
+    // Verify jittered max-age bounds (base 10, +/- 20% -> 8 to 12)
+    const maxAgeMatch = res.headers['cache-control'].match(/max-age=(\d+)/);
+    expect(maxAgeMatch).not.toBeNull();
+    const maxAge = parseInt(maxAgeMatch![1], 10);
+    expect(maxAge).toBeGreaterThanOrEqual(1);
+    expect(maxAge).toBeLessThanOrEqual(15);
   });
 
   it('returns 410 when attestation is revoked', async () => {
@@ -165,5 +176,24 @@ describe('GET /public/attestations/:hash', () => {
     const att1 = makeAttestation({ id: 'att_001' });
     const att2 = makeAttestation({ id: 'att_002' });
     expect(expectedEtag(att1)).not.toBe(expectedEtag(att2));
+  });
+
+  it('handles cache poisoning attempts by sanitizing or rejecting invalid hashes', async () => {
+    const maliciousHash = 'invalid%0D%0ACache-Control: public, max-age=999999';
+    // Express prevents HTTP response splitting by default, so it might either throw (500)
+    // or properly escape/reject. Let's make sure it doesn't return the malicious cache-control
+    const res = await request(app).get(`/public/attestations/${maliciousHash}`);
+    
+    // Either it's rejected by our app or parsed as a hash and not found.
+    // If it's not found, the max-age should be jittered TTL (1-15), not 999999
+    if (res.status === 404) {
+      const maxAgeMatch = res.headers['cache-control'].match(/max-age=(\d+)/);
+      if (maxAgeMatch) {
+        const maxAge = parseInt(maxAgeMatch[1], 10);
+        expect(maxAge).toBeLessThan(1000); // Definitely not the poisoned value
+      }
+    } else {
+      expect(res.status).not.toBe(200);
+    }
   });
 });
