@@ -176,6 +176,13 @@ async function fetchData() {
 3. **Log all errors server-side** with full context for debugging
 4. **Sanitize error codes** to prevent injection attacks
 
+### GraphQL Error Masking
+
+GraphQL endpoints also use the VRT error taxonomy. Uncaught or internal GraphQL errors are masked and mapped to `VRT-9999` to prevent leakage of internal resolver details. Specific GraphQL errors are mapped as follows:
+
+- **PERSISTED_QUERY_NOT_FOUND** -> `VRT-0004`
+- **Other GraphQL Errors** -> `VRT-9999`
+
 ## Extending the Taxonomy
 
 When adding new error codes:

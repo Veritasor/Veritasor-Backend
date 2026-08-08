@@ -14,6 +14,7 @@ import { getPersistedQueryStore } from '../graphql/persistedQueries.js';
 import { Counter } from 'prom-client';
 import { metricsRegistry } from '../metrics.js';
 import { config } from '../config/index.js';
+import { maskGraphQLError } from '../graphql/errorMasking.js';
 
 const graphqlMutationRejections = new Counter({
   name: 'graphql_admin_mutation_rejections_total',
@@ -154,7 +155,11 @@ function introspectionGateRule(context: ValidationContext): ASTVisitor {
 export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
   return createYoga({
     schema: gatewaySchema,
-    maskedErrors: true,
+    maskedErrors: {
+      maskError: (error, message) => {
+        return maskGraphQLError(error, message);
+      },
+    },
     parserAndValidationCache: { validationCache: false },
     context: () => ({
       loaders: createDataLoaders(),
