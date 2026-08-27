@@ -332,6 +332,13 @@ describe('Admin GraphQL endpoint', () => {
               actor {
                 auditLogs {
                   actor { id }
+                  auditLogs {
+                    actor {
+                      auditLogs {
+                        actor { id }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -349,6 +356,36 @@ describe('Admin GraphQL endpoint', () => {
         'graphql_admin_depth_limit_rejections_total',
       );
       expect(val).toBe(1);
+    });
+
+    it('rejects complexity over the role budget with a structured error and metric', async () => {
+      const expensiveQuery = `{ users { ${'id '.repeat(251)} } }`;
+
+      const res = await gql(expensiveQuery);
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors[0].extensions).toMatchObject({
+        code: 'GRAPHQL_COMPLEXITY_LIMIT_EXCEEDED',
+        maxCost: 250,
+      });
+      expect(await getMetricValue('graphql_admin_complexity_limit_rejections_total')).toBe(1);
+    });
+
+    it('accounts for fragment expansion without looping on recursive fragments', async () => {
+      const res = await gql(`
+        query RecursiveDepth {
+          users {
+            ...NestedUsers
+          }
+        }
+        fragment NestedUsers on User {
+          auditLogs { actor { auditLogs { actor { id } } } }
+          ...NestedUsers
+        }
+      `);
+
+      expect(res.status).toBe(400);
+      expect(res.body.errors).toBeDefined();
     });
 
     it('rejects introspection __schema query (deep nested) with graphql error', async () => {

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { createYoga, type YogaServerInstance } from 'graphql-yoga';
-import { GraphQLError, Kind, type DocumentNode, type FieldNode, type ValidationContext, type ASTVisitor } from 'graphql';
+import { GraphQLError, Kind, type DocumentNode, type FieldNode, type FragmentDefinitionNode, type ValidationContext, type ASTVisitor } from 'graphql';
 import { usePersistedOperations } from '@graphql-yoga/plugin-persisted-operations';
 import DataLoader from 'dataloader';
 import { requireAuth } from '../middleware/requireAuth.js';
@@ -27,6 +27,12 @@ const graphqlDepthLimitRejections = new Counter({
   registers: [metricsRegistry],
 });
 
+const graphqlComplexityLimitRejections = new Counter({
+  name: 'graphql_admin_complexity_limit_rejections_total',
+  help: 'Total number of queries rejected due to complexity limit on admin GraphQL endpoint',
+  registers: [metricsRegistry],
+});
+
 const graphqlIntrospectionRejections = new Counter({
   name: 'graphql_admin_introspection_rejections_total',
   help: 'Total number of introspection queries rejected on admin GraphQL endpoint',
@@ -38,8 +44,6 @@ export const graphqlPersistedQueryRejections = new Counter({
   help: 'Total number of non-persisted queries rejected on admin GraphQL endpoint',
   registers: [metricsRegistry],
 });
-
-const MAX_QUERY_DEPTH = 5;
 
 export function createDataLoaders() {
   return {
@@ -66,27 +70,54 @@ function extractPersistedKey(params: any): string | undefined {
   return params.documentId || params.queryId;
 }
 
-function getOperationDepth(document: DocumentNode): number {
-  let maxDepth = 0;
+type QueryLimits = { maxDepth: number; maxCost: number };
+type QueryAnalysis = { depth: number; cost: number };
 
-  const walk = (selections: readonly any[], currentDepth: number) => {
+const DEFAULT_QUERY_LIMITS: Record<string, QueryLimits> = {
+  default: { maxDepth: 5, maxCost: 100 },
+  admin: { maxDepth: 5, maxCost: 250 },
+  business_admin: { maxDepth: 6, maxCost: 150 },
+  user: { maxDepth: 4, maxCost: 75 },
+};
+
+function analyzeQuery(document: DocumentNode, operationName?: string): QueryAnalysis {
+  const fragments = new Map<string, FragmentDefinitionNode>();
+  for (const definition of document.definitions) {
+    if (definition.kind === Kind.FRAGMENT_DEFINITION) fragments.set(definition.name.value, definition);
+  }
+
+  let result = { depth: 0, cost: 0 };
+  const visit = (selections: readonly any[], depth: number, stack: Set<string>) => {
+    result.depth = Math.max(result.depth, depth);
     for (const selection of selections) {
-      if (selection.kind === Kind.FIELD && selection.selectionSet) {
-        walk(selection.selectionSet.selections, currentDepth + 1);
+      if (selection.kind === Kind.FIELD) {
+        result.cost += 1;
+        if (selection.selectionSet) visit(selection.selectionSet.selections, depth + 1, stack);
+      } else if (selection.kind === Kind.INLINE_FRAGMENT && selection.selectionSet) {
+        visit(selection.selectionSet.selections, depth, stack);
+      } else if (selection.kind === Kind.FRAGMENT_SPREAD && !stack.has(selection.name.value)) {
+        const fragment = fragments.get(selection.name.value);
+        if (fragment) {
+          const nextStack = new Set(stack);
+          nextStack.add(selection.name.value);
+          visit(fragment.selectionSet.selections, depth, nextStack);
+        }
       }
-    }
-    if (currentDepth > maxDepth) {
-      maxDepth = currentDepth;
     }
   };
 
-  for (const definition of document.definitions) {
-    if (definition.kind === Kind.OPERATION_DEFINITION && definition.operation === 'query') {
-      walk(definition.selectionSet.selections, 1);
-    }
-  }
+  const operation = document.definitions.find(
+    (definition) => definition.kind === Kind.OPERATION_DEFINITION &&
+      (!operationName || definition.name?.value === operationName),
+  );
+  if (operation?.kind === Kind.OPERATION_DEFINITION) visit(operation.selectionSet.selections, 1, new Set());
+  return result;
+}
 
-  return maxDepth;
+function getQueryLimits(role: string | undefined): QueryLimits {
+  const limits = config.graphql.limits ?? DEFAULT_QUERY_LIMITS;
+  if (role === 'admin' || role === 'business_admin' || role === 'user') return limits[role];
+  return limits.default;
 }
 
 const INTROSPECTION_FIELD_NAMES = new Set(['__schema', '__type']);
@@ -151,17 +182,21 @@ function introspectionGateRule(context: ValidationContext): ASTVisitor {
   };
 }
 
-export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
+export function createAdminGraphqlYoga(): YogaServerInstance<{}, any> {
+  const roleByRequestContext = new WeakMap<object, string>();
+
   return createYoga({
     schema: gatewaySchema,
     maskedErrors: true,
     parserAndValidationCache: { validationCache: false },
-    context: () => ({
+    context: ({ request }) => ({
       loaders: createDataLoaders(),
+      role: request.headers.get('x-admin-graphql-role') ?? 'user',
     }),
     plugins: [
       {
-        onParams({ params, setResult }) {
+        onParams({ params, setResult, request, context }: { params: any; setResult: (result: any) => void; request: Request; context: object }) {
+          roleByRequestContext.set(context, request.headers.get('x-admin-graphql-role') ?? 'user');
           if (!config.graphql.allowArbitraryOperations) {
             const store = getPersistedQueryStore();
             const key = extractPersistedKey(params);
@@ -206,7 +241,7 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
         },
       },
       usePersistedOperations({
-        getPersistedOperation: (key: string) => {
+        getPersistedOperation: (key: string, _request, _context) => {
           const store = getPersistedQueryStore();
           return store.get(key);
         },
@@ -220,7 +255,7 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
         },
       },
       {
-        onValidate({ params, setResult }: { params: { documentAST: DocumentNode; rules: readonly any[]; schema: any; typeInfo: any; options: any }; setResult: (errors: readonly GraphQLError[]) => void }) {
+        onValidate({ params, setResult, context }: { params: { documentAST: DocumentNode; operationName?: string }; setResult: (errors: readonly GraphQLError[]) => void; context: object }) {
           const { documentAST } = params;
 
           for (const def of documentAST.definitions) {
@@ -232,12 +267,24 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
               }
 
               if (def.operation === 'query') {
-                const depth = getOperationDepth(documentAST);
-                if (depth > MAX_QUERY_DEPTH) {
+                const limits = getQueryLimits(roleByRequestContext.get(context));
+                const analysis = analyzeQuery(documentAST, params.operationName);
+                if (analysis.depth > limits.maxDepth) {
                   graphqlDepthLimitRejections.inc();
                   setResult([
                     new GraphQLError(
-                      'Query depth exceeds maximum allowed depth of ' + MAX_QUERY_DEPTH,
+                      'Query depth exceeds the maximum allowed depth',
+                      { extensions: { code: 'GRAPHQL_DEPTH_LIMIT_EXCEEDED', depth: analysis.depth, maxDepth: limits.maxDepth } },
+                    ),
+                  ]);
+                  return;
+                }
+                if (analysis.cost > limits.maxCost) {
+                  graphqlComplexityLimitRejections.inc();
+                  setResult([
+                    new GraphQLError(
+                      'Query complexity exceeds the maximum allowed cost',
+                      { extensions: { code: 'GRAPHQL_COMPLEXITY_LIMIT_EXCEEDED', cost: analysis.cost, maxCost: limits.maxCost } },
                     ),
                   ]);
                   return;
@@ -257,6 +304,11 @@ adminGraphqlRouter.use(requireAuth);
 adminGraphqlRouter.use(
   requirePermissions(IntegrationPermission.ADMIN_MANAGE_USERS),
 );
+
+adminGraphqlRouter.use((req, _res, next) => {
+  req.headers['x-admin-graphql-role'] = req.user?.role ?? 'user';
+  next();
+});
 
 adminGraphqlRouter.use(createAdminGraphqlYoga());
 

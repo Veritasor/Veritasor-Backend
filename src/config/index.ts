@@ -58,6 +58,14 @@ export const envSchema = z.object({
   GRAPHQL_DEV_BYPASS: z.string().optional(),
   ALLOW_ARBITRARY_OPERATIONS: z.string().optional(),
   PERSISTED_QUERY_SECRET: z.string().optional(),
+  GRAPHQL_MAX_DEPTH: z.string().optional(),
+  GRAPHQL_MAX_COST: z.string().optional(),
+  GRAPHQL_ADMIN_MAX_DEPTH: z.string().optional(),
+  GRAPHQL_ADMIN_MAX_COST: z.string().optional(),
+  GRAPHQL_BUSINESS_ADMIN_MAX_DEPTH: z.string().optional(),
+  GRAPHQL_BUSINESS_ADMIN_MAX_COST: z.string().optional(),
+  GRAPHQL_USER_MAX_DEPTH: z.string().optional(),
+  GRAPHQL_USER_MAX_COST: z.string().optional(),
   STATSD_HOST: z.string().optional(),
   STATSD_PORT: z.string().optional(),
   STATSD_PREFIX: z.string().optional(),
@@ -488,5 +496,23 @@ export const config = {
       ? parseBooleanEnv("GRAPHQL_DEV_BYPASS", parsedEnv.GRAPHQL_DEV_BYPASS ?? parsedEnv.ALLOW_ARBITRARY_OPERATIONS, false)
       : !isProduction,
     persistedQuerySecret: parsedEnv.PERSISTED_QUERY_SECRET || 'default-dev-secret-do-not-use-in-prod',
+    limits: {
+      default: {
+        maxDepth: parsePositiveIntEnv('GRAPHQL_MAX_DEPTH', parsedEnv.GRAPHQL_MAX_DEPTH, 5),
+        maxCost: parsePositiveIntEnv('GRAPHQL_MAX_COST', parsedEnv.GRAPHQL_MAX_COST, 100),
+      },
+      admin: {
+        maxDepth: parsePositiveIntEnv('GRAPHQL_ADMIN_MAX_DEPTH', parsedEnv.GRAPHQL_ADMIN_MAX_DEPTH, 5),
+        maxCost: parsePositiveIntEnv('GRAPHQL_ADMIN_MAX_COST', parsedEnv.GRAPHQL_ADMIN_MAX_COST, 250),
+      },
+      business_admin: {
+        maxDepth: parsePositiveIntEnv('GRAPHQL_BUSINESS_ADMIN_MAX_DEPTH', parsedEnv.GRAPHQL_BUSINESS_ADMIN_MAX_DEPTH, 6),
+        maxCost: parsePositiveIntEnv('GRAPHQL_BUSINESS_ADMIN_MAX_COST', parsedEnv.GRAPHQL_BUSINESS_ADMIN_MAX_COST, 150),
+      },
+      user: {
+        maxDepth: parsePositiveIntEnv('GRAPHQL_USER_MAX_DEPTH', parsedEnv.GRAPHQL_USER_MAX_DEPTH, 4),
+        maxCost: parsePositiveIntEnv('GRAPHQL_USER_MAX_COST', parsedEnv.GRAPHQL_USER_MAX_COST, 75),
+      },
+    },
   },
 } as const;
