@@ -429,7 +429,11 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
   return (req: Request, res: Response, next: NextFunction): void => {
     const bucket = resolveBucket(req, options.bucket);
     const identifier = getClientIdentifier(req);
-    const key = `rate-limit:${bucket}:${identifier}`;
+    // Prefer tenant-aware keying when business context is present so keys
+    // for the same business hash to the same cluster slot.
+    const businessId = (req as any).business?.id || undefined;
+    const bizTag = businessId ? hashTag(businessId) : undefined;
+    const key = bizTag ? `rate-limit:${bucket}:${bizTag}:${identifier}` : `rate-limit:${bucket}:${identifier}`;
     const now = Date.now();
 
    // Check synchronously if we are using the in-memory store

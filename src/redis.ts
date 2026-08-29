@@ -54,6 +54,7 @@ export function getRedisClient(): RedisClient {
   const mode = process.env.REDIS_MODE;
   const clusterNodes = process.env.REDIS_CLUSTER_NODES;
   const redisUrl = process.env.REDIS_URL;
+  const forceSingle = process.env.REDIS_FORCE_SINGLE_NODE === 'true';
 
   if (mode === "sentinel") {
     const sentinels = process.env.REDIS_SENTINELS;
@@ -74,7 +75,7 @@ export function getRedisClient(): RedisClient {
       retryStrategy: (times: number) => Math.min(times * 100, 2000),
       maxRetriesPerRequest: 3,
     });
-  } else if (clusterNodes) {
+  } else if (clusterNodes && !forceSingle) {
     const nodes = parseClusterNodes(clusterNodes);
     _client = new Cluster(nodes, {
       redisOptions: { tls: process.env.REDIS_TLS === "true" ? {} : undefined },

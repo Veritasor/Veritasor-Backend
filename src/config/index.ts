@@ -451,6 +451,8 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+    /** When true, force single-node Redis mode even if cluster nodes are present. */
+    forceSingleNode: parseBooleanEnv("REDIS_FORCE_SINGLE_NODE", parsedEnv.REDIS_FORCE_SINGLE_NODE, false),
   },
   statsd: {
     host: parsedEnv.STATSD_HOST?.trim() ?? '127.0.0.1',
