@@ -6,6 +6,12 @@ import {
 import { MerkleTree } from "../merkle.js";
 import { attestationRepository } from "../../repositories/attestation.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
+import {
+  BatchingQueue,
+  type BatchingQueueConfig,
+  type BatchingQueueItem,
+} from "../soroban/batchingQueue.js";
+import { sorobanBatchItemErrorsTotal } from "../../metrics.js";
 
 /**
  * Parses a period string (e.g. "2025-10" or "2025-Q4") into ISO start and end dates.
@@ -405,114 +411,122 @@ async function doSubmitAttestation(
 
 const tracer = trace.getTracer("veritasor-backend.attestation");
 
-interface EnqueuedAttestation {
+/**
+ * @notice Internal batch payload carried through the adaptive BatchingQueue.
+ * Carries the original request parameters plus the active span context
+ * for distributed tracing across the flush boundary.
+ */
+type AttestationQueuePayload = {
   userId: string;
   businessId: string;
   period: string;
-  resolve: (value: { attestationId: string; txHash: string }) => void;
-  reject: (reason?: any) => void;
+  spanContext: ReturnType<typeof trace.getSpanContext>;
   enqueueTime: number;
-  spanContext: any;
+};
+
+/**
+ * Configuration for the adaptive flush window.
+ * Defaults are tuned for typical production traffic patterns.
+ */
+const BATCHING_QUEUE_CONFIG: Partial<BatchingQueueConfig> = {
+  // Size trigger: flush when queue reaches this depth
+  maxBatchSize: Number(process.env.SOROBAN_BATCH_MAX_SIZE ?? 50),
+  // Latency trigger: flush when oldest item waits this long (5s default)
+  maxLatencyMs: Number(process.env.SOROBAN_BATCH_MAX_LATENCY_MS ?? 5000),
+  // Backpressure trigger: force flush when queue exceeds this depth
+  backpressureThreshold: Number(process.env.SOROBAN_BATCH_BACKPRESSURE_THRESHOLD ?? 100),
+  // Cooldown between flushes to avoid flush storms
+  flushCooldownMs: Number(process.env.SOROBAN_BATCH_FLUSH_COOLDOWN_MS ?? 100),
+};
+
+/**
+ * Creates the adaptive batch queue.
+ *
+ * The flush callback processes items independently — a single failing
+ * leaf does not roll back the whole batch.  Each item is wrapped in its
+ * own tracing span so that the batch flush span has links to all enqueue
+ * spans for full traceability.
+ */
+function createAttestationBatcher(): BatchingQueue<AttestationQueuePayload> {
+  return new BatchingQueue<AttestationQueuePayload>(
+    BATCHING_QUEUE_CONFIG,
+    async (batch: BatchingQueueItem<AttestationQueuePayload>[]) => {
+      const links: Link[] = batch
+        .filter((item) => item.payload.spanContext)
+        .map((item) => ({ context: item.payload.spanContext! }));
+
+      await tracer.startActiveSpan(
+        'batch.flush',
+        {
+          kind: SpanKind.INTERNAL,
+          links,
+          attributes: { 'batch.size': batch.length },
+        },
+        async (span) => {
+          try {
+            // Process items concurrently but isolate errors per-item.
+            // A single failure never poisons successful entries.
+            const promises = batch.map(async (item) => {
+              return tracer.startActiveSpan(
+                'queue.dequeue',
+                { kind: SpanKind.INTERNAL },
+                async (dequeueSpan) => {
+                  const waitTime = Date.now() - item.payload.enqueueTime;
+                  dequeueSpan.setAttribute('queue.wait_time_ms', waitTime);
+
+                  if (item.payload.spanContext) {
+                    dequeueSpan.addLink({ context: item.payload.spanContext });
+                  }
+
+                  try {
+                    const result = await doSubmitAttestation(
+                      item.payload.userId,
+                      item.payload.businessId,
+                      item.payload.period,
+                    );
+                    dequeueSpan.setStatus({ code: SpanStatusCode.OK });
+                    item.resolve(result);
+                  } catch (err: any) {
+                    dequeueSpan.recordException(err);
+                    dequeueSpan.setStatus({ code: SpanStatusCode.ERROR });
+                    sorobanBatchItemErrorsTotal.inc();
+                    item.reject(err);
+                  } finally {
+                    dequeueSpan.end();
+                  }
+                },
+              );
+            });
+
+            await Promise.allSettled(promises);
+            span.setStatus({ code: SpanStatusCode.OK });
+          } catch (err: any) {
+            span.recordException(err);
+            span.setStatus({ code: SpanStatusCode.ERROR });
+          } finally {
+            span.end();
+          }
+        },
+      );
+    },
+  );
 }
 
-class AttestationBatcher {
-  private queue: EnqueuedAttestation[] = [];
-  private flushTimer: NodeJS.Timeout | null = null;
-  private readonly MAX_BATCH_SIZE = 50;
-  private readonly FLUSH_DEADLINE_MS = 5000;
-
-  async submit(userId: string, businessId: string, period: string): Promise<{ attestationId: string; txHash: string }> {
-    return new Promise((resolve, reject) => {
-      tracer.startActiveSpan('queue.enqueue', { kind: SpanKind.INTERNAL }, (span) => {
-        const item: EnqueuedAttestation = {
-          userId,
-          businessId,
-          period,
-          resolve,
-          reject,
-          enqueueTime: Date.now(),
-          spanContext: trace.getSpanContext(context.active())
-        };
-        this.queue.push(item);
-        
-        span.setAttribute('queue.size', this.queue.length);
-        span.end();
-
-        if (this.queue.length >= this.MAX_BATCH_SIZE) {
-          this.flush();
-        } else if (!this.flushTimer) {
-          this.flushTimer = setTimeout(() => this.flush(), this.FLUSH_DEADLINE_MS);
-        }
-      });
-    });
-  }
-
-  private async flush() {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = null;
-    }
-
-    if (this.queue.length === 0) return;
-
-    const batch = this.queue;
-    this.queue = [];
-
-    const links: Link[] = batch
-      .filter(item => item.spanContext)
-      .map(item => ({ context: item.spanContext }));
-
-    await tracer.startActiveSpan('batch.flush', {
-      kind: SpanKind.INTERNAL,
-      links,
-      attributes: {
-        'batch.size': batch.length,
-      }
-    }, async (span) => {
-      try {
-        const promises = batch.map(async (item) => {
-          return tracer.startActiveSpan('queue.dequeue', { kind: SpanKind.INTERNAL }, async (dequeueSpan) => {
-            const waitTime = Date.now() - item.enqueueTime;
-            dequeueSpan.setAttribute('queue.wait_time_ms', waitTime);
-            
-            // Set link to parent span (from enqueue time)
-            if (item.spanContext) {
-              dequeueSpan.addLink({ context: item.spanContext });
-            }
-
-            try {
-              const result = await doSubmitAttestation(item.userId, item.businessId, item.period);
-              dequeueSpan.setStatus({ code: SpanStatusCode.OK });
-              item.resolve(result);
-            } catch (err: any) {
-              dequeueSpan.recordException(err);
-              dequeueSpan.setStatus({ code: SpanStatusCode.ERROR });
-              item.reject(err);
-            } finally {
-              dequeueSpan.end();
-            }
-          });
-        });
-        
-        await Promise.all(promises);
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err: any) {
-        span.recordException(err);
-        span.setStatus({ code: SpanStatusCode.ERROR });
-      } finally {
-        span.end();
-      }
-    });
-  }
-}
-
-const batcher = new AttestationBatcher();
+const batcher = createAttestationBatcher();
 
 /**
  * @notice Orchestrates the full attestation submission flow.
- * @dev Batches submissions into queues and flushes them when the deadline or max size is reached.
+ * @dev Batches submissions into an adaptive queue that flushes on size,
+ *      latency, or backpressure thresholds.  Per-item errors are isolated
+ *      so a single failing leaf does not roll back the whole batch.
  */
 export async function submitAttestation(userId: string, businessId: string, period: string) {
-  return batcher.submit(userId, businessId, period);
+  return batcher.enqueue<Promise<{ attestationId: string; txHash: string }>>({
+    userId,
+    businessId,
+    period,
+    spanContext: trace.getSpanContext(context.active()),
+    enqueueTime: Date.now(),
+  }).then((inner) => inner);
 }
 

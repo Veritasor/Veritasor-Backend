@@ -281,6 +281,51 @@ export const sorobanDrrDequeuesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Soroban submit-batching metrics.
+ *
+ * - `soroban_batch_size` (histogram): number of attestation items flushed
+ *   per batch cycle. Buckets are sized to capture typical production batch
+ *   sizes and expose tail behavior for tuning the adaptive flush window.
+ *
+ * - `soroban_batch_flush_total` (counter, labels: trigger): total flush
+ *   cycles grouped by the trigger that initiated them (`size`, `latency`,
+ *   `backpressure`, `manual`). Useful for understanding which threshold
+ *   dominates in production.
+ *
+ * - `soroban_batch_item_errors_total` (counter): items that failed
+ *   individually during a batch flush. Per-item errors must never poison
+ *   successful entries in the same batch.
+ *
+ * - `soroban_batch_queue_depth` (gauge): current number of items waiting
+ *   in the adaptive batch queue.
+ */
+export const sorobanBatchSize = new Histogram({
+  name: 'soroban_batch_size',
+  help: 'Number of attestation items flushed per batch cycle',
+  buckets: [1, 2, 5, 10, 20, 30, 50, 75, 100, 150, 200],
+  registers: [metricsRegistry],
+});
+
+export const sorobanBatchFlushTotal = new Counter({
+  name: 'soroban_batch_flush_total',
+  help: 'Total number of batch flush cycles by trigger type',
+  labelNames: ['trigger'] as const,
+  registers: [metricsRegistry],
+});
+
+export const sorobanBatchItemErrorsTotal = new Counter({
+  name: 'soroban_batch_item_errors_total',
+  help: 'Total number of individual item errors during batch flush',
+  registers: [metricsRegistry],
+});
+
+export const sorobanBatchQueueDepth = new Gauge({
+  name: 'soroban_batch_queue_depth',
+  help: 'Current number of items waiting in the adaptive batch queue',
+  registers: [metricsRegistry],
+});
+
 export const webhookRetryAttempts = new Histogram({
   name: "webhook_retry_attempts",
   help: "Number of retry attempts made when processing a webhook event",
