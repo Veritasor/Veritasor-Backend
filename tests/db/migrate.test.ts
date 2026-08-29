@@ -715,6 +715,50 @@ describe('runRollback', () => {
     await expect(runRollback(client as never, 2, '/fake')).rejects.toThrow('Cannot roll back')
     expect(client.calls).not.toContain('BEGIN')
   })
+
+  it('orders candidates by applied_at DESC, not by version DESC', async () => {
+    const client = makeMockClient([])
+    withQueryImpl(client, async (sql) => {
+      if (sql.includes('SELECT version FROM schema_migrations')) {
+        return { rows: [] }
+      }
+      return { rows: [] }
+    })
+
+    await runRollback(client as never, 1, '/fake')
+
+    const select = client.calls.find((s) =>
+      s.includes('SELECT version FROM schema_migrations')
+    )
+    // Legacy (`001_foo`) and timestamped (`20260225_001_bar`) versions can
+    // sort by name in a different order than they were applied, so rollback
+    // must resolve “most recent” from applied_at, not the version string.
+    expect(select).toContain('ORDER BY applied_at DESC, version DESC LIMIT $1')
+    expect(select).not.toContain('ORDER BY version DESC LIMIT $1')
+  })
+
+  it('rolls back in reverse application order across naming schemes', async () => {
+    mockAccess.mockResolvedValue(undefined)
+    mockReadFile.mockResolvedValue('DROP TABLE x;')
+
+    const client = makeMockClient([])
+    const deletedVersions: string[] = []
+    withQueryImpl(client, async (sql, params) => {
+      if (sql.includes('SELECT version FROM schema_migrations')) {
+        // Rows as the DB returns them with applied_at DESC: '003_late' was
+        // applied AFTER '999_early' even though it sorts below it by name.
+        return { rows: [{ version: '003_late' }, { version: '999_early' }] }
+      }
+      if (sql.includes('DELETE FROM schema_migrations')) {
+        deletedVersions.push(params?.[0] as string)
+      }
+      return { rows: [] }
+    })
+
+    await runRollback(client as never, 2, '/fake')
+
+    expect(deletedVersions).toEqual(['003_late', '999_early'])
+  })
 })
 
 // ─── requiresAutocommit ────────────────────────────────────────────────────
