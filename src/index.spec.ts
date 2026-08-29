@@ -7,6 +7,10 @@ describe('SIGHUP handling', () => {
   })
 
   it('calls secretLoader.reload exactly once for each SIGHUP signal', async () => {
+    const originalNodeEnv = process.env.NODE_ENV
+    const originalDatabaseUrl = process.env.DATABASE_URL
+    process.env.NODE_ENV = 'test'
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/test'
     vi.resetModules()
 
     const { secretLoader } = await import('./utils/secret-loader.js')
@@ -23,5 +27,12 @@ describe('SIGHUP handling', () => {
     await new Promise((resolve) => setImmediate(resolve))
 
     expect(reloadSpy).toHaveBeenCalledTimes(2)
+
+    process.env.NODE_ENV = originalNodeEnv
+    if (originalDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL
+    } else {
+      process.env.DATABASE_URL = originalDatabaseUrl
+    }
   })
 })
