@@ -649,8 +649,13 @@ export async function runRollback(
     )
   `)
 
+  // Roll back the most recently APPLIED migrations first. Ordering by
+  // `applied_at DESC` (with `version DESC` as a deterministic tiebreak)
+  // matters because version names mix legacy (`001_foo`) and timestamped
+  // (`20260225_001_bar`) schemes, so sorting by version alone can disagree
+  // with the order migrations were actually applied in.
   const { rows } = await client.query(
-    'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT $1',
+    'SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT $1',
     [steps]
   ) as { rows: { version: string }[] }
 
