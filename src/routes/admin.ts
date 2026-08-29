@@ -1,9 +1,9 @@
-import { Router } from 'express'
+import { Request, Router } from 'express'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requirePermissions } from '../middleware/permissions.js'
+import { requireBusinessTierRolePromotionPermission, requirePermissions } from '../middleware/permissions.js'
 import { IntegrationPermission } from '../types/permissions.js'
-import { getAllUsers, updateUser, deleteUser, findUserById } from '../repositories/userRepository.js'
+import { getAllUsers, updateUser, deleteUser, findUserById, promoteUserToBusinessAdmin } from '../repositories/userRepository.js'
 import { createAuditLog, queryAuditLogs } from '../repositories/auditLogRepository.js'
 import { logger } from '../utils/logger.js'
 import * as attestationRepository from '../repositories/attestationRepository.js'
@@ -28,8 +28,41 @@ const adminRouter = Router()
 const SENSITIVE_UPDATE_FIELDS = new Set(['passwordHash', 'resetToken', 'resetTokenExpiry'])
 
 const rolePromotionSchema = z.object({
-  role: z.enum(['user', 'business_admin', 'admin']),
-})
+  role: z.literal('business_admin'),
+}).strict()
+
+const PROMOTE_USER_ROLE_ACTION = 'PROMOTE_USER_ROLE'
+
+type PromoteUserRoleAuditMetadata = {
+  outcome: string
+  actorId: string
+  targetUserId: string
+  previousRole?: string | null
+  newRole?: string
+  reason?: string
+}
+
+async function auditPromoteUserRole(
+  actorId: string,
+  targetUserId: string,
+  metadata: PromoteUserRoleAuditMetadata,
+): Promise<void> {
+  await createAuditLog({
+    userId: actorId,
+    action: PROMOTE_USER_ROLE_ACTION,
+    resource: 'user',
+    resourceId: targetUserId,
+    metadata,
+  })
+}
+
+function getActorId(req: Request): string {
+  return req.user?.id ?? req.user?.userId ?? 'unknown'
+}
+
+function isSelfPromotion(actorId: string, targetUserId: string): boolean {
+  return actorId === targetUserId
+}
 
 function normalizeUpdates(payload: unknown): Record<string, unknown> {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -176,37 +209,38 @@ adminRouter.patch(
 
 /**
  * POST /api/v1/admin/users/:id/role
- * Promote or change a user's role through the guarded admin flow.
+ * Promote a regular user to business_admin through the guarded admin flow.
  */
 adminRouter.post(
   '/users/:id/role',
-  requirePermissions(IntegrationPermission.ADMIN_MANAGE_USERS),
+  requireBusinessTierRolePromotionPermission,
   async (req, res) => {
     const { id } = req.params
     const parsed = rolePromotionSchema.safeParse(req.body)
+    const actorId = getActorId(req)
 
     if (!parsed.success) {
+      await auditPromoteUserRole(actorId, id, {
+        outcome: 'invalid_input',
+        actorId,
+        targetUserId: id,
+        reason: 'role must be business_admin',
+      })
+
       return res.status(400).json({
         error: 'Bad Request',
-        message: 'Invalid role',
+        message: 'role must be business_admin',
       })
     }
 
     const { role } = parsed.data
-    const actorId = req.user!.id
 
-    if (actorId === id) {
-      await createAuditLog({
-        userId: actorId,
-        action: 'PROMOTE_USER_ROLE',
-        resource: 'user',
-        resourceId: id,
-        metadata: {
-          outcome: 'forbidden_self_promotion',
-          actorId,
-          targetUserId: id,
-          newRole: role,
-        },
+    if (isSelfPromotion(actorId, id)) {
+      await auditPromoteUserRole(actorId, id, {
+        outcome: 'forbidden_self_promotion',
+        actorId,
+        targetUserId: id,
+        newRole: role,
       })
 
       return res.status(403).json({
@@ -216,98 +250,66 @@ adminRouter.post(
     }
 
     try {
-      const targetUser = await findUserById(id)
+      const promotion = await promoteUserToBusinessAdmin(id)
 
-      if (!targetUser) {
-        await createAuditLog({
-          userId: actorId,
-          action: 'PROMOTE_USER_ROLE',
-          resource: 'user',
-          resourceId: id,
-          metadata: {
-            outcome: 'not_found',
-            actorId,
-            targetUserId: id,
-            newRole: role,
-          },
-        })
-
-        return res.status(404).json({
-          error: 'Not Found',
-          message: 'User not found',
-        })
-      }
-
-      const previousRole = targetUser.role
-
-      if (previousRole === role) {
-        await createAuditLog({
-          userId: actorId,
-          action: 'PROMOTE_USER_ROLE',
-          resource: 'user',
-          resourceId: id,
-          metadata: {
-            outcome: 'noop',
-            actorId,
-            targetUserId: id,
-            previousRole,
-            newRole: role,
-          },
-        })
-
-        return res.status(200).json(targetUser)
-      }
-
-      const updatedUser = await updateUser(id, { role })
-
-      if (!updatedUser) {
-        await createAuditLog({
-          userId: actorId,
-          action: 'PROMOTE_USER_ROLE',
-          resource: 'user',
-          resourceId: id,
-          metadata: {
-            outcome: 'not_found',
-            actorId,
-            targetUserId: id,
-            previousRole,
-            newRole: role,
-          },
-        })
-
-        return res.status(404).json({
-          error: 'Not Found',
-          message: 'User not found',
-        })
-      }
-
-      await createAuditLog({
-        userId: actorId,
-        action: 'PROMOTE_USER_ROLE',
-        resource: 'user',
-        resourceId: id,
-        metadata: {
-          outcome: 'success',
+      if (promotion.outcome === 'not_found') {
+        await auditPromoteUserRole(actorId, id, {
+          outcome: 'not_found',
           actorId,
           targetUserId: id,
-          previousRole,
-          newRole: role,
-        },
+          previousRole: null,
+          newRole: promotion.newRole,
+        })
+
+        return res.status(404).json({
+          error: 'Not Found',
+          message: 'User not found',
+        })
+      }
+
+      if (promotion.outcome === 'already_business_admin') {
+        await auditPromoteUserRole(actorId, id, {
+          outcome: 'noop',
+          actorId,
+          targetUserId: id,
+          previousRole: promotion.previousRole,
+          newRole: promotion.newRole,
+        })
+
+        return res.status(200).json(promotion.user)
+      }
+
+      if (promotion.outcome === 'invalid_current_role') {
+        await auditPromoteUserRole(actorId, id, {
+          outcome: 'conflict',
+          actorId,
+          targetUserId: id,
+          previousRole: promotion.previousRole,
+          newRole: promotion.newRole,
+          reason: 'target user must currently have user role',
+        })
+
+        return res.status(409).json({
+          error: 'Conflict',
+          message: 'User cannot be promoted from current role',
+        })
+      }
+
+      await auditPromoteUserRole(actorId, id, {
+        outcome: 'success',
+        actorId,
+        targetUserId: id,
+        previousRole: promotion.previousRole,
+        newRole: promotion.newRole,
       })
 
-      return res.status(200).json(updatedUser)
+      return res.status(200).json(promotion.user)
     } catch (error: any) {
-      await createAuditLog({
-        userId: actorId,
-        action: 'PROMOTE_USER_ROLE',
-        resource: 'user',
-        resourceId: id,
-        metadata: {
-          outcome: 'error',
-          actorId,
-          targetUserId: id,
-          newRole: role,
-        },
+      await auditPromoteUserRole(actorId, id, {
+        outcome: 'error',
+        actorId,
+        targetUserId: id,
+        newRole: role,
       })
 
       return res.status(500).json({
