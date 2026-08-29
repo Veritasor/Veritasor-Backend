@@ -23,6 +23,14 @@ export interface UpdateUserData {
   role?: 'user' | 'admin' | 'business_admin'
 }
 
+export type UserRole = User['role']
+
+export type BusinessAdminPromotionResult =
+  | { outcome: 'promoted'; user: User; previousRole: 'user'; newRole: 'business_admin' }
+  | { outcome: 'already_business_admin'; user: User; previousRole: 'business_admin'; newRole: 'business_admin' }
+  | { outcome: 'invalid_current_role'; user: User; previousRole: Exclude<UserRole, 'user' | 'business_admin'>; newRole: 'business_admin' }
+  | { outcome: 'not_found'; user: null; previousRole: null; newRole: 'business_admin' }
+
 // In-memory user storage
 const users: Map<string, User> = new Map()
 const emailIndex: Map<string, string> = new Map() // email -> userId
@@ -141,6 +149,58 @@ export async function updateUser(
 
   const stored = saveUser(next)
   return cloneUser(stored)
+}
+
+/**
+ * Promote a regular user to business_admin with an expected-current-role guard.
+ *
+ * This direct admin promotion path intentionally supports only the documented
+ * business-tier transition. It is idempotent for retrying an already-completed
+ * promotion and refuses to overwrite admin or other future elevated roles.
+ */
+export async function promoteUserToBusinessAdmin(
+  userId: string,
+): Promise<BusinessAdminPromotionResult> {
+  const current = users.get(userId)
+  if (!current) {
+    return {
+      outcome: 'not_found',
+      user: null,
+      previousRole: null,
+      newRole: 'business_admin',
+    }
+  }
+
+  if (current.role === 'business_admin') {
+    return {
+      outcome: 'already_business_admin',
+      user: cloneUser(current),
+      previousRole: 'business_admin',
+      newRole: 'business_admin',
+    }
+  }
+
+  if (current.role !== 'user') {
+    return {
+      outcome: 'invalid_current_role',
+      user: cloneUser(current),
+      previousRole: current.role,
+      newRole: 'business_admin',
+    }
+  }
+
+  const stored = saveUser({
+    ...current,
+    role: 'business_admin',
+    updatedAt: new Date(),
+  })
+
+  return {
+    outcome: 'promoted',
+    user: cloneUser(stored),
+    previousRole: 'user',
+    newRole: 'business_admin',
+  }
 }
 
 /**
