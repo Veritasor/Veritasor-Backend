@@ -6,7 +6,7 @@ export type PaginationParams = {
 
 /**
  * Parse query params and return limit/offset for DB queries.
- * Accepts `{ page, limit }` from req.query and applies sane defaults and caps.
+ * Accepts `{page, limit}` from req.query and applies sane defaults and caps.
  */
 export function getPagination(query?: { page?: string | number; limit?: string | number }): PaginationParams {
   const rawPage = query?.page ?? 1
@@ -18,45 +18,3 @@ export function getPagination(query?: { page?: string | number; limit?: string |
 
   return { page, limit, offset }
 }
-
-/**
- * Format a paginated response payload.
- * Returns an object containing `data`, `total`, `page`, and `limit`.
- */
-export function formatPaginatedResponse<T>(data: T[], total: number, page: number, limit: number) {
-  return {
-    data,
-    total,
-    page,
-    limit,
-    totalPages: Math.max(1, Math.ceil(total / limit)),
-  }
-}
-
-export type CursorToken = {
-  value: string
-  id: string
-}
-
-export function encodeCursor(payload: CursorToken): string {
-  return Buffer.from(JSON.stringify(payload)).toString('base64')
-}
-
-export function decodeCursor(cursor?: string): CursorToken | null {
-  if (!cursor) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'))
-    if (parsed && typeof parsed.value === 'string' && typeof parsed.id === 'string') {
-      return { value: parsed.value, id: parsed.id }
-    }
-  } catch {
-    // ignore invalid cursor values
-  }
-
-  return null
-}
-
-export default { getPagination, formatPaginatedResponse }
