@@ -271,8 +271,9 @@ export async function handleRazorpayEvent(
     if (event.id) {
       webhookRetryExhaustedTotal.inc({ provider: 'razorpay' })
       const cause = error instanceof BackoffError ? error.cause : error
+      const attemptCount = error instanceof BackoffError ? error.attemptCount : 1
       try {
-        await saveDeadLetter('razorpay', event.id, event, cause)
+        await saveDeadLetter('razorpay', event.id, event, cause, attemptCount)
       } catch (dlqError) {
         logger.error(
           JSON.stringify({

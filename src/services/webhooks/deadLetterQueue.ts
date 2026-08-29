@@ -1,7 +1,7 @@
 import { db } from '../../db/client.js';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { KMSClient, EncryptCommand, DecryptCommand } from '@aws-sdk/client-kms';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { Logger } from '../../utils/logger';
 
 interface DLQEntry {
@@ -391,4 +391,53 @@ export class DeadLetterQueue {
     // This would push the entry back to the processing queue
     this.logger.info(`Requeued DLQ entry ${entry.id}`);
   }
+}
+
+/**
+ * Persist a failed webhook event to the dead-letter table.
+ *
+ * Captures the raw event id, a SHA-256 hash of the payload body, the error code
+ * and the attempt count so operators can later replay the event. Upserts on
+ * (provider, event_id) so a retried event increments `attempt_count` rather
+ * than creating a duplicate row.
+ */
+export async function saveDeadLetter(
+  provider: string,
+  eventId: string,
+  payload: unknown,
+  error: unknown,
+  attempts = 1,
+): Promise<void> {
+  const payloadHash = createHash('sha256')
+    .update(JSON.stringify(payload ?? {}))
+    .digest('hex');
+
+  const errorCode =
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof (error as { code?: unknown }).code === 'string'
+      ? (error as { code: string }).code
+      : error instanceof Error
+        ? error.name
+        : 'unknown';
+
+  await db('webhook_dead_letters')
+    .insert({
+      provider,
+      event_id: eventId,
+      payload_hash: payloadHash,
+      error_code: errorCode,
+      attempt_count: attempts,
+      integration: provider,
+    })
+    .onConflict(['provider', 'event_id'])
+    .merge({
+      provider,
+      payload_hash: payloadHash,
+      error_code: errorCode,
+      attempt_count: attempts,
+      integration: provider,
+      updated_at: new Date(),
+    });
 }
