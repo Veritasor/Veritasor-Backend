@@ -4,6 +4,9 @@ import { config } from "../../config/index.js";
 import {
   SorobanRetryBudgetExceededError,
   sorobanRetryBudget,
+  fullJitter,
+  getBackoffConfig,
+  type BackoffConfig,
 } from "./retry-budget.js";
 import { traceSorobanRpcAttempt } from "../../tracing.js";
 
@@ -364,28 +367,33 @@ function sleep(delayMs: number): Promise<void> {
 }
 
 /**
- * Full-jitter exponential backoff.
+ * Calculates exponential backoff delay with full jitter for retry attempts.
  *
- * Implements the "Full Jitter" algorithm from the AWS Exponential Backoff
- * blog post: delay = random(0, min(cap, base * 2^attempt)).
- * This completely avoids thundering-herd problems because every retrying
- * client picks a uniformly distributed delay within the window.
+ * Uses the full jitter algorithm to prevent thundering herd:
+ * each retrying client picks a uniformly random delay in [0, cap]
+ * where cap = min(retryMaxDelayMs, retryBaseDelayMs * 2^attempt).
  *
- * @param attemptNumber - 1-based retry attempt number
- * @param policy        - retry policy (base, cap)
- * @param random        - PRNG returning values in [0, 1)
+ * This delegates to the fullJitter() function from retry-budget.ts
+ * which implements the AWS Exponential Backoff algorithm.
+ *
+ * @param attemptNumber - 1-based retry attempt number (1 = first retry)
+ * @param policy - retry policy containing base and max delays
+ * @param random - PRNG returning values in [0, 1) for testability
+ * @returns Delay in milliseconds before the next retry
  */
 function calculateRetryDelay(
   attemptNumber: number,
   policy: SorobanRetryPolicy,
   random: RandomFn,
 ): number {
-  const temp = Math.min(
+  // Convert from 1-based attempt to 0-based for fullJitter
+  const zeroBasedAttempt = attemptNumber - 1;
+  return fullJitter(
+    zeroBasedAttempt,
+    policy.retryBaseDelayMs,
     policy.retryMaxDelayMs,
-    policy.retryBaseDelayMs * 2 ** attemptNumber,
+    random,
   );
-  const delay = Math.round(random() * temp);
-  return Math.max(MIN_DELAY_MS, delay);
 }
 
 function isAbortError(error: unknown): boolean {
