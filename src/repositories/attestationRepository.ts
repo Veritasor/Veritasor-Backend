@@ -626,6 +626,36 @@ export async function remove(
 }
 
 /**
+ * Retrieves an attestation by its Merkle root hash.
+ *
+ * Used by the public attestation lookup endpoint so that callers can resolve
+ * an attestation by the hash embedded in issued credentials or widgets, without
+ * needing to know the internal UUID.
+ *
+ * Index used: merkle_root is not independently indexed today; the query falls
+ * back to a sequential scan on a low-cardinality column — acceptable for public
+ * read traffic since responses are CDN-cached and rate-limited at the edge.
+ *
+ * @param client     - Database client for executing queries
+ * @param merkleRoot - The Merkle root hash to look up
+ * @returns Promise resolving to the Attestation record or null if not found
+ */
+export async function getByMerkleRoot(
+  client: DbClient,
+  merkleRoot: string
+): Promise<Attestation | null> {
+  const sql = `SELECT * FROM attestations WHERE merkle_root = $1 LIMIT 1`;
+
+  await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
+  const t0 = Date.now();
+  const result = await client.query<AttestationRow>(sql, [merkleRoot]);
+  warnIfSlow('getByMerkleRoot', Date.now() - t0, result.rows.length, { merkleRoot });
+
+  if (result.rows.length === 0) return null;
+  return mapRowToAttestation(result.rows[0]);
+}
+
+/**
  * Lists all attestations (admin only)
  */
 export async function listAll(client: DbClient): Promise<Attestation[]> {
