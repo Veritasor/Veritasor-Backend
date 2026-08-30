@@ -27,6 +27,7 @@
     "pact:can-i-deploy": "tsx scripts/can-i-deploy.ts",
     "pact:test": "vitest run tests/pact/",
     "pact:publish": "tsx scripts/publish-pact.ts",
+    "soak": "tsx scripts/soak-attestations.ts",
     "notices:generate": "tsx scripts/generate-notices.ts --output docs/legal/NOTICES.md",
     "notices:check": "tsx scripts/generate-notices.ts --check --output docs/legal/NOTICES.md"
   },
@@ -80,6 +81,7 @@
     "@pact-foundation/pact": "^13.2.0",
     "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
+    "@types/autocannon": "^7.12.7",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/helmet": "^0.0.48",
@@ -92,6 +94,7 @@
     "@types/tar-stream": "^3.1.4",
     "@types/ws": "8.5.13",
     "@vitest/coverage-v8": "^4.1.10",
+    "autocannon": "^8.0.0",
     "eslint": "^9.15.0",
     "fast-check": "^4.6.0",
     "helmet": "^8.3.0",
