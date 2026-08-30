@@ -100,6 +100,44 @@ Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to
 
 Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.
 
+## Health Checks & Container Probes
+
+`src/routes/health.ts` exposes three endpoints so orchestrators can distinguish "the process is alive" from "the process can serve traffic":
+
+| Endpoint | Purpose | Checks | Status codes |
+|---|---|---|---|
+| `GET /api/health/live` | Liveness | None — process-only, never touches the DB, Redis, or Soroban | Always `200` while the HTTP server can respond |
+| `GET /api/health/ready` | Readiness | Database (`checkDatabase()` in `src/startup/readiness.ts`), when `DATABASE_URL` is set | `200` when ready, `503` when the dependency is down |
+| `GET /api/health` | Legacy combined check (kept for backward compatibility) | DB + Redis, plus Soroban + Email when called with `?mode=deep` | `200` (`ok`/`degraded`) or `503` (`unhealthy`, deep mode only) |
+
+**Why the split matters:** liveness answers "should the orchestrator restart this container?" and must never fail because of a slow or unavailable dependency — otherwise a database blip triggers unnecessary restarts instead of the orchestrator simply holding traffic back via readiness. `/api/health/ready` reuses the same bounded `checkDatabase()` probe as startup so the running-instance check and the boot-time check can't drift apart. `/api/health` is unchanged and continues to serve existing callers (load balancers, uptime monitors) that expect the combined shape with `mode`, `db`, `redis`, and `dependencies`.
+
+### Kubernetes probe configuration
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /api/health/live
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/health/ready
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+```
+
+Point `livenessProbe` at `/api/health/live` only — pointing it at `/api/health` or `/api/health/ready` risks a restart loop when a dependency (not the process) is unhealthy. `readinessProbe` should use `/api/health/ready` so the pod is pulled out of the load-balancer rotation during a dependency outage without being killed.
+
+The Docker image's `HEALTHCHECK` (see [Dockerfile](Dockerfile)) also targets `/api/health/live` for the same reason.
+
 ## Attestation Reminders
 
 The `attestationReminderJob` (`src/jobs/attestationReminder.ts`) sends attestation reminders aligned to each business's reporting calendar rather than on a fixed interval.
@@ -269,6 +307,8 @@ Routes may be mounted with an `/api/v{n}` prefix and/or legacy unversioned paths
 | Method | Path                      | Description              | Auth Required |
 |--------|---------------------------|--------------------------|---------------|
 | GET    | `/api/v1/health`          | Health check             | No |
+| GET    | `/api/health/live`        | Liveness probe (process-only) | No |
+| GET    | `/api/health/ready`       | Readiness probe (dependency checks) | No |
 | GET    | `/api/v1/attestations`    | List attestations (stub) | User Auth |
 | POST   | `/api/v1/attestations`    | Submit attestation (stub)| User Auth |
 | GET    | `/api/v1/businesses/me`   | Get user business        | User Auth |

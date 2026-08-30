@@ -17,7 +17,7 @@
  *   - All decisions are emitted as structured log entries for observability.
  */
 
-import { pool } from "../db/client.js"
+import { db } from "../db/client.js"
 import { logger } from "../utils/logger.js"
 
 // ---------------------------------------------------------------------------
@@ -155,16 +155,19 @@ function checkMtlsConfig(_isProduction: boolean): DependencyReadinessResult {
         reason: "SPIFFE_TRUST_DOMAIN must be set when MTLS_SPIFFE_ENABLED=true",
       };
     }
+  }
 
-    const ocspEnabled = process.env.MTLS_OCSP_ENABLED?.trim().toLowerCase() === "true"
-    const crlPath = process.env.MTLS_CRL_PATH?.trim()
+  // OCSP/CRL fallback revocation checking applies to mTLS generally, not just
+  // the SPIFFE workload-identity path, so this must run outside the
+  // spiffeEnabled branch above.
+  const ocspEnabled = process.env.MTLS_OCSP_ENABLED?.trim().toLowerCase() === "true"
+  const crlPath = process.env.MTLS_CRL_PATH?.trim()
 
-    if (ocspEnabled && !crlPath) {
-      return {
-        dependency: "config/mtls",
-        ready: false,
-        reason: "MTLS_CRL_PATH must be set when MTLS_OCSP_ENABLED=true",
-      }
+  if (ocspEnabled && !crlPath) {
+    return {
+      dependency: "config/mtls",
+      ready: false,
+      reason: "MTLS_CRL_PATH must be set when MTLS_OCSP_ENABLED=true",
     }
   }
 
@@ -234,16 +237,17 @@ function checkStripeConfig(isProduction: boolean): DependencyReadinessResult {
 }
 
 /**
- * Probe database connectivity using the shared pool with a bounded SELECT 1 query.
+ * Probe database connectivity using the shared db client with a bounded SELECT 1 query.
  *
- * Uses the shared pool from client.ts rather than opening a one-off connection,
- * so the probe exercises the same connection path as normal request handling.
+ * Uses the shared `db` singleton from client.ts rather than opening a one-off
+ * connection, so the probe exercises the same connection path as normal
+ * request handling.
  *
  * Returns an explicit failure reason without leaking credentials.
  */
 export async function checkDatabase(): Promise<DependencyReadinessResult> {
   try {
-    await withTimeout(pool.query("SELECT 1"), STARTUP_CHECK_TIMEOUT_MS)
+    await withTimeout(db.query("SELECT 1"), STARTUP_CHECK_TIMEOUT_MS)
     return { dependency: "database", ready: true }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
