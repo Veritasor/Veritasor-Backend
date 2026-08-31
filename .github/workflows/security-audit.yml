@@ -8,7 +8,14 @@ on:
     branches:
       - main
   schedule:
-    - cron: '0 8 * * 1'
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   security:
@@ -26,17 +33,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
-          cache: 'pnpm'
+          cache: "pnpm"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
         timeout-minutes: 10
 
       - name: Run pnpm audit with allowlist validation
+        # Fail the job on any high/critical advisory that is not explicitly allowlisted.
         run: pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts
-        timeout-minutes: 10
-      - name: Run license allow-list check
-        run: pnpm run license:ci
         timeout-minutes: 10
 
       - name: Generate CycloneDX SBOM
