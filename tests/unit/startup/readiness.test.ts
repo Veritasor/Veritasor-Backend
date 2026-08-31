@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock the pool so checkDatabase never touches a real DB
+// Mock the shared db client so checkDatabase never touches a real DB
 const mockQuery = vi.fn();
 vi.mock("../../../src/db/client.js", () => ({
-  pool: { query: mockQuery },
+  db: { query: mockQuery },
 }));
 
 // Import after mocks are set up

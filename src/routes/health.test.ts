@@ -25,20 +25,21 @@ function buildApp() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Stub the pg Client so DB checks don't need a real database. */
-function mockPgClient(behaviour: "ok" | "down" | "timeout") {
-  return vi.mock("pg", () => {
-    const Client = vi.fn().mockImplementation(() => ({
-      connect: vi.fn().mockImplementation(() => {
-        if (behaviour === "down") return Promise.reject(new Error("ECONNREFUSED"));
-        if (behaviour === "timeout") return new Promise(() => {}); // never resolves
-        return Promise.resolve();
-      }),
-      query: vi.fn().mockResolvedValue({ rows: [{ "?column?": 1 }] }),
-      end: vi.fn().mockResolvedValue(undefined),
-    }));
-    return { default: { Client } };
-  });
+/**
+ * Stub the shared db client so DB checks don't need a real database.
+ * `checkDatabase()` (src/startup/readiness.ts) queries via `db` from
+ * `../db/client.js`, so that is the boundary to mock here rather than `pg`
+ * directly — `db` wraps a `pg.Pool`, not a `pg.Client`.
+ */
+function mockDbClient(behaviour: "ok" | "down") {
+  vi.doMock("../db/client.js", () => ({
+    db: {
+      query:
+        behaviour === "ok"
+          ? vi.fn().mockResolvedValue({ rows: [{ "?column?": 1 }] })
+          : vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+    },
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -106,14 +107,7 @@ describe("GET /api/health/ready", () => {
 
   it("returns 200 and db:ok when DB is reachable", async () => {
     // Mock pg to simulate a healthy DB
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockResolvedValue(undefined),
-        query: vi.fn().mockResolvedValue({ rows: [] }),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("ok");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -126,14 +120,7 @@ describe("GET /api/health/ready", () => {
   });
 
   it("returns 503 and db:down when DB is unreachable", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-        query: vi.fn(),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("down");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -183,14 +170,7 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 with db:ok when DB is healthy (shallow mode)", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockResolvedValue(undefined),
-        query: vi.fn().mockResolvedValue({ rows: [] }),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("ok");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -203,14 +183,7 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 with status degraded when DB is down (shallow mode)", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-        query: vi.fn(),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("down");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -234,14 +207,7 @@ describe("GET /api/health", () => {
   });
 
   it("returns 503 in deep mode when DB is down", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-        query: vi.fn(),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("down");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
