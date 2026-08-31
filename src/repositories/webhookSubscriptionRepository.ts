@@ -6,6 +6,12 @@ import type {
   ListWebhookSubscriptionsQuery,
 } from "../schemas/webhookSubscription.js";
 
+export interface WebhookMTLSConfig {
+  clientCertSecretId: string;
+  clientKeySecretId: string;
+  caPinSecretId: string;
+}
+
 export interface WebhookSubscription {
   id: string;
   businessId: string;
@@ -15,6 +21,7 @@ export interface WebhookSubscription {
   enabled: boolean;
   maxPayloadSize: number | null;
   secretVersion: number;
+  mtlsConfig: WebhookMTLSConfig | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +36,7 @@ function mapRow(row: Record<string, unknown>): WebhookSubscription {
     enabled: (row.enabled as boolean) ?? true,
     maxPayloadSize: (row.max_payload_size as number) ?? null,
     secretVersion: (row.secret_version as number) ?? 1,
+    mtlsConfig: (row.mtls_config as WebhookMTLSConfig) ?? null,
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
   };
@@ -44,8 +52,8 @@ export async function create(
   const eventFilters = input.eventFilters ?? {};
   const result = await db.query(
     `INSERT INTO webhook_subscriptions
-       (business_id, url, secret, event_filters, enabled, max_payload_size)
-     VALUES ($1, $2, $3, $4, $5, $6)
+       (business_id, url, secret, event_filters, enabled, max_payload_size, mtls_config)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
     [
       businessId,
@@ -54,6 +62,7 @@ export async function create(
       JSON.stringify(eventFilters),
       input.enabled ?? true,
       input.maxPayloadSize ?? null,
+      input.mtlsConfig ? JSON.stringify(input.mtlsConfig) : null,
     ],
   );
   return mapRow(result.rows[0] as Record<string, unknown>);
@@ -136,7 +145,7 @@ export async function update(
   input: UpdateWebhookSubscriptionInput,
 ): Promise<WebhookSubscription | null> {
   const fields: string[] = [];
-  const values: (string | boolean | number)[] = [];
+  const values: (string | boolean | number | null)[] = [];
   let placeholderIndex = 1;
   let secretChanged = false;
 
@@ -160,6 +169,10 @@ export async function update(
   if (input.maxPayloadSize !== undefined) {
     fields.push(`max_payload_size = $${placeholderIndex++}`);
     values.push(input.maxPayloadSize);
+  }
+  if (input.mtlsConfig !== undefined) {
+    fields.push(`mtls_config = $${placeholderIndex++}`);
+    values.push(input.mtlsConfig ? JSON.stringify(input.mtlsConfig) : null);
   }
 
   // Auto-increment secret version on secret rotation

@@ -1,4 +1,6 @@
 import crypto from "crypto";
+import * as https from "https";
+import { secretLoader } from "../../utils/secret-loader.js";
 import { staleWebhookDeliveries } from "../../metrics.js";
 import { createAuditLog } from "../../repositories/auditLogRepository.js";
 import { createDeliveryReceipt } from "../../repositories/deliveryReceiptRepository.js";
@@ -12,6 +14,12 @@ export class WebhookPayloadTooLargeError extends Error {
   }
 }
 
+export interface WebhookMTLSConfig {
+  clientCertSecretId: string;
+  clientKeySecretId: string;
+  caPinSecretId: string;
+}
+
 export interface WebhookSubscription {
   id: string;
   businessId: string;
@@ -22,6 +30,7 @@ export interface WebhookSubscription {
   secretVersion?: number;
   /** Per-event filter DSL. Maps event types to boolean or filter objects. */
   eventFilters?: Record<string, boolean | Record<string, string>>;
+  mtlsConfig?: WebhookMTLSConfig | null;
 }
 
 export interface WebhookDeliveryReceipt {
@@ -41,7 +50,7 @@ export function signAndPrepareDelivery(
 ): { headers: Record<string, string>; receipt: WebhookDeliveryReceipt } {
   const serializedPayload = JSON.stringify(payload);
   
-  if (subscription.maxPayloadSize !== undefined) {
+  if (subscription.maxPayloadSize !== undefined && subscription.maxPayloadSize !== null) {
     const payloadSize = Buffer.byteLength(serializedPayload, 'utf8');
     if (payloadSize > subscription.maxPayloadSize) {
       createAuditLog({
@@ -255,6 +264,44 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
 
   const url = subscription.url;
   const serializedPayload = JSON.stringify(payload);
+  
+  let agent: https.Agent | undefined;
+
+  if (subscription.mtlsConfig) {
+    const [clientCert, clientKey, caPin] = await Promise.all([
+      secretLoader.get(subscription.mtlsConfig.clientCertSecretId),
+      secretLoader.get(subscription.mtlsConfig.clientKeySecretId),
+      secretLoader.get(subscription.mtlsConfig.caPinSecretId),
+    ]);
+
+    const cert = new crypto.X509Certificate(clientCert);
+    const now = new Date();
+    const validTo = new Date(cert.validTo);
+
+    if (now > validTo) {
+      createAuditLog({
+        userId: subscription.businessId,
+        action: 'webhook_delivery_rejected',
+        resource: 'webhook_subscription',
+        resourceId: subscription.id,
+        metadata: {
+          reason: 'MTLS_CERT_EXPIRED',
+          validTo: validTo.toISOString(),
+        }
+      }).catch(err => console.error('Failed to write audit log', err));
+
+      throw new Error(`Client certificate for subscription ${subscription.id} expired on ${validTo.toISOString()}`);
+    }
+
+    agent = new https.Agent({
+      cert: clientCert,
+      key: clientKey,
+      ca: caPin,
+      rejectUnauthorized: true,
+      keepAlive: true,
+    });
+  }
+
   const startedAt = Date.now();
 
   let statusCode = 0;
@@ -268,14 +315,16 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
         "Content-Type": "application/json",
       },
       body: serializedPayload,
+      agent,
     });
 
     statusCode = response.status;
 
     const text = await response.text();
     responseBody = text.length > 2048 ? text.slice(0, 2048) : text;
-  } catch {
+  } catch (error) {
     statusCode = 0;
+    responseBody = error instanceof Error ? error.message : "Unknown networking error";
   }
 
   const latencyMs = Date.now() - startedAt;

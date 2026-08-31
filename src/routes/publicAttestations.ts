@@ -5,12 +5,18 @@ import * as attestationRepository from '../repositories/attestationRepository.js
 import { db } from '../db/client.js';
 import { AppError, VRTErrorCodes } from '../types/errors.js';
 import { asyncErrorHandler } from '../middleware/errorHandler.js';
+import { CACHE_POLICIES, formatCacheControl } from '../utils/cachePolicy.js';
+import { etagHitsTotal } from '../metrics.js';
+import { optionalAuth } from '../middleware/optionalAuth.js';
+import { publicGraphqlYoga } from '../graphql/publicAttestationSchema.js';
 
 const STALE_WHILE_REVALIDATE = Number(process.env.PUBLIC_CDN_STALE_WHILE_REVALIDATE) || 60;
 
 const hashParamSchema = z.string().min(1).max(512);
 
 export const publicAttestationsRouter = Router();
+
+publicAttestationsRouter.use('/graphql', optionalAuth, publicGraphqlYoga);
 
 const activePolicy = CACHE_POLICIES.find(
   (p) => p.name === 'public-attestations-active',

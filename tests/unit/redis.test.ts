@@ -40,6 +40,9 @@ describe("getRedisClient", () => {
     delete process.env.REDIS_URL;
     delete process.env.REDIS_CLUSTER_NODES;
     delete process.env.REDIS_TLS;
+    delete process.env.REDIS_MODE;
+    delete process.env.REDIS_SENTINELS;
+    delete process.env.REDIS_SENTINEL_NAME;
     vi.clearAllMocks();
   });
 
@@ -47,6 +50,9 @@ describe("getRedisClient", () => {
     resetRedisClient();
     delete process.env.REDIS_URL;
     delete process.env.REDIS_CLUSTER_NODES;
+    delete process.env.REDIS_MODE;
+    delete process.env.REDIS_SENTINELS;
+    delete process.env.REDIS_SENTINEL_NAME;
   });
 
   it("throws when no Redis env vars are set", () => {
@@ -79,6 +85,23 @@ describe("getRedisClient", () => {
     const a = getRedisClient();
     const b = getRedisClient();
     expect(a).toBe(b);
+  });
+
+  describe("Sentinel Mode", () => {
+    it("throws when REDIS_MODE is sentinel but REDIS_SENTINELS is not set", () => {
+      process.env.REDIS_MODE = "sentinel";
+      expect(() => getRedisClient()).toThrow(/REDIS_MODE is sentinel but REDIS_SENTINELS is not set/);
+    });
+
+    it("returns a Redis instance configured for Sentinel when REDIS_MODE is sentinel", () => {
+      process.env.REDIS_MODE = "sentinel";
+      process.env.REDIS_SENTINELS = "127.0.0.1:26379,127.0.0.1:26380";
+      process.env.REDIS_SENTINEL_NAME = "mymaster";
+      
+      const client = getRedisClient();
+      expect(typeof client.ping).toBe("function");
+      expect(typeof client.on).toBe("function");
+    });
   });
 });
 

@@ -4,13 +4,13 @@
  */
 
 export type MonthlyRevenue = {
-	period: string;
-	amount: number;
+  period: string;
+  amount: number;
 };
 
 /** Helper to create monthly revenue entries */
 function makePeriod(period: string, amount: number): MonthlyRevenue {
-	return { period, amount };
+  return { period, amount };
 }
 
 /**
@@ -19,18 +19,18 @@ function makePeriod(period: string, amount: number): MonthlyRevenue {
  * Expected: flag: "ok", score: 0
  */
 export const cleanBaseline: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 10_000),
-	makePeriod("2025-03", 10_000),
-	makePeriod("2025-04", 10_000),
-	makePeriod("2025-05", 10_000),
-	makePeriod("2025-06", 10_000),
-	makePeriod("2025-07", 10_000),
-	makePeriod("2025-08", 10_000),
-	makePeriod("2025-09", 10_000),
-	makePeriod("2025-10", 10_000),
-	makePeriod("2025-11", 10_000),
-	makePeriod("2025-12", 10_000),
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 10_000),
+  makePeriod("2025-03", 10_000),
+  makePeriod("2025-04", 10_000),
+  makePeriod("2025-05", 10_000),
+  makePeriod("2025-06", 10_000),
+  makePeriod("2025-07", 10_000),
+  makePeriod("2025-08", 10_000),
+  makePeriod("2025-09", 10_000),
+  makePeriod("2025-10", 10_000),
+  makePeriod("2025-11", 10_000),
+  makePeriod("2025-12", 10_000),
 ];
 
 /**
@@ -40,16 +40,16 @@ export const cleanBaseline: MonthlyRevenue[] = [
  * Analysis: Baseline ~$10,000, spike to -$50,000 = >40% drop
  */
 export const refundSpike: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 10_500),
-	makePeriod("2025-03", 9_800),
-	makePeriod("2025-04", 10_200),
-	makePeriod("2025-05", 10_100),
-	makePeriod("2025-06", 9_900),
-	makePeriod("2025-07", 10_300),
-	makePeriod("2025-08", 10_000),
-	makePeriod("2025-09", 10_150),
-	makePeriod("2025-10", -45_000), // Large negative = refund spike
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 10_500),
+  makePeriod("2025-03", 9_800),
+  makePeriod("2025-04", 10_200),
+  makePeriod("2025-05", 10_100),
+  makePeriod("2025-06", 9_900),
+  makePeriod("2025-07", 10_300),
+  makePeriod("2025-08", 10_000),
+  makePeriod("2025-09", 10_150),
+  makePeriod("2025-10", -45_000), // Large negative = refund spike
 ];
 
 /**
@@ -59,11 +59,11 @@ export const refundSpike: MonthlyRevenue[] = [
  * (Currency changes don't affect anomaly detection directly)
  */
 export const currencySwap: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 10_500),
-	makePeriod("2025-03", 9_200),
-	makePeriod("2025-04", 11_000),
-	makePeriod("2025-05", 10_800),
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 10_500),
+  makePeriod("2025-03", 9_200),
+  makePeriod("2025-04", 11_000),
+  makePeriod("2025-05", 10_800),
 ];
 
 /**
@@ -73,11 +73,11 @@ export const currencySwap: MonthlyRevenue[] = [
  * Each month ~$500 decline = 5% change, below 40% threshold
  */
 export const gradualDrift: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 9_500),
-	makePeriod("2025-03", 9_000),
-	makePeriod("2025-04", 8_500),
-	makePeriod("2025-05", 8_000),
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 9_500),
+  makePeriod("2025-03", 9_000),
+  makePeriod("2025-04", 8_500),
+  makePeriod("2025-05", 8_000),
 ];
 
 /**
@@ -86,10 +86,10 @@ export const gradualDrift: MonthlyRevenue[] = [
  * Expected: flag: "ok", score: ~0.39
  */
 export const refundSpikeUnderThreshold: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 6_100), // -39% drop, just under threshold
-	makePeriod("2025-03", 10_000),
-	makePeriod("2025-04", 9_800),
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 6_100), // -39% drop, just under threshold
+  makePeriod("2025-03", 10_000),
+  makePeriod("2025-04", 9_800),
 ];
 
 /**
@@ -97,9 +97,7 @@ export const refundSpikeUnderThreshold: MonthlyRevenue[] = [
  * Only one data point — MUST RETURN insufficient_data
  * Expected: flag: "insufficient_data", score: 0
  */
-export const sparseData: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-];
+export const sparseData: MonthlyRevenue[] = [makePeriod("2025-01", 10_000)];
 
 /**
  * Fixture 7: All-Zero Batch
@@ -107,11 +105,11 @@ export const sparseData: MonthlyRevenue[] = [
  * Expected: flag: "ok"
  */
 export const allZeroBatch: MonthlyRevenue[] = [
-	makePeriod("2025-01", 0),
-	makePeriod("2025-02", 0),
-	makePeriod("2025-03", 0),
-	makePeriod("2025-04", 0),
-	makePeriod("2025-05", 0),
+  makePeriod("2025-01", 0),
+  makePeriod("2025-02", 0),
+  makePeriod("2025-03", 0),
+  makePeriod("2025-04", 0),
+  makePeriod("2025-05", 0),
 ];
 
 /**
@@ -119,8 +117,8 @@ export const allZeroBatch: MonthlyRevenue[] = [
  * Expected: flag: "unusual_spike"
  */
 export const sharpSpike: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 40_000), // +300% spike = threshold boundary
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 40_000), // +300% spike = threshold boundary
 ];
 
 /**
@@ -129,8 +127,8 @@ export const sharpSpike: MonthlyRevenue[] = [
  * Expected: flag: "ok"
  */
 export const spikeUnderThreshold: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 39_000), // +290% spike, just under threshold
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 39_000), // +290% spike, just under threshold
 ];
 
 /**
@@ -139,11 +137,11 @@ export const spikeUnderThreshold: MonthlyRevenue[] = [
  * Expected: flag: "unusual_drop"
  */
 export const sustainedDrop: MonthlyRevenue[] = [
-	makePeriod("2025-01", 10_000),
-	makePeriod("2025-02", 10_000),
-	makePeriod("2025-03", 10_000),
-	makePeriod("2025-04", 4_000), // -60% vs rolling avg = flagged
-	makePeriod("2025-05", 3_800),
+  makePeriod("2025-01", 10_000),
+  makePeriod("2025-02", 10_000),
+  makePeriod("2025-03", 10_000),
+  makePeriod("2025-04", 4_000), // -60% vs rolling avg = flagged
+  makePeriod("2025-05", 3_800),
 ];
 
 /**
@@ -151,9 +149,18 @@ export const sustainedDrop: MonthlyRevenue[] = [
  * Changes to these values require fixture review.
  */
 export const THRESHOLD_SNAPSHOT = {
-	DROP_THRESHOLD: 0.4,
-	SPIKE_THRESHOLD: 3.0,
-	MIN_DATA_POINTS: 2,
-	DEFAULT_SIGMA_MULTIPLIER: 2,
-	DEFAULT_ROLLING_WINDOW: 3,
+  DROP_THRESHOLD: 0.4,
+  SPIKE_THRESHOLD: 3.0,
+  MIN_DATA_POINTS: 2,
+  DEFAULT_SIGMA_MULTIPLIER: 2,
+  DEFAULT_ROLLING_WINDOW: 3,
+} as const;
+
+/**
+ * Human-readable contract marker for the fixture revision.
+ * Helps reviewers spot threshold-tuning regressions at a glance.
+ */
+export const ANOMALY_FIXTURE_CONTRACT = {
+  version: "2026-08-29",
+  thresholds: THRESHOLD_SNAPSHOT,
 } as const;

@@ -51,10 +51,30 @@ function parseClusterNodes(raw: string): { host: string; port: number }[] {
 export function getRedisClient(): RedisClient {
   if (_client) return _client;
 
+  const mode = process.env.REDIS_MODE;
   const clusterNodes = process.env.REDIS_CLUSTER_NODES;
   const redisUrl = process.env.REDIS_URL;
 
-  if (clusterNodes) {
+  if (mode === "sentinel") {
+    const sentinels = process.env.REDIS_SENTINELS;
+    if (!sentinels) {
+      throw new Error("No Redis configuration: REDIS_MODE is sentinel but REDIS_SENTINELS is not set");
+    }
+    const nodes = parseClusterNodes(sentinels);
+    const sentinelName = process.env.REDIS_SENTINEL_NAME || "mymaster";
+    const RedisConstructor = IORedis as unknown as new (opts: object) => Redis;
+    
+    _client = new RedisConstructor({
+      sentinels: nodes,
+      name: sentinelName,
+      password: process.env.REDIS_PASSWORD,
+      sentinelPassword: process.env.REDIS_SENTINEL_PASSWORD,
+      tls: process.env.REDIS_TLS === "true" ? {} : undefined,
+      enableReadyCheck: true,
+      retryStrategy: (times: number) => Math.min(times * 100, 2000),
+      maxRetriesPerRequest: 3,
+    });
+  } else if (clusterNodes) {
     const nodes = parseClusterNodes(clusterNodes);
     _client = new Cluster(nodes, {
       redisOptions: { tls: process.env.REDIS_TLS === "true" ? {} : undefined },
@@ -86,10 +106,32 @@ export function getRedisClient(): RedisClient {
 export function getReadonlyRedisClient(): RedisClient {
   if (_readonlyClient) return _readonlyClient;
 
+  const mode = process.env.REDIS_MODE;
   const clusterNodes = process.env.REDIS_CLUSTER_NODES;
   const redisUrl = process.env.REDIS_URL;
 
-  if (clusterNodes) {
+  if (mode === "sentinel") {
+    const sentinels = process.env.REDIS_SENTINELS;
+    if (!sentinels) {
+      throw new Error("No Redis configuration: REDIS_MODE is sentinel but REDIS_SENTINELS is not set");
+    }
+    const nodes = parseClusterNodes(sentinels);
+    const sentinelName = process.env.REDIS_SENTINEL_NAME || "mymaster";
+    const RedisConstructor = IORedis as unknown as new (opts: object) => Redis;
+    
+    _readonlyClient = new RedisConstructor({
+      sentinels: nodes,
+      name: sentinelName,
+      password: process.env.REDIS_PASSWORD,
+      sentinelPassword: process.env.REDIS_SENTINEL_PASSWORD,
+      tls: process.env.REDIS_TLS === "true" ? {} : undefined,
+      enableReadyCheck: true,
+      retryStrategy: (times: number) => Math.min(times * 100, 2000),
+      maxRetriesPerRequest: 3,
+      role: "slave",
+    });
+    (_readonlyClient as RedisClient).on("error", (err: Error) => logger.error("[redis] readonly client error", err));
+  } else if (clusterNodes) {
     const nodes = parseClusterNodes(clusterNodes);
     _readonlyClient = new Cluster(nodes, {
       redisOptions: { tls: process.env.REDIS_TLS === "true" ? {} : undefined },

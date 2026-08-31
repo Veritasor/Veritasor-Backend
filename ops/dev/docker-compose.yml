@@ -1,0 +1,85 @@
+version: '3.8'
+
+# ── Developer Onboarding Stack ─────────────────────────────────────────────
+#
+# Provisions Postgres 15, Redis 7, and a mock Soroban RPC with pre-seeded
+# baseline data so new engineers can start coding immediately.
+#
+# Quickstart:
+#   docker compose -f ops/dev/docker-compose.yml up -d
+#   cp .env.example .env
+#   npm install && npm run migrate && npm run dev
+#
+# Teardown:
+#   docker compose -f ops/dev/docker-compose.yml down -v
+#
+# Services:
+#   postgres (5432)  – veritasor database, migrations + seed on first boot
+#   redis    (6379)  – caching, rate limiting, idempotency, sessions
+#   soroban  (8000)  – mock Soroban RPC for local attestation workflows
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: veritasor-postgres
+    environment:
+      POSTGRES_USER: veritasor
+      POSTGRES_PASSWORD: veritasor_dev
+      POSTGRES_DB: veritasor
+    ports:
+      - "5432:5432"
+    volumes:
+      # Seed baseline data on first boot (tables are created by init.sql)
+      - ./init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veritasor -d veritasor"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 8s
+    # Optimize for local development: shorter timeouts, verbose logging
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c log_min_duration_statement=0
+      -c log_statement=mod
+
+  redis:
+    image: redis:7-alpine
+    container_name: veritasor-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+
+  soroban:
+    build:
+      context: ./mock-soroban
+      dockerfile: Dockerfile
+    container_name: veritasor-soroban
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+    environment:
+      NODE_ENV: development
+      PORT: "8000"
+
+volumes:
+  pgdata:
+    name: veritasor_pgdata
+  redisdata:
+    name: veritasor_redisdata

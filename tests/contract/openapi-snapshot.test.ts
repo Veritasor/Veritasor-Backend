@@ -17,14 +17,12 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app } from "../../src/app.js";
-import { generateRouteMap } from "../../src/utils/routeMap.js";
-import { generateOpenApiSpec } from "../../src/utils/openapi.js";
+import { getOpenApiSpec } from "../../scripts/generate-openapi.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const SNAPSHOT_PATH = resolve(__dirname, "../../docs/openapi.json");
+const SNAPSHOT_PATH = resolve(__dirname, "../../docs/openapi/openapi.json");
 
 /** Load the committed snapshot from disk. */
 function loadSnapshot(): unknown {
@@ -106,8 +104,7 @@ function findDifferences(
 describe("OpenAPI spec snapshot contract", () => {
   it("generated spec matches the committed snapshot", () => {
     // Regenerate in-memory
-    const routes = generateRouteMap(app);
-    const generated = generateOpenApiSpec(routes);
+    const generated = getOpenApiSpec();
 
     // Load committed snapshot
     const snapshot = loadSnapshot();
@@ -135,8 +132,7 @@ describe("OpenAPI spec snapshot contract", () => {
   });
 
   it("generated spec is valid JSON and has the expected envelope", () => {
-    const routes = generateRouteMap(app);
-    const spec = generateOpenApiSpec(routes);
+    const spec = getOpenApiSpec();
 
     expect(spec).toHaveProperty("openapi", "3.1.0");
     expect(spec).toHaveProperty("info.title", "Veritasor Backend API");
@@ -147,9 +143,9 @@ describe("OpenAPI spec snapshot contract", () => {
     expect(Object.keys((spec as { paths: Record<string, unknown> }).paths).length).toBeGreaterThan(0);
   });
 
-  it("routes produce the same number of path entries each run (determinism)", () => {
-    const routesA = generateRouteMap(app);
-    const routesB = generateRouteMap(app);
-    expect(routesA).toEqual(routesB);
+  it("spec generation is deterministic", () => {
+    const specA = getOpenApiSpec();
+    const specB = getOpenApiSpec();
+    expect(specA).toEqual(specB);
   });
 });

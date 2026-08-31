@@ -202,6 +202,11 @@ export function getAllowedOrigins(): string | string[] {
   return "*";
 }
 
+function parseCsvList(rawValue: string | undefined): string[] {
+  if (!rawValue) return [];
+  return rawValue.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
   const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
   const spiffeEnabled = parseBooleanEnv(

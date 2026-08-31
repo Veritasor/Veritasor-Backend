@@ -13,11 +13,13 @@
 
 The business service implements comprehensive input validation and normalization using Zod schemas and custom normalization utilities. This ensures data quality, security, and consistency across the business domain.
 
+---
+
 ## Architecture
 
-The business service follows a layered approach:
+The business service follows a layered approach to ensure all data is validated and cleaned before reaching the database:
 
-```
+```text
 HTTP Request
     ↓
 validateBody Middleware (Zod schema validation)
@@ -29,11 +31,13 @@ Repository (Database Operations)
 HTTP Response
 ```
 
+---
+
 ## Components
 
 ### 1. Validation Schemas (`src/services/business/schemas.ts`)
 
-Zod-based schemas that validate input structure and content:
+Zod-based schemas validate the exact structure and content of incoming payloads before processing.
 
 ```typescript
 // Create business input
@@ -49,7 +53,7 @@ const validated = await parseCreateBusinessInput(input);
 
 ### 2. Normalization Functions (`src/services/business/normalize.ts`)
 
-Functions for consistent data transformation:
+Dedicated utilities guarantee consistent data transformation formatting:
 
 - `normalizeName()` - Trim and collapse whitespace
 - `normalizeUrl()` - Add protocol, lowercase, remove trailing slashes
@@ -73,31 +77,16 @@ Functions for consistent data transformation:
 
 ## Validation Rules
 
-### Business Name
-- **Required**: Yes
-- **Min Length**: 1 character
-- **Max Length**: 255 characters
-- **Valid Characters**: Letters, numbers, spaces, hyphens, apostrophes, ampersands, periods, commas
-- **Invalid**: Control characters, HTML tags, special symbols
-- **Normalization**: Trimmed, extra spaces collapsed
+| Field | Required | Length Limit | Valid Format / Characters |  Normalization Applied |
+|-------|----------|--------------|---------------------------|----------------------|
+| Name | Yes | 1 - 255 | "Letters, numbers, spaces, hyphens, apostrophes, ampersands, periods, commas" | "Trimmed, extra spaces  |collapsed"
+| Industry | No | 0 - 100 | Same as Name | "Trimmed, empty converted to  |null"
+| Description | No | 0 - 2000 | Alphanumeric (newlines preserved) | "Trimmed, spaces normalized, empty converted to null" |
+| Website | No | 0 - 2048 | "Valid URL (http, https, www)" | "Lowercased, protocol added if missing, trailing slashes removed" |
 
-### Industry
-- **Required**: No
-- **Max Length**: 100 characters
-- **Valid Characters**: Same as name
-- **Normalization**: Trimmed, empty → null
+**Note**: Control characters, HTML tags, and undocumented special symbols are strictly invalid across all fields.
 
-### Description
-- **Required**: No
-- **Max Length**: 2000 characters
-- **Preservation**: Newlines preserved
-- **Normalization**: Trimmed, spaces normalized, empty → null
-
-### Website
-- **Required**: No
-- **Max Length**: 2048 characters
-- **Format**: Valid URL (http, https, www)
-- **Normalization**: Lowercased, protocol added if missing, trailing slashes removed
+---
 
 ## API Endpoints
 
@@ -113,8 +102,9 @@ Content-Type: application/json
   "description": "We make quality products",
   "website": "https://acme.com"
 }
-
-Response: 201 Created
+```
+Response: `201 Created`
+```json
 {
   "id": "uuid",
   "userId": "user-uuid",
@@ -137,9 +127,8 @@ Content-Type: application/json
   "name": "Updated Name",
   "website": "https://newsite.com"
 }
-
-Response: 200 OK
 ```
+Response: `200 OK`
 
 ### Error Responses
 - `400 Bad Request`: Invalid input or validation error
@@ -167,7 +156,7 @@ Response: 200 OK
 - Separation of concerns (validation vs business logic)
 - Logging for security monitoring
 
-## Examples
+## Input & Output Examples
 
 ### Valid Inputs
 
@@ -218,16 +207,16 @@ Input:  { industry: "" }
 Output: { industry: null }
 ```
 
-## Testing
+## Testing & Performance
 
-The business service includes comprehensive tests:
+The business service includes comprehensive validation tests to ensure reliability:
 
 - **80+ unit tests** covering schemas and normalization
 - **Edge cases** and security scenarios
 - **Integration tests** for full API workflows
 - **>95% code coverage** for business service
 
-Run tests:
+Execute test suite:
 ```bash
 npm test -- tests/unit/services/business
 ```
@@ -241,7 +230,7 @@ npm test -- tests/unit/services/business
 
 ## Debugging
 
-Enable logging:
+To debug normalization or validation failures, enable the logger in the service:
 ```typescript
 import { logger } from '../../utils/logger';
 
@@ -251,9 +240,8 @@ logger.error('Validation failed:', { error });
 
 ## Extending the Service
 
-To add new fields:
-
-1. **Add to schema**:
+Follow these steps to safely add new fields to the business service:
+1. **Update the Validation Schema**:
    ```typescript
    newField: z
      .string()
@@ -261,14 +249,14 @@ To add new fields:
      .optional()
    ```
 
-2. **Add normalization**:
+2. **Add the Normalization Utility**:
    ```typescript
    export function normalizeNewField(value: string): string {
      return value.trim().toLowerCase();
    }
    ```
 
-3. **Update repository**:
+3. **Update the Repository Types**:
    ```typescript
    export type CreateBusinessData = {
      userId: string;
@@ -277,11 +265,13 @@ To add new fields:
    };
    ```
 
-4. **Add tests** for all new validation rules
+4. **Expand the Test Suite**
+
+Ensure tests are written for the new schema rules, normalization behavior, and database insertion.
 
 ## Migration Notes
 
-For existing data:
+When applying these normalization rules to existing data:
 - Run normalization on existing businesses
 - Update invalid URLs to valid format
 - Clean up whitespace in names and descriptions

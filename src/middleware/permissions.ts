@@ -319,6 +319,15 @@ export function requirePermissions(
 }
 
 /**
+ * Dedicated platform-admin guard for the direct business-tier promotion route.
+ * Keeping this named avoids widening the endpoint if generic user-management
+ * permissions change later.
+ */
+export const requireBusinessTierRolePromotionPermission = requirePermissions(
+  IntegrationPermission.ADMIN_MANAGE_USERS,
+);
+
+/**
  * Middleware to check permissions based on route pattern
  */
 export function requireRoutePermissions(routePattern: string) {
