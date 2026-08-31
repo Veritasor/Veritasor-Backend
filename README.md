@@ -293,6 +293,45 @@ Peak-load k6 scenarios for `/api/v1/attestations` live in `ops/k6/`.
 - Nightly workflow: `.github/workflows/nightly-k6-attestations.yml`
 - Grafana dashboard: `ops/k6/grafana/peak-attestation-dashboard.json`
 
+### Soak testing (autocannon)
+
+An autocannon-based soak harness measures sustained throughput, p50/p95/p99 latency, and error rates on the attestation submit path. It exits non-zero when p95 or error-rate thresholds are breached, so it can gate CI.
+
+```bash
+# Quick soak (30s, 10 connections)
+SOAK_AUTH_TOKEN=<jwt> npm run soak
+
+# Longer soak with custom thresholds
+SOAK_AUTH_TOKEN=<jwt> SOAK_DURATION=300 SOAK_CONNECTIONS=50 \
+  SOAK_P95_THRESHOLD_MS=300 SOAK_ERROR_RATE_THRESHOLD=0.01 \
+  npm run soak
+
+# CLI flags override env vars
+npm run soak -- --token <jwt> --duration 60 --connections 20
+```
+
+All configuration options:
+
+| Option | Env var | Default | Description |
+|--------|---------|---------|-------------|
+| `--url` | `SOAK_BASE_URL` | `http://127.0.0.1:3000` | Base URL of the running instance |
+| `--path` | `SOAK_PATH` | `/api/v1/attestations` | Attestation endpoint path |
+| `--token` | `SOAK_AUTH_TOKEN` | (required) | JWT auth token |
+| `--duration` | `SOAK_DURATION` | `30` | Duration in seconds |
+| `--connections` | `SOAK_CONNECTIONS` | `10` | Number of concurrent connections |
+| `--businessId` | `SOAK_BUSINESS_ID` | (empty) | Business ID for the request |
+| `--merkleRoot` | `SOAK_MERKLE_ROOT` | `0xab...` | Merkle root hex string |
+| `--p95ThresholdMs` | `SOAK_P95_THRESHOLD_MS` | `500` | p95 latency threshold in ms |
+| `--errorRateThreshold` | `SOAK_ERROR_RATE_THRESHOLD` | `0.01` | Max error rate (0-1) |
+| `--writeRatio` | `SOAK_WRITE_RATIO` | `1.0` | Fraction of requests that are POST writes |
+| `--bailout` | `SOAK_BAILOUT` | `0` | Error count before bail (0 = never bail) |
+| `--timeout` | `SOAK_TIMEOUT` | `10` | Response timeout in seconds |
+
+Edge cases handled:
+- Zero duration or zero connections exits cleanly with code 0.
+- Missing token exits with code 1 and a usage hint.
+- Unreachable server triggers autocannon bailout, prints results, and exits non-zero.
+
 ## API Versioning
 
 Routes may be mounted with an `/api/v{n}` prefix and/or legacy unversioned paths (e.g. `/api/attestations`). The server still resolves a major version for each request.
