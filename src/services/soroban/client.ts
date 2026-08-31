@@ -109,6 +109,10 @@ export class SorobanCircuitBreakerError extends Error {
   }
 }
 
+export function isSorobanCircuitBreakerOpen(error: unknown): error is SorobanCircuitBreakerError {
+  return error instanceof SorobanCircuitBreakerError && error.state === CircuitBreakerState.OPEN;
+}
+
 const DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org";
 const DEFAULT_RETRY_POLICY: SorobanRetryPolicy = {
   timeoutMs: 5_000,

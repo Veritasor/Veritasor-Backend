@@ -20,6 +20,10 @@ import {
   type AttestationRevenueSummary,
   type RawRevenueInput,
 } from '../services/attestation/integrateRevenueChecks.js';
+import {
+  enqueueQueuedAttestation,
+  isSorobanQueueEnabled,
+} from '../services/soroban/submitAttestation.js';
 import { AppError } from '../types/errors.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
@@ -36,7 +40,7 @@ type RouteAttestation = {
   timestamp?: number;
   version?: string;
   txHash?: string;
-  status?: 'submitted' | 'revoked';
+  status?: 'submitted' | 'revoked' | 'queued';
   revokedAt?: string | null;
 };
 
@@ -353,6 +357,30 @@ async function submitOnChain(
       throw createHttpError(502, code, 'Soroban RPC request failed after applying the retry policy.');
     }
 
+    if (code === 'SOROBAN_CIRCUIT_BREAKER_OPEN' || error instanceof Error && error.name === 'SorobanCircuitBreakerError') {
+      if (isSorobanQueueEnabled()) {
+        const queued = enqueueQueuedAttestation({
+          business: params.business,
+          period: params.period,
+          merkleRoot: params.merkleRoot,
+          timestamp: params.timestamp,
+          version: params.version,
+          submit: params.submit ?? true,
+          userId: params.userId,
+        }, { idempotencyKey: params.userId ? `${params.business}:${params.period}:${params.userId}` : undefined });
+
+        if (queued.queued && queued.item) {
+          return {
+            txHash: `queued_${randomUUID()}`,
+            status: 'queued',
+            unsignedXdr: undefined,
+          };
+        }
+      }
+
+      throw createHttpError(503, 'SOROBAN_DEGRADED', 'Soroban is temporarily degraded; the attestation is queued for retry.');
+    }
+
     throw error;
   } finally {
     const durationSec = Number(process.hrtime.bigint() - startTime) / 1e9;
@@ -543,6 +571,26 @@ attestationsRouter.post(
       ...(onChain.resultMerkleRoot ? { resultMerkleRoot: onChain.resultMerkleRoot } : {}),
       ...(onChain.resultTimestamp !== undefined ? { resultTimestamp: onChain.resultTimestamp } : {}),
     };
+
+    if (onChain.status === 'queued') {
+      res.status(202).json({
+        status: 'success',
+        data: {
+          businessId,
+          period: payload.period,
+          merkleRoot: merkleRoot!,
+          timestamp: payload.timestamp ?? Date.now(),
+          version: payload.version,
+          txHash: onChain.txHash,
+          status: 'queued',
+          attestedAt: new Date().toISOString(),
+          revokedAt: null,
+        },
+        txHash: onChain.txHash,
+        submission,
+      });
+      return;
+    }
 
     const now = new Date().toISOString();
     const record: Omit<RouteAttestation, 'id' | 'attestedAt' | 'revokedAt'> = {
