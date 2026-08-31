@@ -78,6 +78,9 @@ function getAuditUpdateFields(updates: Record<string, unknown>): string[] {
 // All routes here require authentication
 adminRouter.use(requireAuth)
 
+import adminGraphqlRouter from './admin.graphql.js'
+adminRouter.use(adminGraphqlRouter)
+
 /**
  * GET /api/v1/admin/stats
  * Get platform statistics

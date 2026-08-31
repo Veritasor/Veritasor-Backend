@@ -36,7 +36,6 @@ import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import { webhookSubscriptionsRouter } from "./routes/webhook-subscriptions.js";
 import adminRouter from "./routes/admin.js";
-import adminGraphqlRouter from "./routes/admin.graphql.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
@@ -131,7 +130,6 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/users", usersRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
-  app.use("/api/v1/admin", adminGraphqlRouter);
 
   app.get("/.well-known/jwks.json", async (_req: Request, res: Response) => {
     await jwksManager.ensureLoaded()
