@@ -25,13 +25,43 @@ import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
 import request from 'supertest';
 import { businessRepository } from '../../src/repositories/business.js';
 
-const { submitAttestationMock } = vi.hoisted(() => ({
+import fc from 'fast-check';
+import { Keypair, nativeToScVal } from '@stellar/stellar-sdk';
+
+const { submitAttestationMock, originalSubmitAttestation } = vi.hoisted(() => ({
   submitAttestationMock: vi.fn(),
+  originalSubmitAttestation: { current: null as any },
+}));
+
+const { sorobanServerMock } = vi.hoisted(() => ({
+  sorobanServerMock: {
+    getAccount: vi.fn(),
+    prepareTransaction: vi.fn(),
+    sendTransaction: vi.fn(),
+    getTransaction: vi.fn(),
+  },
 }));
 
 vi.mock('../../src/services/soroban/submitAttestation.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/soroban/submitAttestation.js')>();
-  return { ...actual, submitAttestation: submitAttestationMock };
+  originalSubmitAttestation.current = actual.submitAttestation;
+  return { 
+    ...actual, 
+    submitAttestation: (params: any) => {
+      if (process.env.CHAOS_TEST === '1') {
+        return originalSubmitAttestation.current(params);
+      }
+      return submitAttestationMock(params);
+    }
+  };
+});
+
+vi.mock('../../src/services/soroban/client.js', async (importOriginal) => {
+  const actual = await importOriginal<any>();
+  return {
+    ...actual,
+    createSorobanRpcServer: vi.fn(() => sorobanServerMock),
+  };
 });
 
 import { app } from '../../src/app.js';
@@ -1312,5 +1342,149 @@ describe('isTimestampInPeriod — DST-safe range check', () => {
 
   it('throws PeriodParseError for an invalid period string', () => {
     expect(() => isTimestampInPeriod(0, 'bad')).toThrow(PeriodParseError);
+  });
+});
+
+describe('Chaos tests for Soroban RPC', () => {
+  let chaosSigner: Keypair;
+  let origSetTimeout: any;
+
+  beforeEach(() => {
+    chaosSigner = Keypair.random();
+    process.env.CHAOS_TEST = '1';
+    process.env.SOROBAN_SUBMIT_ENABLED = 'true';
+    process.env.SOROBAN_SOURCE_PUBLIC_KEY = chaosSigner.publicKey();
+    
+    // Make retries fast
+    process.env.SOROBAN_RPC_RETRY_BASE_DELAY_MS = '1';
+    process.env.SOROBAN_RPC_RETRY_MAX_DELAY_MS = '1';
+
+    origSetTimeout = global.setTimeout;
+    global.setTimeout = ((cb: any, ms: number, ...args: any[]) => {
+      return origSetTimeout(cb, 0, ...args);
+    }) as any;
+    
+    vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(BUSINESS);
+    
+    sorobanServerMock.getAccount.mockReset();
+    sorobanServerMock.prepareTransaction.mockReset();
+    sorobanServerMock.sendTransaction.mockReset();
+    sorobanServerMock.getTransaction.mockReset();
+  });
+  
+  afterEach(() => {
+    global.setTimeout = origSetTimeout;
+    delete process.env.CHAOS_TEST;
+    delete process.env.SOROBAN_SUBMIT_ENABLED;
+    delete process.env.SOROBAN_SOURCE_PUBLIC_KEY;
+    delete process.env.SOROBAN_RPC_RETRY_BASE_DELAY_MS;
+    delete process.env.SOROBAN_RPC_RETRY_MAX_DELAY_MS;
+    vi.restoreAllMocks();
+  });
+
+  it('handles random RPC faults deterministically over {simulate, send, confirm}', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.boolean(), { minLength: 1, maxLength: 3 }), 
+        fc.array(fc.constantFrom('PENDING', 'TRY_AGAIN_LATER', 'ERROR'), { minLength: 1, maxLength: 3 }), 
+        fc.array(fc.constantFrom('SUCCESS', 'FAILED', 'NOT_FOUND'), { minLength: 1, maxLength: 5 }), 
+        async (simulateFaults, sendStatuses, confirmStatuses) => {
+          
+          let simCount = 0;
+          sorobanServerMock.prepareTransaction.mockImplementation(() => {
+            const fault = simulateFaults[Math.min(simCount++, simulateFaults.length - 1)];
+            if (fault) {
+              return Promise.reject(new Error('sim network error'));
+            }
+            return Promise.resolve({
+              hash: () => Buffer.from(VALID_TX_HASH, 'hex'),
+              toXDR: () => 'AAAA',
+              sign: vi.fn(),
+            });
+          });
+
+          let sendCount = 0;
+          sorobanServerMock.sendTransaction.mockImplementation(() => {
+            const status = sendStatuses[Math.min(sendCount++, sendStatuses.length - 1)];
+            return Promise.resolve({
+              hash: VALID_TX_HASH,
+              status,
+              latestLedger: 100,
+              latestLedgerCloseTime: '123456789',
+            });
+          });
+
+          let confirmCount = 0;
+          sorobanServerMock.getTransaction.mockImplementation(() => {
+            const status = confirmStatuses[Math.min(confirmCount++, confirmStatuses.length - 1)];
+            if (status === 'SUCCESS') {
+              const mockVal = nativeToScVal(new Map<string, any>([
+                ['merkle_root', 'abc123'],
+                ['timestamp', 0n],
+              ]));
+              return Promise.resolve({
+                status: 'SUCCESS',
+                ledger: 101,
+                returnValue: mockVal,
+              });
+            }
+            return Promise.resolve({
+              status,
+            });
+          });
+          
+          sorobanServerMock.getAccount.mockResolvedValue({} as any);
+
+          const res = await request(app)
+            .post('/api/attestations')
+            .set(AUTH)
+            .set('Idempotency-Key', iKey('chaos'))
+            .send({ ...VALID_SUBMIT, signerSecret: chaosSigner.secret() }); 
+            
+          expect([201, 502, 503]).toContain(res.status);
+          
+          if (res.status === 502 || res.status === 503) {
+            expect(res.body.code).toBeDefined();
+            expect(JSON.stringify(res.body)).not.toContain('signerSecret');
+          }
+        }
+      ),
+      { numRuns: 20 }
+    );
+  });
+
+  it('Simulate failure first call then success, send TRY_AGAIN_LATER twice then OK, all fail', async () => {
+    let simCount = 0;
+    sorobanServerMock.prepareTransaction.mockImplementation(() => {
+      simCount++;
+      if (simCount === 1) return Promise.reject(new Error('sim fail'));
+      return Promise.resolve({
+        hash: () => Buffer.from(VALID_TX_HASH, 'hex'),
+        toXDR: () => 'AAAA',
+        sign: vi.fn(),
+      });
+    });
+
+    let sendCount = 0;
+    sorobanServerMock.sendTransaction.mockImplementation(() => {
+      sendCount++;
+      if (sendCount <= 2) return Promise.resolve({ hash: VALID_TX_HASH, status: 'TRY_AGAIN_LATER' });
+      return Promise.resolve({ hash: VALID_TX_HASH, status: 'PENDING' });
+    });
+
+    sorobanServerMock.getTransaction.mockResolvedValue({
+      status: 'FAILED' // all fail at confirmation
+    } as any);
+    
+    sorobanServerMock.getAccount.mockResolvedValue({} as any);
+
+    const res = await request(app)
+      .post('/api/attestations')
+      .set(AUTH)
+      .set('Idempotency-Key', iKey('edge-chaos'))
+      .send({ ...VALID_SUBMIT, signerSecret: chaosSigner.secret() }); 
+      
+    expect(res.status).toBe(502);
+    expect(['CONFIRMATION_FAILED', 'SUBMIT_FAILED', 'SOROBAN_NETWORK_ERROR']).toContain(res.body.code);
   });
 });
