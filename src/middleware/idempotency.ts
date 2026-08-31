@@ -481,7 +481,11 @@ function isValidKeyFormat(key: string, strict: boolean): boolean {
  * @returns Full store key
  */
 function generateStoreKey(scope: string, userKey: string, keyValue: string): string {
-  return `idempotency:${scope}:${userKey}:${keyValue}`;
+  // If userKey looks like a stable tenant/business identifier (alphanumeric, hyphen, underscore),
+  // wrap it in a Redis cluster hash tag so keys for the same tenant land on the same slot.
+  const TENANT_RE = /^[a-zA-Z0-9\-_]{1,100}$/;
+  const tenantTag = TENANT_RE.test(userKey) ? `{${userKey}}` : userKey;
+  return `idempotency:${scope}:${tenantTag}:${keyValue}`;
 }
 
 /**
