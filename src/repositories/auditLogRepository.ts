@@ -81,8 +81,8 @@ export type AuditLogQuery = {
   actorId?: string
   action?: string
   resource?: string
-  from?: Date
-  to?: Date
+  from?: Date | string
+  to?: Date | string
   limit?: number
   cursor?: string
 }
@@ -229,24 +229,40 @@ export async function queryAuditLogs(query: AuditLogQuery): Promise<PaginatedAud
   if (!Number.isInteger(limit) || limit <= 0) limit = 20
   limit = Math.min(100, limit)
 
+  const fromTime = from === undefined || from === '' ? undefined : new Date(from).getTime()
+  const toTime = to === undefined || to === '' ? undefined : new Date(to).getTime()
+  if (fromTime !== undefined && Number.isNaN(fromTime)) {
+    throw new TypeError('from must be a valid date')
+  }
+  if (toTime !== undefined && Number.isNaN(toTime)) {
+    throw new TypeError('to must be a valid date')
+  }
+  if (fromTime !== undefined && toTime !== undefined && fromTime > toTime) {
+    throw new RangeError('from must not be after to')
+  }
+
   let cursorTs: number | undefined
   let cursorId: string | undefined
 
   const decodedCursor = decodeCursor(query.cursor)
+  if (query.cursor !== undefined && !decodedCursor) {
+    throw new RangeError('cursor is invalid')
+  }
   if (decodedCursor) {
     const d = new Date(decodedCursor.value)
-    if (!Number.isNaN(d.getTime())) {
-      cursorTs = d.getTime()
-      cursorId = decodedCursor.id
+    if (Number.isNaN(d.getTime()) || !decodedCursor.id) {
+      throw new RangeError('cursor is invalid')
     }
+    cursorTs = d.getTime()
+    cursorId = decodedCursor.id
   }
 
   let rows = auditLogs.slice()
   if (actorId) rows = rows.filter(r => r.userId === actorId)
   if (action)  rows = rows.filter(r => r.action === action)
   if (resource) rows = rows.filter(r => r.resource === resource)
-  if (from)    rows = rows.filter(r => r.timestamp.getTime() >= from.getTime())
-  if (to)      rows = rows.filter(r => r.timestamp.getTime() <= to.getTime())
+  if (fromTime !== undefined) rows = rows.filter(r => r.timestamp.getTime() >= fromTime)
+  if (toTime !== undefined) rows = rows.filter(r => r.timestamp.getTime() <= toTime)
 
   rows.sort((a, b) => {
     const ta = a.timestamp.getTime()
