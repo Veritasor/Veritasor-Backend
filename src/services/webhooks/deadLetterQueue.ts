@@ -441,3 +441,27 @@ export async function saveDeadLetter(
       updated_at: new Date(),
     });
 }
+
+// ---------------------------------------------------------------------------
+// Payload hashing
+// ---------------------------------------------------------------------------
+
+export const MAX_PAYLOAD_SIZE = 100 * 1024 // 100KB
+
+/**
+ * Compute the SHA-256 hash of a webhook payload.
+ *
+ * Restored export: this helper was dropped from this module in a past
+ * refactor while `src/repositories/auditLogRepository.ts` and
+ * `src/routes/admin.ts` still import it, which made
+ * `createAuditLog(log, content)` throw at runtime.
+ */
+export function computePayloadHash(payload: any): string {
+  const rawString = typeof payload === 'string' ? payload : JSON.stringify(payload)
+
+  if (Buffer.byteLength(rawString) > MAX_PAYLOAD_SIZE) {
+    throw new Error('Payload too large')
+  }
+
+  return createHash('sha256').update(rawString).digest('hex')
+}
