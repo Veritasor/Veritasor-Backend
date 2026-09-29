@@ -178,3 +178,183 @@ describe("PgBouncer scraper", () => {
     expect(mocks.end).toHaveBeenCalledTimes(1);
   });
 });
+// ---------------------------------------------------------------------------
+// Regression suite — issue #1002
+// Exercises the explicit branches at lines 58 and 61 of pgbouncerScraper.ts,
+// asserts constant values, and covers boundary inputs not addressed above.
+// ---------------------------------------------------------------------------
+
+describe("regression #1002 — exported constant values", () => {
+  it("MIN_SCRAPE_INTERVAL_MS is exactly 1 000 ms", () => {
+    expect(scraper.MIN_SCRAPE_INTERVAL_MS).toBe(1_000);
+  });
+
+  it("MAX_SCRAPE_INTERVAL_MS is exactly 300 000 ms (5 minutes)", () => {
+    expect(scraper.MAX_SCRAPE_INTERVAL_MS).toBe(300_000);
+  });
+
+  it("MIN_QUERY_TIMEOUT_MS is exactly 100 ms", () => {
+    expect(scraper.MIN_QUERY_TIMEOUT_MS).toBe(100);
+  });
+
+  it("MAX_QUERY_TIMEOUT_MS is exactly 30 000 ms", () => {
+    expect(scraper.MAX_QUERY_TIMEOUT_MS).toBe(30_000);
+  });
+
+  it("MIN_SCRAPE_INTERVAL_MS < MAX_SCRAPE_INTERVAL_MS (ordering invariant)", () => {
+    expect(scraper.MIN_SCRAPE_INTERVAL_MS).toBeLessThan(scraper.MAX_SCRAPE_INTERVAL_MS);
+  });
+
+  it("MIN_QUERY_TIMEOUT_MS < MAX_QUERY_TIMEOUT_MS (ordering invariant)", () => {
+    expect(scraper.MIN_QUERY_TIMEOUT_MS).toBeLessThan(scraper.MAX_QUERY_TIMEOUT_MS);
+  });
+});
+
+describe("regression #1002 — getPgBouncerAdminUrl() empty/whitespace paths (line 58)", () => {
+  it("returns null when adminUrl is an empty string", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "";
+    expect(scraper.getPgBouncerAdminUrl()).toBeNull();
+  });
+
+  it("returns null when adminUrl is whitespace-only (spaces)", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "   ";
+    expect(scraper.getPgBouncerAdminUrl()).toBeNull();
+  });
+
+  it("returns null when adminUrl is tab-only whitespace", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "\t";
+    expect(scraper.getPgBouncerAdminUrl()).toBeNull();
+  });
+
+  it("returns null for mixed whitespace (spaces, tabs, newlines)", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "  \t\n  ";
+    expect(scraper.getPgBouncerAdminUrl()).toBeNull();
+  });
+
+  it("does not throw when adminUrl is empty — returns null instead", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "";
+    expect(() => scraper.getPgBouncerAdminUrl()).not.toThrow();
+  });
+
+  it("does not throw when adminUrl is whitespace-only — returns null instead", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "   ";
+    expect(() => scraper.getPgBouncerAdminUrl()).not.toThrow();
+  });
+});
+
+describe("regression #1002 — getPgBouncerAdminUrl() scheme validation (line 61)", () => {
+  const EXPECTED_MSG = "PgBouncer admin URL must use postgres or postgresql";
+
+  it.each([
+    ["http",            "http://localhost:6432/pgbouncer"],
+    ["mysql",           "mysql://user:pass@localhost:3306/db"],
+    ["redis",           "redis://localhost:6379"],
+    ["ftp",             "ftp://localhost/pgbouncer"],
+    ["jdbc:postgresql", "jdbc:postgresql://localhost/pgbouncer"],
+    ["file",            "file:///etc/pgbouncer/pgbouncer.ini"],
+  ])("throws for scheme '%s'", (_scheme, url) => {
+    mocks.config.pgbouncerMetrics.adminUrl = url;
+    expect(() => scraper.getPgBouncerAdminUrl()).toThrow(EXPECTED_MSG);
+  });
+
+  it("error is an instance of Error with the exact message", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "http://localhost/pgbouncer";
+    let caught: unknown;
+    try { scraper.getPgBouncerAdminUrl(); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe(EXPECTED_MSG);
+  });
+
+  it.each([
+    ["postgres",    "postgres://user:pass@localhost:6432/pgbouncer"],
+    ["postgresql",  "postgresql://metrics:secret@localhost:6432/pgbouncer"],
+  ])("accepts scheme '%s' and returns the URL", (_scheme, url) => {
+    mocks.config.pgbouncerMetrics.adminUrl = url;
+    expect(scraper.getPgBouncerAdminUrl()).toBe(url);
+  });
+
+  it("trims surrounding whitespace from a valid URL", () => {
+    const bare = "postgresql://metrics:secret@localhost:6432/pgbouncer";
+    mocks.config.pgbouncerMetrics.adminUrl = `  ${bare}  `;
+    expect(scraper.getPgBouncerAdminUrl()).toBe(bare);
+  });
+});
+
+describe("regression #1002 — scrapeInterval boundary clamping", () => {
+  it("clamps 0 up to MIN_SCRAPE_INTERVAL_MS", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = 0;
+    expect(scraper.getPgBouncerScrapeIntervalMs()).toBe(scraper.MIN_SCRAPE_INTERVAL_MS);
+  });
+
+  it("accepts exactly MIN_SCRAPE_INTERVAL_MS (at-boundary)", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = scraper.MIN_SCRAPE_INTERVAL_MS;
+    expect(scraper.getPgBouncerScrapeIntervalMs()).toBe(scraper.MIN_SCRAPE_INTERVAL_MS);
+  });
+
+  it("accepts MIN_SCRAPE_INTERVAL_MS + 1 without modification", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = scraper.MIN_SCRAPE_INTERVAL_MS + 1;
+    expect(scraper.getPgBouncerScrapeIntervalMs()).toBe(scraper.MIN_SCRAPE_INTERVAL_MS + 1);
+  });
+
+  it("accepts exactly MAX_SCRAPE_INTERVAL_MS (at-ceiling)", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = scraper.MAX_SCRAPE_INTERVAL_MS;
+    expect(scraper.getPgBouncerScrapeIntervalMs()).toBe(scraper.MAX_SCRAPE_INTERVAL_MS);
+  });
+
+  it("clamps MAX_SCRAPE_INTERVAL_MS + 1 down to MAX_SCRAPE_INTERVAL_MS", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = scraper.MAX_SCRAPE_INTERVAL_MS + 1;
+    expect(scraper.getPgBouncerScrapeIntervalMs()).toBe(scraper.MAX_SCRAPE_INTERVAL_MS);
+  });
+});
+
+describe("regression #1002 — queryTimeout capped by scrapeInterval", () => {
+  it("caps queryTimeout at scrapeInterval when scrapeInterval < MAX_QUERY_TIMEOUT_MS", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = 5_000;
+    mocks.config.pgbouncerMetrics.queryTimeoutMs = 10_000;
+    expect(scraper.getPgBouncerQueryTimeoutMs()).toBe(5_000);
+  });
+
+  it("caps queryTimeout at MIN_SCRAPE_INTERVAL_MS when scrapeInterval is at its floor", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = 1; // clamps to 1 000
+    mocks.config.pgbouncerMetrics.queryTimeoutMs = 99_999;
+    expect(scraper.getPgBouncerQueryTimeoutMs()).toBe(scraper.MIN_SCRAPE_INTERVAL_MS);
+  });
+
+  it("raises queryTimeout to MIN_QUERY_TIMEOUT_MS when configured below floor", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = 15_000;
+    mocks.config.pgbouncerMetrics.queryTimeoutMs = 1;
+    expect(scraper.getPgBouncerQueryTimeoutMs()).toBe(scraper.MIN_QUERY_TIMEOUT_MS);
+  });
+
+  it("result is always ≤ getPgBouncerScrapeIntervalMs()", () => {
+    mocks.config.pgbouncerMetrics.scrapeIntervalMs = 3_000;
+    mocks.config.pgbouncerMetrics.queryTimeoutMs = 5_000;
+    expect(scraper.getPgBouncerQueryTimeoutMs()).toBeLessThanOrEqual(
+      scraper.getPgBouncerScrapeIntervalMs(),
+    );
+  });
+});
+
+describe("regression #1002 — null/empty adminUrl prevents scraping and starting", () => {
+  it("scrapeOnce() returns false for empty-string adminUrl", async () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "";
+    await expect(scraper.scrapeOnce()).resolves.toBe(false);
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
+  it("scrapeOnce() returns false for whitespace-only adminUrl", async () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "   ";
+    await expect(scraper.scrapeOnce()).resolves.toBe(false);
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
+  it("startPgBouncerScraper() returns false for empty-string adminUrl", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "";
+    expect(scraper.startPgBouncerScraper()).toBe(false);
+  });
+
+  it("startPgBouncerScraper() returns false for whitespace-only adminUrl", () => {
+    mocks.config.pgbouncerMetrics.adminUrl = "   ";
+    expect(scraper.startPgBouncerScraper()).toBe(false);
+  });
+});
