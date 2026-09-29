@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as merkle from '../src/services/merkle/index.js';
 import {
   integrateRevenueChecks,
   shouldProceedWithAttestation,
@@ -85,6 +86,46 @@ describe('integrateRevenueChecks', () => {
   describe('Edge Cases', () => {
     it('should throw on empty entries array', async () => {
       await expect(integrateRevenueChecks([])).rejects.toThrow('No revenue entries to process');
+    });
+
+    it('should wrap Merkle tree build failures', async () => {
+      vi.spyOn(merkle, 'buildTree').mockImplementationOnce(() => {
+        throw new Error('tree failure');
+      });
+
+      await expect(integrateRevenueChecks([{ id: '1', amount: 100 }])).rejects.toThrow(
+        'Failed to build Merkle tree: tree failure'
+      );
+    });
+
+    it('should stringify non-Error Merkle tree build failures', async () => {
+      vi.spyOn(merkle, 'buildTree').mockImplementationOnce(() => {
+        throw 'tree failure';
+      });
+
+      await expect(integrateRevenueChecks([{ id: '1', amount: 100 }])).rejects.toThrow(
+        'Failed to build Merkle tree: tree failure'
+      );
+    });
+
+    it('should wrap proof generation failures with the entry index', async () => {
+      vi.spyOn(merkle, 'generateProof').mockImplementationOnce(() => {
+        throw new Error('proof failure');
+      });
+
+      await expect(integrateRevenueChecks([{ id: '1', amount: 100 }])).rejects.toThrow(
+        'Failed to generate proof for entry 0: proof failure'
+      );
+    });
+
+    it('should stringify non-Error proof generation failures', async () => {
+      vi.spyOn(merkle, 'generateProof').mockImplementationOnce(() => {
+        throw 'proof failure';
+      });
+
+      await expect(integrateRevenueChecks([{ id: '1', amount: 100 }])).rejects.toThrow(
+        'Failed to generate proof for entry 0: proof failure'
+      );
     });
 
     it('should throw when entry count exceeds MERKLE_MAX_LEAVES', async () => {
