@@ -38,8 +38,19 @@ describe('secretRotation', () => {
   })
 
   describe('reportSubscriptionVersion / isSubscriptionCurrent', () => {
-    it('returns undefined for a subscription that has never reported', () => {
-      expect(isSubscriptionCurrent('never-reported')).toBeUndefined()
+    describe('Explicit failure and boundary paths (!report)', () => {
+      it('returns undefined explicitly when subscription has never reported (failure path)', () => {
+        expect(isSubscriptionCurrent('never-reported')).toBeUndefined()
+      })
+
+      it('returns undefined for boundary inputs like an empty string', () => {
+        expect(isSubscriptionCurrent('')).toBeUndefined()
+      })
+
+      it('evaluates correctly for a neighboring normal path', () => {
+        reportSubscriptionVersion('normal-path-sub', 'biz-1', 1)
+        expect(isSubscriptionCurrent('normal-path-sub')).toBe(true)
+      })
     })
 
     it('treats a subscription as current when latest version is 0 (none published)', () => {

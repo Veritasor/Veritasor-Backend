@@ -68,83 +68,84 @@ export function startStatsdDualWrite(
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
 
-  const pushMetrics = (): void => {
+  const pushMetrics = async (): Promise<void> => {
     const startedAt = Date.now();
     let metricsCount = 0;
 
     try {
-      const metrics = registry.getMetricsAsJSON();
+      // `getMetricsAsJSON` is asynchronous in prom-client >= 15: it returns a
+      // promise that resolves to the JSON snapshot of every registered
+      // metric. Awaiting it is required — treating it as a synchronous array
+      // throws on iteration and silently disables the whole push loop.
+      const metrics = await registry.getMetricsAsJSON();
 
       for (const metric of metrics) {
         const safeName = sanitizeMetricName(metric.name);
 
         for (const value of metric.values) {
-          const tags = buildTags(value.labels);
+          // prom-client >= 15 flattens every sample into its own entry and
+          // carries the concrete sample name (e.g. `foo_bucket`, `foo_sum`,
+          // `foo_count`) on `metricName`. Older revisions exposed a single
+          // nested object per label set instead.
+          const labels = (value.labels ?? {}) as Record<string, string | number>;
+          const tags = buildTags(labels);
+          const sampleName = sanitizeMetricName(
+            (value as { metricName?: string }).metricName ?? metric.name,
+          );
+          const sample = typeof value.value === 'number' ? value.value : 0;
           metricsCount++;
 
           switch (metric.type) {
             case 'counter': {
-              const key = deltaKey(safeName, value.labels);
-              const current = value.value as number;
+              const key = deltaKey(sampleName, labels);
               const prev = previousCounters.get(key) ?? 0;
-              const delta = current - prev;
+              const delta = sample - prev;
               if (delta > 0) {
-                statsdClient.increment(safeName, delta, tags);
+                statsdClient.increment(sampleName, delta, tags);
               }
-              previousCounters.set(key, current);
+              previousCounters.set(key, sample);
               break;
             }
 
             case 'gauge': {
-              statsdClient.gauge(safeName, value.value as number, tags);
+              statsdClient.gauge(sampleName, sample, tags);
               break;
             }
 
             case 'histogram': {
-              const key = deltaKey(safeName, value.labels);
-              const currentSum = (value as Record<string, unknown>).sum as number ?? 0;
-              const prevSum = previousSums.get(key) ?? 0;
-              const deltaSum = currentSum - prevSum;
-              previousSums.set(key, currentSum);
-
-              // Emit cumulative bucket counts
-              const buckets = (value as Record<string, unknown>).buckets as Record<string, number> | undefined;
-              if (buckets) {
-                for (const [bucket, count] of Object.entries(buckets)) {
-                  statsdClient.histogram(`${safeName}_bucket`, count, {
-                    ...tags,
-                    le: sanitizeTagValue(String(bucket)),
-                  });
+              if (sampleName.endsWith('_bucket')) {
+                // Cumulative bucket counters, tagged with the `le` bound.
+                statsdClient.histogram(sampleName, sample, tags);
+              } else if (sampleName.endsWith('_sum')) {
+                const key = deltaKey(sampleName, labels);
+                const prevSum = previousSums.get(key) ?? 0;
+                const deltaSum = sample - prevSum;
+                previousSums.set(key, sample);
+                // Emit delta-sum as timing (convert seconds -> ms for StatsD)
+                // under the metric's own name, not the `_sum` sample.
+                if (deltaSum > 0) {
+                  statsdClient.timing(safeName, deltaSum * 1000, tags);
                 }
               }
-
-              // Emit delta-sum as timing (convert seconds → ms for StatsD)
-              if (deltaSum > 0) {
-                statsdClient.timing(safeName, deltaSum * 1000, tags);
-              }
-
               break;
             }
 
             case 'summary': {
-              // Summary: emit quantiles as gauges, and count + sum
-              const summaryValue = value as Record<string, unknown>;
-              const percentiles = summaryValue.percentiles as Record<string, number> | undefined;
-              if (percentiles) {
-                for (const [quantile, qValue] of Object.entries(percentiles)) {
-                  statsdClient.gauge(`${safeName}_quantile`, qValue, {
-                    ...tags,
-                    quantile: sanitizeTagValue(quantile),
-                  });
+              const quantile = labels.quantile;
+              if (quantile !== undefined) {
+                statsdClient.gauge(`${safeName}_quantile`, sample, {
+                  ...tags,
+                  quantile: sanitizeTagValue(String(quantile)),
+                });
+              } else if (sampleName.endsWith('_count')) {
+                const key = deltaKey(sampleName, labels);
+                const prevSum = previousSums.get(key) ?? 0;
+                previousSums.set(key, sample);
+                if (sample > prevSum) {
+                  statsdClient.histogram(sampleName, sample, tags);
                 }
-              }
-              const sCount = summaryValue.count as number | undefined;
-              const sSum = summaryValue.sum as number | undefined;
-              if (sCount !== undefined && sCount > 0) {
-                statsdClient.histogram(`${safeName}_count`, sCount, tags);
-              }
-              if (sSum !== undefined) {
-                statsdClient.timing(safeName, sSum * 1000, tags);
+              } else if (sampleName.endsWith('_sum')) {
+                statsdClient.timing(safeName, sample * 1000, tags);
               }
               break;
             }
@@ -166,7 +167,12 @@ export function startStatsdDualWrite(
     }
   };
 
-  timer = setInterval(pushMetrics, intervalMs);
+  timer = setInterval(() => {
+    // `pushMetrics` handles its own errors; keep the interval callback
+    // synchronous so a rejected promise can never become an unhandled
+    // rejection that would tear the process down.
+    void pushMetrics();
+  }, intervalMs);
   // Don't keep the process alive just for the dual-write timer
   if (timer.unref) {
     timer.unref();
@@ -189,7 +195,7 @@ export function startStatsdDualWrite(
 
       // Final flush of pending deltas
       try {
-        pushMetrics();
+        await pushMetrics();
       } catch {
         // Best-effort; socket may already be gone
       }

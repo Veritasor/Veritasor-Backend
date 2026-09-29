@@ -754,7 +754,6 @@ describe('Business Service Integration Tests', () => {
 // middleware would after a successful auth check.
 // =============================================================================
 
-import { vi } from 'vitest'
 
 // ---------------------------------------------------------------------------
 // Mock requireBusinessAuth before importing app
@@ -1130,4 +1129,73 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
       expect(res.status).toBe(400)
     })
   })
+
+  describe('POST /api/businesses/:id/webhooks - Webhook registration', () => {
+    const webhookUrl = 'https://example.com/webhook';
+    const webhookSecret = 'a'.repeat(32);
+
+    it('registers a webhook on the normal path', async () => {
+      const businessId = `webhook-success-${Date.now()}`;
+
+      const res = await request(app)
+        .post(`/api/businesses/${businessId}/webhooks`)
+        .set(createAuthHeader())
+        .send({ url: webhookUrl, secret: webhookSecret });
+
+      expect(res.status).toBe(201);
+      expect(res.body.businessId).toBe(businessId);
+      expect(res.body.url).toBe(webhookUrl);
+      expect(res.body.secret).toBe(webhookSecret);
+      expect(res.body.id).toBeDefined();
+    });
+
+    it('accepts the fifth subscription at the capacity boundary', async () => {
+      const businessId = `webhook-boundary-${Date.now()}`;
+
+      for (let i = 0; i < 4; i++) {
+        const res = await request(app)
+          .post(`/api/businesses/${businessId}/webhooks`)
+          .set(createAuthHeader())
+          .send({
+            url: `https://example.com/webhook-${i}`,
+            secret: webhookSecret,
+          });
+
+        expect(res.status).toBe(201);
+      }
+
+      const fifth = await request(app)
+        .post(`/api/businesses/${businessId}/webhooks`)
+        .set(createAuthHeader())
+        .send({ url: webhookUrl, secret: webhookSecret });
+
+      expect(fifth.status).toBe(201);
+      expect(fifth.body.businessId).toBe(businessId);
+    });
+
+    it('returns the capacity error when registering a sixth subscription', async () => {
+      const businessId = `webhook-capacity-${Date.now()}`;
+
+      for (let i = 0; i < 5; i++) {
+        await request(app)
+          .post(`/api/businesses/${businessId}/webhooks`)
+          .set(createAuthHeader())
+          .send({
+            url: `https://example.com/webhook-${i}`,
+            secret: webhookSecret,
+          });
+      }
+
+      const sixth = await request(app)
+        .post(`/api/businesses/${businessId}/webhooks`)
+        .set(createAuthHeader())
+        .send({ url: webhookUrl, secret: webhookSecret });
+
+      expect(sixth.status).toBe(400);
+      expect(sixth.body.error).toBe(
+        'Maximum webhook endpoint subscription capacity reached.',
+      );
+    });
+  })
+
 })

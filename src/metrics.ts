@@ -482,3 +482,40 @@ export const statsdDualWriteMetricsCount = new Gauge({
   help: 'Number of Prometheus metric values mirrored in the most recent StatsD dual-write cycle',
   registers: [metricsRegistry],
 });
+
+/**
+ * Batch job runner metrics (consumed by `src/jobs/jobRunner.ts`).
+ *
+ * `runInstrumentedJob` records one duration observation, one run-outcome
+ * increment, the reported item count, and the last-run timestamp per
+ * `job` label, then flushes them to the Pushgateway so a short-lived
+ * process does not lose them before Prometheus can scrape.
+ */
+export const jobDurationSeconds = new Histogram({
+  name: "job_duration_seconds",
+  help: "Duration of an instrumented batch job run in seconds",
+  labelNames: ["job"] as const,
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 60, 300],
+  registers: [metricsRegistry],
+});
+
+export const jobRunsTotal = new Counter({
+  name: "job_runs_total",
+  help: "Total instrumented batch job runs, labelled by outcome",
+  labelNames: ["job", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+export const jobItemsProcessedTotal = new Counter({
+  name: "job_items_processed_total",
+  help: "Total business items acted on by instrumented batch jobs",
+  labelNames: ["job"] as const,
+  registers: [metricsRegistry],
+});
+
+export const jobLastRunTimestamp = new Gauge({
+  name: "job_last_run_timestamp_seconds",
+  help: "Unix timestamp (seconds) of the last instrumented batch job run",
+  labelNames: ["job"] as const,
+  registers: [metricsRegistry],
+});

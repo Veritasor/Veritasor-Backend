@@ -1,0 +1,8 @@
+﻿src/repositories/auditLogRepository.test.ts(1,6): error TS1005: ';' expected.
+src/repositories/auditLogRepository.test.ts(1,9): error TS1434: Unexpected keyword or identifier.
+src/repositories/auditLogRepository.test.ts(1,13): error TS1434: Unexpected keyword or identifier.
+src/repositories/auditLogRepository.test.ts(1,17): error TS1434: Unexpected keyword or identifier.
+src/routes/__tests__/admin.audit-logs.test.ts(1,6): error TS1005: ';' expected.
+src/routes/__tests__/admin.audit-logs.test.ts(1,9): error TS1434: Unexpected keyword or identifier.
+src/routes/__tests__/admin.audit-logs.test.ts(1,13): error TS1434: Unexpected keyword or identifier.
+src/routes/__tests__/admin.audit-logs.test.ts(1,17): error TS1434: Unexpected keyword or identifier.

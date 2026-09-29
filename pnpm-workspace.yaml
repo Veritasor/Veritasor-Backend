@@ -1,5 +1,6 @@
+packages:
+  - "."
 allowBuilds:
-  '@pact-foundation/pact-core': true
   cpu-features: true
   esbuild: true
   libxmljs2: true

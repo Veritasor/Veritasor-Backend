@@ -1,0 +1,58 @@
+﻿
+[7m[1m[36m RUN [39m[22m[27m [36mv1.6.1[39m [90mC:/Users/ADMIN/Desktop/kweb-drips/Veritasor-Backend[39m
+
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mCallbackParams interface[2m > [22maccepts required fields: code, shop, state
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mCallbackParams interface[2m > [22mallows optional hmac field
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mCallbackParams interface[2m > [22mallows arbitrary extra string fields via index signature
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mCallbackResult interface[2m > [22msuccess result carries shop and no error
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mCallbackResult interface[2m > [22mfailure result carries error and no shop
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing required parameters[2m > [22mreturns failure when code is empty
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing required parameters[2m > [22mreturns failure when shop is empty
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing required parameters[2m > [22mreturns failure when state is empty
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing required parameters[2m > [22mreturns failure when all three required fields are empty
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing required parameters[2m > [22mdoes not call fetch when parameters are missing
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing HMAC[2m > [22mreturns failure when hmac is absent
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mMissing HMAC[2m > [22mdoes not call fetch when hmac is absent
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mHMAC validation[2m > [22mreturns failure when computed HMAC does not match provided HMAC
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mHMAC validation[2m > [22mreturns failure when HMAC lengths differ (prevents timing-safe padding bypass)
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mHMAC validation[2m > [22mreturns failure when computeShopifyHmac throws
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mHMAC validation[2m > [22mdoes not proceed to fetch when HMAC is invalid
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mHMAC validation[2m > [22mpasses clientSecret to computeShopifyHmac
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mShop hostname validation[2m > [22mreturns failure when normalised shop fails isValidShopHost
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mShop hostname validation[2m > [22mdoes not consume state when shop is invalid
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mShop hostname validation[2m > [22mnormalises the shop value before validation
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mState validation[2m > [22mreturns failure when state is not found in the store
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mState validation[2m > [22mreturns failure when state record shop does not match normalised shop
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mState validation[2m > [22mconsumes the state (one-time use)
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mState validation[2m > [22mdoes not call fetch when state is invalid
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange failures[2m > [22mreturns failure when fetch throws a network error
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange failures[2m > [22mreturns failure when Shopify responds with 4xx
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange failures[2m > [22mreturns failure when Shopify responds with 5xx
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange failures[2m > [22mreturns failure when response body is not valid JSON
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange failures[2m > [22mreturns failure when access_token is absent from response
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange failures[2m > [22mreturns failure when access_token is not a string
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken persistence error[2m > [22mreturns failure when store.saveToken throws
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mIntegration repository errors[2m > [22mreturns failure when listByUserId throws
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mIntegration repository errors[2m > [22mreturns failure when integration create throws
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mIntegration repository errors[2m > [22mreturns failure when integration update throws (reuse path)
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mIntegration repository errors[2m > [22mreturns failure when integration update returns null (record not found)
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mIntegration repository errors[2m > [22mreturns failure when deleteById throws during shop-change path
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful fresh install[2m > [22mreturns success with normalised shop host
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful fresh install[2m > [22mcalls integrationRepository.create with correct fields
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful fresh install[2m > [22mdoes not call update or deleteById for a fresh install
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful reconnect (same shop)[2m > [22mreturns success with the shop host
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful reconnect (same shop)[2m > [22mcalls update (not create) for an existing same-shop integration
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful shop change[2m > [22mreturns success
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mSuccessful shop change[2m > [22mdeletes the old integration record before creating a new one
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange request shape[2m > [22mPOSTs to the correct Shopify token endpoint
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange request shape[2m > [22msends application/x-www-form-urlencoded Content-Type
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange request shape[2m > [22mincludes the authorization code in the request body
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken exchange request shape[2m > [22mincludes the client_id in the request body
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken confidentiality[2m > [22mdoes not expose the client secret in error messages
+ [32mΓ£ô[39m tests/unit/services/integrations/shopify/callback.test.ts[2m > [22mShopify OAuth Callback Service[2m > [22mToken confidentiality[2m > [22mdoes not expose the access token in error messages
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m49 passed[39m[22m[90m (49)[39m
+[2m   Start at [22m 20:47:05
+[2m   Duration [22m 1.27s[2m (transform 242ms, setup 0ms, collect 291ms, tests 54ms, environment 0ms, prepare 401ms)[22m
+

@@ -25,7 +25,7 @@ export function hash(data: string): string {
 export const MERKLE_MAX_LEAVES: number = (() => {
   const raw = process.env.MERKLE_MAX_LEAVES;
   if (!raw) return 1_048_576; // 2^20
-  const parsed = parseInt(raw, 10);
+  const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 16_777_216) {
     throw new Error(
       `MERKLE_MAX_LEAVES must be a positive integer ≤ 16777216, got: "${raw}"`

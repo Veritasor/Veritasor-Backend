@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { eventFiltersSchema, evaluateEventFilter, createWebhookSubscriptionSchema, updateWebhookSubscriptionSchema, listWebhookSubscriptionsQuerySchema } from "../../src/schemas/webhookSubscription.js";
+import { eventFiltersSchema, evaluateEventFilter, createWebhookSubscriptionSchema, updateWebhookSubscriptionSchema, listWebhookSubscriptionsQuerySchema, MAX_FILTER_RULES } from "../../src/schemas/webhookSubscription.js";
 
 describe("eventFiltersSchema", () => {
   it("accepts an empty object", () => {
@@ -56,13 +56,29 @@ describe("eventFiltersSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects more than MAX_FILTER_RULES entries", () => {
+  it("accepts exactly MAX_FILTER_RULES entries", () => {
     const filters: Record<string, boolean> = {};
-    for (let i = 0; i < 51; i++) {
+    for (let i = 0; i < MAX_FILTER_RULES; i++) {
       filters[`event.${i}`] = true;
     }
+
+    const result = eventFiltersSchema.safeParse(filters);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects more than MAX_FILTER_RULES entries with the limit error", () => {
+    const filters: Record<string, boolean> = {};
+    for (let i = 0; i <= MAX_FILTER_RULES; i++) {
+      filters[`event.${i}`] = true;
+    }
+
     const result = eventFiltersSchema.safeParse(filters);
     expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(
+        `Maximum ${MAX_FILTER_RULES} filter rules allowed per subscription`,
+      );
+    }
   });
 
   it("rejects deeply nested filter objects", () => {
@@ -180,6 +196,18 @@ describe("evaluateEventFilter", () => {
     expect(
       evaluateEventFilter("order.shipped", payload, {
         "order.shipped": { "data.status": "pending" },
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["missing", {}],
+    ["null", { data: null }],
+    ["primitive", { data: "not-an-object" }],
+  ])("returns false when nested traversal reaches a %s value", (_label, payload) => {
+    expect(
+      evaluateEventFilter("order.shipped", payload, {
+        "order.shipped": { "data.status": "completed" },
       }),
     ).toBe(false);
   });

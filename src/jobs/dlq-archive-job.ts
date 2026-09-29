@@ -28,8 +28,9 @@ export async function runDlqArchiveJob(): Promise<void> {
       await sendAlert('DLQ Archive Failure', `Failure rate: ${(failureRate * 100).toFixed(2)}%`);
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     logger.error('DLQ archive job failed:', error);
-    await sendAlert('DLQ Archive Job Failed', error.message);
+    await sendAlert('DLQ Archive Job Failed', message);
     throw error;
   }
 }

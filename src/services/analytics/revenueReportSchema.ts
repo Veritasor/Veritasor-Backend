@@ -79,6 +79,7 @@ export const revenueReportQuerySchema = z.object({
   path: [], // Apply to the entire object
 })
 
+/** Inferred TypeScript type for a validated revenue report query. */
 export type RevenueReportQuery = z.infer<typeof revenueReportQuerySchema>
 
 /**
@@ -96,4 +97,5 @@ export const RevenueReportValidationErrors = {
   MISSING_PARAMETERS: 'MISSING_PARAMETERS',
 } as const
 
+/** Union of all known revenue report validation error codes. */
 export type RevenueReportValidationError = typeof RevenueReportValidationErrors[keyof typeof RevenueReportValidationErrors]

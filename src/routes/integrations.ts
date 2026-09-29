@@ -339,9 +339,14 @@ router.get('/:integrationId',
 );
 
 /**
- * Helper function to generate authentication URLs for different providers
+ * Build the provider authorization URL for a supported integration.
+ *
+ * Exported so the URL contract (and the unsupported-provider throw) can be
+ * exercised directly by unit tests — the HTTP `/connect` route validates the
+ * provider against a Zod enum first, so this helper's `default` branch is not
+ * reachable through the router alone.
  */
-function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
+export function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
   const baseUrl = redirectUri || 'http://localhost:3000/integrations/callback';
 
   switch (provider) {

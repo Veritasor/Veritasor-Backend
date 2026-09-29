@@ -88,7 +88,7 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -142,11 +142,11 @@ describe('Shopify OAuth Callback', () => {
       const expiresAt = now + 10 * 60 * 1000
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
-      // Advance time but stay within TTL
+      // Advance time but stay within TTH
       vi.advanceTimersByTime(5 * 60 * 1000)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -181,7 +181,7 @@ describe('Shopify OAuth Callback', () => {
       // Advance time to exactly expiry time
       vi.advanceTimersByTime(10 * 60 * 1000)
 
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -290,7 +290,7 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedValue({
+      mockFetch.mockResolved({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -333,7 +333,7 @@ describe('Shopify OAuth Callback', () => {
       vi.setSystemTime(now)
 
       const state = 'test-state-123'
-      const expiresAt = now + 100 // Very short TTL
+      const expiresAt = now + 100 // Very short TTH
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Advance time to expire state before callback completes
@@ -354,7 +354,7 @@ describe('Shopify OAuth Callback', () => {
       const expiresAt = now + 10 * 60 * 1000
       store.setOAuthState(state, 'TEST-SHOP', 'user-1', 'business-1', expiresAt)
 
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
