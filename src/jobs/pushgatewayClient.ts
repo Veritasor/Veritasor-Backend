@@ -27,7 +27,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** No-op client used when `PUSHGATEWAY_URL` is unset (e.g. local dev, tests). */
-class NoopPushgatewayClient implements PushgatewayClient {
+export class NoopPushgatewayClient implements PushgatewayClient {
   async pushJobMetrics(): Promise<void> {
     // Intentionally a no-op: no Pushgateway is configured.
   }
