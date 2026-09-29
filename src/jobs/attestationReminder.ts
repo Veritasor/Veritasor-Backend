@@ -31,15 +31,36 @@ export function nextPeriodBoundary(
   tz: string,
   period: ReportingPeriod,
 ): Date {
-  // Decompose `reference` into local calendar fields using Intl.
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  });
-  const parts = Object.fromEntries(fmt.formatToParts(reference).map((p) => [p.type, p.value]));
+  if (Number.isNaN(reference.getTime())) {
+    return new Date(NaN);
+  }
+
+  const effectiveTz = tz && typeof tz === "string" && tz.trim() ? tz : "UTC";
+
+  const getParts = (timeZone: string) => {
+    try {
+      const fmt = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        weekday: "short",
+      });
+      return Object.fromEntries(fmt.formatToParts(reference).map((p) => [p.type, p.value]));
+    } catch {
+      return Object.fromEntries(
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: "UTC",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          weekday: "short",
+        }).formatToParts(reference).map((p) => [p.type, p.value]),
+      );
+    }
+  };
+
+  const parts = getParts(effectiveTz);
 
   const year = Number(parts.year);
   const month = Number(parts.month); // 1-based
@@ -71,13 +92,26 @@ export function nextPeriodBoundary(
  * last reference point so it fires at the first boundary after creation.
  */
 export function shouldSendReminder(business: Business, now: Date): boolean {
-  const reference = business.lastReminderSentAt
-    ? new Date(business.lastReminderSentAt)
-    : new Date(business.createdAt);
+  try {
+    const reference = business.lastReminderSentAt
+      ? new Date(business.lastReminderSentAt)
+      : new Date(business.createdAt);
 
-  const tz = business.reportingTimezone || "UTC";
-  const boundary = nextPeriodBoundary(reference, tz, business.reportingPeriod);
-  return now >= boundary;
+    if (Number.isNaN(reference.getTime())) {
+      return false;
+    }
+
+    const tz =
+      business.reportingTimezone &&
+      typeof business.reportingTimezone === "string" &&
+      business.reportingTimezone.trim()
+        ? business.reportingTimezone
+        : "UTC";
+    const boundary = nextPeriodBoundary(reference, tz, business.reportingPeriod);
+    return Number.isFinite(boundary.getTime()) && now >= boundary;
+  } catch {
+    return false;
+  }
 }
 
 /**
