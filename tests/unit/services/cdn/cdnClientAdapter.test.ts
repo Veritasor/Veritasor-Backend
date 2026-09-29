@@ -228,6 +228,18 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
       );
     });
 
+    it.each([
+      ["FASTLY_API_KEY", "", TEST_SERVICE_ID],
+      ["FASTLY_SERVICE_ID", TEST_API_KEY, ""],
+    ])(
+      "rejects an explicitly empty %s despite valid environment configuration",
+      (_name, apiKey, serviceId) => {
+        expect(() => new FastlyClient(apiKey, serviceId)).toThrowError(
+          new Error("Fastly configuration missing FASTLY_API_KEY or FASTLY_SERVICE_ID"),
+        );
+      },
+    );
+
     it("uses default baseUrl https://api.fastly.com when FASTLY_API_BASE_URL is not set", async () => {
       delete process.env.FASTLY_API_BASE_URL;
       const client = new FastlyClient(TEST_API_KEY, TEST_SERVICE_ID);
