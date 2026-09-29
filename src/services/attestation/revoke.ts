@@ -47,8 +47,17 @@ export async function revokeAttestation(
     revokedAt: new Date().toISOString(),
   };
   if (reason) {
-    (updateData as any).revokeReason = reason;
+    updateData.revokeReason = reason;
   }
+
+  const updatedAttestation = attestationRepository.update(
+    attestationId,
+    updateData,
+  );
+  if (!updatedAttestation) {
+    throw new Error(`Failed to revoke attestation: ${attestationId}`);
+  }
+
   // 5. Trigger CDN purge for the revoked attestation
   try {
     const purgeUrl = `${process.env.CDN_BASE_URL ?? ''}/attestations/${attestationId}`;
