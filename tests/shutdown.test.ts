@@ -5,9 +5,9 @@
  *   ✔ Successful shutdown — server closes, pool drains, process.exit(0) called
  *   ✔ Timeout breach — deadline fires before drain completes, process.exit(1) called
  *   ✔ Repeated signal — second signal during active shutdown calls process.exit(1) immediately
- *   ✔ pool.end() error — logged but does not prevent clean exit
+ *   ✔ pool.end() error — shutdown fails with exit code 1
  *   ✔ server.close() error — causes process.exit(1) via error path
- *   ✔ onCleanup hook — invoked after pool closes; errors are swallowed
+ *   ✔ onCleanup hook — invoked after pool closes; errors fail shutdown
  *   ✔ SHUTDOWN_TIMEOUT_MS env override — respected when set to a valid integer
  *   ✔ Invalid SHUTDOWN_TIMEOUT_MS — falls back to 15 000 ms default
  *   ✔ Both SIGTERM and SIGINT are registered
@@ -111,8 +111,16 @@ function makeProc(): {
   };
 }
 
-/** Flush the microtask queue and any immediately-queued timers. */
-const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+/** Flush next-tick callbacks and async shutdown continuations under fake timers. */
+const flush = async (): Promise<void> => {
+  await vi.runAllTicks();
+  await vi.advanceTimersByTimeAsync(0);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
 
 // ---------------------------------------------------------------------------
 // Suite
@@ -203,7 +211,7 @@ describe('createShutdownOrchestrator', () => {
       expect(exitCalls).toEqual([0]);
     });
 
-    it('exits 0 even if onCleanup hook throws', async () => {
+    it('exits 1 if onCleanup hook throws', async () => {
       const { server, triggerClose } = makeServer();
       const { pool } = makePool();
       const { proc, exitCalls, emit } = makeProc();
@@ -217,7 +225,7 @@ describe('createShutdownOrchestrator', () => {
       triggerClose();
       await flush();
 
-      expect(exitCalls).toEqual([0]);
+      expect(exitCalls).toEqual([1]);
     });
 
     it('returns the registered handler function', () => {
@@ -235,7 +243,7 @@ describe('createShutdownOrchestrator', () => {
   // ── pool.end() errors ──────────────────────────────────────────────────
 
   describe('pool.end() error handling', () => {
-    it('logs pool error but still calls process.exit(0)', async () => {
+    it('fails shutdown with exit code 1 when the pool cannot close', async () => {
       const { server, triggerClose } = makeServer();
       const { pool } = makePool({ rejects: true });
       const { proc, exitCalls, emit } = makeProc();
@@ -250,11 +258,10 @@ describe('createShutdownOrchestrator', () => {
       await flush();
 
       expect(stderrSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[Shutdown] Error while closing DB pool:'),
+        '[Shutdown] Unexpected error during shutdown:',
         expect.any(Error),
       );
-      // Pool error is swallowed — exit code must still be 0
-      expect(exitCalls).toEqual([0]);
+      expect(exitCalls).toEqual([1]);
     });
   });
 
@@ -304,6 +311,25 @@ describe('createShutdownOrchestrator', () => {
         expect.stringContaining('exceeded'),
         // The message includes the timeout value
       );
+      expect(exitCalls).toEqual([1]);
+    });
+
+    it('does not report success if the drain completes after the deadline', async () => {
+      const { server, triggerClose } = makeServer();
+      const { pool } = makePool();
+      const { proc, exitCalls, emit } = makeProc();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 3_000 });
+      orchestrator.register(server, proc);
+      emit('SIGTERM');
+      await flush();
+
+      vi.advanceTimersByTime(3_001);
+      await flush();
+      triggerClose();
+      await flush();
+
       expect(exitCalls).toEqual([1]);
     });
 
@@ -435,7 +461,7 @@ describe('createShutdownOrchestrator', () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const originalEnv = process.env.SHUTDOWN_TIMEOUT_MS;
-      process.env.SHUTDOWN_TIMEOUT_MS = 'not-a-number';
+      process.env.SHUTDOWN_TIMEOUT_MS = '2000ms';
 
       const orchestrator = createShutdownOrchestrator({ pool });
       orchestrator.register(server, proc);

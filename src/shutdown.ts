@@ -101,11 +101,20 @@ export function createShutdownOrchestrator(opts: ShutdownOptions): ShutdownOrche
         // ------------------------------------------------------------------
         // Bounded deadline timer — triggers force-exit if drain stalls
         // ------------------------------------------------------------------
-        const deadline = setTimeout(() => {
+        let hasExited = false;
+        let deadline: ReturnType<typeof setTimeout>;
+        const finish = (code: number): void => {
+          if (hasExited) return;
+          hasExited = true;
+          clearTimeout(deadline);
+          proc.exit(code);
+        };
+
+        deadline = setTimeout(() => {
           console.error(
             `[Shutdown] Graceful shutdown exceeded ${timeoutMs} ms deadline — force-exiting.`,
           );
-          proc.exit(1);
+          finish(1);
         }, timeoutMs);
 
         // Ensure the timer does not keep the event loop alive after clean exit
@@ -117,14 +126,13 @@ export function createShutdownOrchestrator(opts: ShutdownOptions): ShutdownOrche
         // synchronous error log + force-exit so the process never hangs silently.
         performShutdown(server, opts, timeoutMs)
           .then(() => {
-            clearTimeout(deadline);
+            if (hasExited) return;
             logger.info({ event: 'shutdown_complete', signal });
-            proc.exit(0);
+            finish(0);
           })
           .catch((err: unknown) => {
-            clearTimeout(deadline);
             console.error('[Shutdown] Unexpected error during shutdown:', err);
-            proc.exit(1);
+            finish(1);
           });
       };
 
@@ -168,21 +176,12 @@ async function performShutdown(
   // ── Step 2: drain the PostgreSQL pool ───────────────────────────────────
   logger.info({ event: 'shutdown_pool_draining' });
 
-  try {
-    await opts.pool.end();
-    logger.info({ event: 'shutdown_pool_closed' });
-  } catch (err: unknown) {
-    // Log but do not rethrow — a pool-close error should not block exit
-    console.error('[Shutdown] Error while closing DB pool:', err);
-  }
+  await opts.pool.end();
+  logger.info({ event: 'shutdown_pool_closed' });
 
   // ── Step 3: optional user-supplied cleanup hook ──────────────────────────
   if (opts.onCleanup) {
-    try {
-      await opts.onCleanup();
-    } catch (err: unknown) {
-      console.error('[Shutdown] Error in onCleanup hook:', err);
-    }
+    await opts.onCleanup();
   }
 }
 
@@ -214,8 +213,8 @@ function closeServer(server: Server, _timeoutMs: number): Promise<void> {
 function getDefaultTimeoutMs(): number {
   const raw = process.env.SHUTDOWN_TIMEOUT_MS;
   if (raw !== undefined) {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isInteger(parsed) && parsed > 0) {
+    const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    if (Number.isSafeInteger(parsed) && parsed > 0) {
       return parsed;
     }
     console.warn(
