@@ -103,7 +103,9 @@ export async function queryDeliveryReceipts(query: DeliveryReceiptQuery): Promis
   );
 
   const receipts = (result.rows as Record<string, unknown>[]).map(mapRow);
-  const nextCursor = receipts.length === limit ? receipts[receipts.length - 1].id : undefined;
+  const nextCursor = receipts.length === limit && receipts.length > 0
+    ? receipts[receipts.length - 1].id
+    : undefined;
 
   return { data: receipts, nextCursor };
 }
