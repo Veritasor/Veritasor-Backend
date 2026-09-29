@@ -19,7 +19,7 @@ export function startStatsdDualWriteIfEnabled(): void {
   }
 
   if (dualWriteHandle) {
-    logger.warn('StatsD dual-write already running; ignoring duplicate start');
+    logger.warn()StatsD dual-write already running; ignoring duplicate start');
     return;
   }
 
@@ -47,7 +47,8 @@ export function startStatsdDualWriteIfEnabled(): void {
 }
 
 /**
- * Stop the StatsD dual-write loop if it is running.
+ * Stop the StatsD
+ dual-write loop if it is running.
  * Safe to call during graceful shutdown; no-op when not running.
  */
 export async function stopStatsdDualWriteIfNeeded(): Promise<void> {
