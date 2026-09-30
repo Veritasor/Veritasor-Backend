@@ -30,6 +30,17 @@ interface AuthLogContext {
   duration?: number;
 }
 
+/**
+ * JWT failure-message classifiers.
+ *
+ * `jose`/`jsonwebtoken` error text varies ("jwt expired", "invalid iss claim",
+ * "unexpected audience", ...), so each claim is matched on the claim name or its
+ * documented short alias with word boundaries — never as a bare substring.
+ */
+const JWT_EXPIRY_ERROR = /\b(expired|exp)\b/i;
+const JWT_ISSUER_ERROR = /\b(issuer|iss)\b/i;
+const JWT_AUDIENCE_ERROR = /\b(audience|aud)\b/i;
+
 function logAuthEvent(context: AuthLogContext): void {
   const timestamp = new Date().toISOString();
   const logEntry = {
@@ -208,8 +219,14 @@ export async function optionalAuth(
         duration: Date.now() - startTime,
         ...extractionResult.details
       };
-      
+
       logAuthEvent(logContext);
+
+      // Silent failure model (docs/specs/optional-auth-middleware/design.md):
+      // every unauthenticated exit must leave `req.user` undefined, so a
+      // credential-less request can never ride a stale identity left on the
+      // request by anything upstream.
+      req.user = undefined;
       next();
       return;
     }
@@ -223,11 +240,17 @@ export async function optionalAuth(
       let eventType: AuthEventType;
       
       if (error instanceof Error) {
-        if (error.message.includes('expired') || error.message.includes('exp')) {
+        // Match whole claim names, not substrings: the previous bare
+        // `includes('exp')` classified "unexpected audience" (and any message
+        // containing "exp") as EXPIRED_TOKEN, so the audience failure was
+        // reported under the wrong event. Word boundaries keep the short claim
+        // aliases working ("exp claim", "invalid iss value") without matching
+        // inside unrelated words.
+        if (JWT_EXPIRY_ERROR.test(error.message)) {
           eventType = AuthEventType.EXPIRED_TOKEN;
-        } else if (error.message.includes('issuer') || error.message.includes('iss')) {
+        } else if (JWT_ISSUER_ERROR.test(error.message)) {
           eventType = AuthEventType.WRONG_ISSUER;
-        } else if (error.message.includes('audience') || error.message.includes('aud')) {
+        } else if (JWT_AUDIENCE_ERROR.test(error.message)) {
           eventType = AuthEventType.WRONG_AUDIENCE;
         } else {
           eventType = AuthEventType.INVALID_TOKEN;
@@ -264,8 +287,12 @@ export async function optionalAuth(
         tokenLength: extractionResult.details.tokenLength,
         duration: Date.now() - startTime
       };
-      
+
       logAuthEvent(logContext);
+
+      // Verification yielded no payload -> the request is unauthenticated, so a
+      // stale identity must not survive (same rule as the verify() throw path).
+      req.user = undefined;
       next();
       return;
     }

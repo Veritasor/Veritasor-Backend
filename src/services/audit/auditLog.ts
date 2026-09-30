@@ -1,6 +1,6 @@
 // src/services/audit/auditLog.ts
 
-import { logger } from "../utils/logger.js";
+import { logger } from "../../utils/logger.js";
 
 export type PurgeStatus = "queued" | "success" | "failed";
 

@@ -27,6 +27,7 @@
  *  404  { error: string }   – no data for the given window
  */
 
+
 import { Router, Request, Response } from 'express'
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
@@ -36,6 +37,7 @@ import { getRevenueReport, TimeWindowError } from '../services/analytics/revenue
 import { revenueReportQuerySchema } from '../services/analytics/revenueReportSchema.js'
 import { logger } from '../utils/logger.js'
 
+
 export const analyticsRouter = Router()
 
 /** Shared rate-limit bucket for all analytics endpoints (30 req / 15 min). */
@@ -44,6 +46,7 @@ const analyticsRateLimiter = rateLimiter({
   max: 30,
   bucket: 'analytics',
 })
+
 
 /**
  * Middleware that copies the authenticated business ID into res.locals so
@@ -55,6 +58,7 @@ function setBusinessLocals(req: Request, res: Response, next: () => void): void 
   next()
 }
 
+
 // ---------------------------------------------------------------------------
 // GET /periods
 // ---------------------------------------------------------------------------
@@ -64,6 +68,7 @@ analyticsRouter.get(
   analyticsRateLimiter,
   requireBusinessAuth,
   setBusinessLocals,
+
   (req: Request, res: Response) => {
     const businessId = res.locals.businessId as string
 
@@ -83,6 +88,7 @@ analyticsRouter.get(
 
     res.json({ periods })
   },
+
 )
 
 // ---------------------------------------------------------------------------
@@ -106,12 +112,14 @@ analyticsRouter.get(
  * @response 400 { error: string }  – Missing/invalid params or bad range.
  * @response 404 { error: string }  – No data for the given window.
  */
+
 analyticsRouter.get(
   '/revenue',
   analyticsRateLimiter,
   requireBusinessAuth,
   setBusinessLocals,
   validateQuery(revenueReportQuerySchema),
+
   (req: Request, res: Response) => {
     const businessId = res.locals.businessId as string
     const { period, from, to } = req.query as Record<string, string | undefined>
@@ -165,4 +173,5 @@ analyticsRouter.get(
       throw err
     }
   },
+
 )

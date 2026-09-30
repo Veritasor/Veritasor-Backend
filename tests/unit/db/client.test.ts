@@ -1,136 +1,153 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PgClient, getPgClient, db } from '../../../src/db/client.ts'
+import pg from 'pg'
 
-const originalEnv = process.env
-const poolMock = vi.fn()
+vi.mock('pg', () => {
+  const mPool = {
+    connect: vi.fn(),
+    query: vi.fn(),
+    end: vi.fn(),
+  }
+  return {
+    Pool: vi.fn(() => mPool),
+  }
+})
 
-vi.mock('pg', () => ({
-  default: {
-    Pool: poolMock,
-  },
-}))
+describe('PgClient', () => {
+  const originalEnv = process.env
+  let poolMock: any
 
-async function importClient() {
-  return import('../../../src/db/client.ts')
-}
-
-describe('db client pool configuration', () => {
   beforeEach(() => {
     vi.resetModules()
-    poolMock.mockReset()
-    poolMock.mockImplementation(function Pool(options) {
-      return {
-        options,
-        query: vi.fn(),
-      }
-    })
-    process.env = {
-      ...originalEnv,
-      DATABASE_URL: 'postgresql://user:password@localhost:5432/app_db',
-      NODE_ENV: 'test',
-      SOROBAN_CONTRACT_ID: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM',
-    }
-    delete process.env.PGPOOL_MAX
-    delete process.env.PG_IDLE_TIMEOUT_MS
-    delete process.env.PG_CONN_TIMEOUT_MS
-    delete process.env.PGSSL
-    delete process.env.PGSSL_REJECT_UNAUTHORIZED
+    vi.clearAllMocks()
+    poolMock = new pg.Pool()
+    process.env = { ...originalEnv }
   })
 
   afterEach(() => {
     process.env = originalEnv
   })
 
-  it('creates a pool with validated defaults when optional vars are unset', async () => {
-    await importClient()
+  describe('PgClient construction and detection', () => {
+    it('initializes with default safe session mode when no pgbouncer vars present', () => {
+      const client = new PgClient()
+      expect(client.getPgBouncerStatus()?.mode).toBe('session')
+      expect(client.isPreparedStatementsDisabled()).toBe(false)
+    })
 
-    expect(poolMock).toHaveBeenCalledWith({
-      connectionString: 'postgresql://user:password@localhost:5432/app_db',
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-      ssl: undefined,
+    it('detects transaction mode via environment variable and disables prepared statements', () => {
+      process.env.PGBOUNCER_MODE = 'transaction'
+      const client = new PgClient()
+      expect(client.getPgBouncerStatus()?.mode).toBe('transaction')
+      expect(client.isPreparedStatementsDisabled()).toBe(true)
+    })
+
+    it('respects disablePreparedStatements option', () => {
+      const client = new PgClient({ disablePreparedStatements: true })
+      expect(client.isPreparedStatementsDisabled()).toBe(true)
+    })
+
+    it('respects pgbouncerMode override option', () => {
+      const client = new PgClient({ pgbouncerMode: 'transaction' })
+      expect(client.getPgBouncerStatus()?.mode).toBe('transaction')
+      expect(client.isPreparedStatementsDisabled()).toBe(true)
     })
   })
 
-  it('uses env-driven pool tuning values', async () => {
-    process.env.PGPOOL_MAX = '25'
-    process.env.PG_IDLE_TIMEOUT_MS = '45000'
-    process.env.PG_CONN_TIMEOUT_MS = '5000'
+  describe('Query handling', () => {
+    it('uses unnamed statement for simple queries', async () => {
+      const client = new PgClient()
+      poolMock.query.mockResolvedValueOnce({ rows: [] })
+      
+      await client.query('SELECT * FROM users')
+      
+      expect(poolMock.query).toHaveBeenCalledWith('SELECT * FROM users', undefined)
+    })
 
-    await importClient()
+    it('uses prepared statement for complex queries with where clause', async () => {
+      const client = new PgClient()
+      poolMock.query.mockResolvedValue({ rows: [] })
+      
+      const queryText = 'SELECT id, name FROM users WHERE id = $1 AND status = $2' + ' '.repeat(100)
+      await client.query(queryText, [1, 'active'])
+      
+      expect(poolMock.query).toHaveBeenCalledWith(expect.stringContaining('PREPARE prep_0 AS ' + queryText))
+      expect(poolMock.query).toHaveBeenCalledWith('EXECUTE prep_0', [1, 'active'])
+      expect(poolMock.query).toHaveBeenCalledWith('DEALLOCATE prep_0')
+    })
 
-    expect(poolMock).toHaveBeenCalledWith({
-      connectionString: 'postgresql://user:password@localhost:5432/app_db',
-      max: 25,
-      idleTimeoutMillis: 45000,
-      connectionTimeoutMillis: 5000,
-      ssl: undefined,
+    it('falls back to unnamed statement if prepared statement throws error', async () => {
+      const client = new PgClient()
+      poolMock.query.mockRejectedValueOnce(new Error('Prepare failed')) // prepare fails
+      poolMock.query.mockResolvedValueOnce({ rows: [] }) // fallback succeeds
+      
+      const queryText = 'SELECT id, name FROM users WHERE id = $1 AND status = $2' + ' '.repeat(100)
+      await client.query(queryText, [1, 'active'])
+      
+      // Fallback unnamed execution
+      expect(poolMock.query).toHaveBeenCalledWith(queryText, [1, 'active'])
+    })
+
+    it('forces unnamed statement if in transaction mode', async () => {
+      process.env.PGBOUNCER_MODE = 'transaction'
+      const client = new PgClient()
+      poolMock.query.mockResolvedValueOnce({ rows: [] })
+      
+      const queryText = 'SELECT id, name FROM users WHERE id = $1 AND status = $2' + ' '.repeat(100)
+      await client.query(queryText, [1, 'active'])
+      
+      expect(poolMock.query).toHaveBeenCalledWith(queryText, [1, 'active'])
+      // Ensure PREPARE was never called
+      expect(poolMock.query).not.toHaveBeenCalledWith(expect.stringContaining('PREPARE'))
     })
   })
 
-  it('enables SSL with rejectUnauthorized by default when PGSSL=true', async () => {
-    process.env.PGSSL = 'true'
+  describe('Singleton and DB proxy', () => {
+    it('getPgClient returns the same singleton instance', () => {
+      const client1 = getPgClient()
+      const client2 = getPgClient()
+      expect(client1).toBe(client2)
+    })
 
-    await importClient()
-
-    expect(poolMock).toHaveBeenCalledWith({
-      connectionString: 'postgresql://user:password@localhost:5432/app_db',
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-      ssl: {
-        rejectUnauthorized: true,
-      },
+    it('db proxy forwards calls to getPgClient', async () => {
+      const client = getPgClient()
+      
+      const statusFromDb = db.getPgBouncerStatus()
+      const statusFromClient = client.getPgBouncerStatus()
+      
+      expect(statusFromDb).toEqual(statusFromClient)
     })
   })
 
-  it('allows SSL rejectUnauthorized to be disabled explicitly', async () => {
-    process.env.PGSSL = 'true'
-    process.env.PGSSL_REJECT_UNAUTHORIZED = 'false'
-
-    await importClient()
-
-    expect(poolMock).toHaveBeenCalledWith({
-      connectionString: 'postgresql://user:password@localhost:5432/app_db',
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-      ssl: {
-        rejectUnauthorized: false,
-      },
+  describe('State transitions and health check', () => {
+    it('healthCheck returns true on success', async () => {
+      const client = new PgClient()
+      poolMock.query.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] })
+      
+      const isHealthy = await client.healthCheck()
+      expect(isHealthy).toBe(true)
     })
-  })
 
-  it('fails fast when DATABASE_URL is missing', async () => {
-    delete process.env.DATABASE_URL
+    it('healthCheck returns false on failure', async () => {
+      const client = new PgClient()
+      poolMock.query.mockRejectedValueOnce(new Error('Connection failed'))
+      
+      const isHealthy = await client.healthCheck()
+      expect(isHealthy).toBe(false)
+    })
 
-    await expect(importClient()).rejects.toThrow(
-      'DATABASE_URL environment variable is required',
-    )
-    expect(poolMock).not.toHaveBeenCalled()
-  })
+    it('getClient returns a connection from pool', async () => {
+      const client = new PgClient()
+      poolMock.connect.mockResolvedValueOnce({} as any)
+      
+      await client.getClient()
+      expect(poolMock.connect).toHaveBeenCalled()
+    })
 
-  it.each([
-    ['PGPOOL_MAX', '0', 'PGPOOL_MAX must be a positive integer'],
-    ['PG_IDLE_TIMEOUT_MS', '-1', 'PG_IDLE_TIMEOUT_MS must be a positive integer'],
-    ['PG_CONN_TIMEOUT_MS', 'abc', 'PG_CONN_TIMEOUT_MS must be a positive integer'],
-  ])('rejects invalid numeric env values for %s', async (name, value, message) => {
-    process.env[name] = value
-
-    await expect(importClient()).rejects.toThrow(message)
-    expect(poolMock).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['PGSSL', 'maybe'],
-    ['PGSSL_REJECT_UNAUTHORIZED', 'sometimes'],
-  ])('rejects invalid boolean values for %s', async (name, value) => {
-    process.env.PGSSL = 'true'
-    process.env[name] = value
-
-    await expect(importClient()).rejects.toThrow(
-      `${name} must be a boolean value (true/false, 1/0, yes/no, on/off)`,
-    )
-    expect(poolMock).not.toHaveBeenCalled()
+    it('end closes the pool', async () => {
+      const client = new PgClient()
+      await client.end()
+      expect(poolMock.end).toHaveBeenCalled()
+    })
   })
 })

@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { db } from '../db/client.js'
 import { decodeCursor, encodeCursor } from '../utils/pagination.js'
 
 export type ReportingPeriod = 'weekly' | 'monthly'
@@ -96,6 +97,54 @@ export interface PaginatedBusinessResult {
   nextCursor?: string;
 }
 
+/** Raw row shape returned by the `businesses` table (snake_case columns). */
+interface BusinessRow {
+  id: string
+  user_id: string
+  name: string
+  email: string
+  industry: string | null
+  description: string | null
+  website: string | null
+  reporting_period?: string | null
+  reporting_timezone?: string | null
+  last_reminder_sent_at?: string | Date | null
+  created_at: string | Date
+  updated_at: string | Date
+}
+
+/** Convert a timestamp column (Date or string) to an ISO-8601 string. */
+function toIso(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : String(value)
+}
+
+/**
+ * Narrow a DB `reporting_period` value to the ReportingPeriod union.
+ * The DB CHECK constraint only permits 'weekly' | 'monthly'; any other
+ * value (defensive) falls back to the documented default 'monthly'.
+ */
+function toReportingPeriod(value: string | null | undefined): ReportingPeriod {
+  return value === 'weekly' ? 'weekly' : 'monthly'
+}
+
+/** Map a snake_case DB row to the public camelCase `Business` shape. */
+function toBusiness(row: BusinessRow): Business {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    email: row.email,
+    industry: row.industry ?? null,
+    description: row.description ?? null,
+    website: row.website ?? null,
+    reportingPeriod: toReportingPeriod(row.reporting_period),
+    reportingTimezone: row.reporting_timezone ?? 'UTC',
+    lastReminderSentAt: row.last_reminder_sent_at ? toIso(row.last_reminder_sent_at) : null,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  }
+}
+
 export async function list(options: BusinessListOptions): Promise<PaginatedBusinessResult> {
   const { limit, cursor, sortBy, sortOrder, industry } = options;
   
@@ -127,9 +176,11 @@ export async function list(options: BusinessListOptions): Promise<PaginatedBusin
   values.push(limit + 1);
   const limitIdx = values.length;
   
-  const result = await dbClient.query(
+  const result = await db.query<BusinessRow>(
     `
-      SELECT id, user_id, name, email, industry, description, website, created_at, updated_at
+      SELECT id, user_id, name, email, industry, description, website,
+             reporting_period, reporting_timezone, last_reminder_sent_at,
+             created_at, updated_at
       FROM businesses
       ${whereClause}
       ${orderClause}
@@ -139,7 +190,7 @@ export async function list(options: BusinessListOptions): Promise<PaginatedBusin
   );
   
   const hasMore = result.rows.length > limit;
-  const rowsToReturn = hasMore ? (result.rows as BusinessRow[]).slice(0, limit) : (result.rows as BusinessRow[]);
+  const rowsToReturn = hasMore ? result.rows.slice(0, limit) : result.rows;
   const items = rowsToReturn.map(toBusiness);
   
   let nextCursor: string | undefined;
