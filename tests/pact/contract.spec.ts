@@ -25,6 +25,9 @@ vi.mock('../../src/repositories/attestationRepository.js', () => ({
   createWithConflictCheck: vi.fn(),
   remove: vi.fn(),
   listAll: vi.fn(),
+  getByMerkleRoot: vi.fn(async (_client: any, root: string) => {
+    return mockState.attestations.get(root) ?? null;
+  }),
 }));
 
 vi.mock('../../src/services/integrations/retryBudget.js', () => ({
@@ -140,8 +143,8 @@ describe('Veritasor-Backend Pact Contract', () => {
               status: 200,
               headers: {
                 'Content-Type': 'application/json; charset=utf-8',
-                'Cache-Control': 'public, max-age=60, stale-while-revalidate=60',
-                'ETag': '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"',
+                'Cache-Control': 'public, max-age=60, stale-while-revalidate=60, stale-if-error=86400',
+                'ETag': '"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY="',
                 'Last-Modified': 'Wed, 29 Jul 2026 10:30:00 GMT',
                 'Age': '0',
               },
@@ -174,12 +177,12 @@ describe('Veritasor-Backend Pact Contract', () => {
             .withRequest({
               method: 'GET',
               path: `${PUBLIC_ATTESTATIONS_BASE}/abc123`,
-              headers: { 'If-None-Match': '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"' },
+              headers: { 'If-None-Match': '"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY="' },
             })
             .willRespondWith({ status: 304 }),
         test: async (url) => {
           const res = await fetch(`${url}${PUBLIC_ATTESTATIONS_BASE}/abc123`, {
-            headers: { 'If-None-Match': '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"' },
+            headers: { 'If-None-Match': '"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY="' },
           });
           expect(res.status).toBe(304);
         },
@@ -210,7 +213,7 @@ describe('Veritasor-Backend Pact Contract', () => {
               status: 410,
               headers: {
                 'Content-Type': 'application/json; charset=utf-8',
-                'Cache-Control': 'public, max-age=15, stale-while-revalidate=60',
+                'Cache-Control': 'public, max-age=15, stale-while-revalidate=60, stale-if-error=3600',
                 'Age': '0',
               },
               body: { status: 'error', code: 'GONE', message: 'Attestation has been revoked' },
