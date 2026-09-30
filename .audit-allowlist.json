@@ -54,5 +54,68 @@
     "severity": "high",
     "reason": "Wait for upstream fix",
     "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240114",
+    "package": "nodemailer",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240603",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240604",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240605",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240607",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240608",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240622",
+    "package": "@grpc/grpc-js",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240628",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1240634",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
   }
 ]
