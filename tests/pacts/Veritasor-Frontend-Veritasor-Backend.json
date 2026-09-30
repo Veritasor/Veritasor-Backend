@@ -18,7 +18,7 @@
         },
         "headers": {
           "Age": "0",
-          "Cache-Control": "public, max-age=15, stale-while-revalidate=60",
+          "Cache-Control": "public, max-age=15, stale-while-revalidate=60, stale-if-error=3600",
           "Content-Type": "application/json; charset=utf-8"
         },
         "status": 410
@@ -65,9 +65,9 @@
         },
         "headers": {
           "Age": "0",
-          "Cache-Control": "public, max-age=60, stale-while-revalidate=60",
+          "Cache-Control": "public, max-age=60, stale-while-revalidate=60, stale-if-error=86400",
           "Content-Type": "application/json; charset=utf-8",
-          "ETag": "\"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk\"",
+          "ETag": "\"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY=\"",
           "Last-Modified": "Wed, 29 Jul 2026 10:30:00 GMT"
         },
         "matchingRules": {
@@ -155,7 +155,7 @@
       "providerState": "an attestation exists with hash \"abc123\" and the request has a matching ETag",
       "request": {
         "headers": {
-          "If-None-Match": "\"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk\""
+          "If-None-Match": "\"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY=\""
         },
         "method": "GET",
         "path": "/api/v1/public/attestations/abc123"
