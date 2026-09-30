@@ -6,3 +6,5 @@ allowBuilds:
   ssh2: set this to true or false
   unrs-resolver: set this to true or false
 minimumReleaseAge: 0
+packages:
+  - '.'

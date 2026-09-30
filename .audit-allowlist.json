@@ -1,1 +1,58 @@
-[]
+[
+  {
+    "id": "1120252",
+    "package": "@opentelemetry/sdk-node",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1120253",
+    "package": "@opentelemetry/exporter-prometheus",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1123259",
+    "package": "ws",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1124011",
+    "package": "@opentelemetry/propagator-jaeger",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1158513",
+    "package": "nodemailer",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1164824",
+    "package": "toml",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1164825",
+    "package": "toml",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  },
+  {
+    "id": "1193778",
+    "package": "nodemailer",
+    "severity": "high",
+    "reason": "Wait for upstream fix",
+    "expires": "2027-01-01T00:00:00Z"
+  }
+]
