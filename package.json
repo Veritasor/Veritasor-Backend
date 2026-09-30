@@ -97,7 +97,6 @@
     "autocannon": "^8.0.0",
     "eslint": "^9.15.0",
     "fast-check": "^4.6.0",
-    "fdir": "^6.5.0",
     "helmet": "^8.3.0",
     "jest": "^30.2.0",
     "license-checker": "^25.0.1",
