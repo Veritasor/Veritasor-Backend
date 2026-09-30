@@ -5,44 +5,101 @@ export type User = {
   profile?: Record<string, any>
 }
 
+export const MAX_NAME_LENGTH = 100
+
+export type ProfileUpdateErrorCode =
+  | 'USER_ID_REQUIRED'
+  | 'INVALID_UPDATES'
+  | 'INVALID_NAME'
+  | 'NAME_EMPTY'
+  | 'NAME_TOO_LONG'
+  | 'INVALID_PROFILE'
+  | 'USER_NOT_FOUND'
+
+/** Extends Error, so existing `catch (e) { e.message }` callers keep working. */
+export class ProfileUpdateError extends Error {
+  readonly code: ProfileUpdateErrorCode
+  constructor(code: ProfileUpdateErrorCode, message: string) {
+    super(message)
+    this.name = 'ProfileUpdateError'
+    this.code = code
+  }
+}
+
+/** Persistence seam. Defaults to the in-memory stub below. */
+export interface ProfileStore {
+  findById(userId: string): Promise<User | null>
+  save(user: User): Promise<User>
+}
+
+const stubStore: ProfileStore = {
+  async findById(userId) {
+    return { id: userId, email: 'user@example.com', name: 'Existing User', profile: {} }
+  },
+  async save(user) {
+    return user
+  },
+}
+
+function isPlainObject(v: unknown): v is Record<string, any> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
 /**
- * Update a user's profile. This is a stubbed service that would
- * normally persist changes to a database. It validates allowed fields
- * and returns the updated user object.
+ * Update a user's profile.
+ *
+ * Success: resolves to the full updated User (id and email are never changed).
+ * Only `name` and `profile` are updatable; other keys are ignored.
+ * `undefined` values are skipped. `profile` replaces the old profile (shallow copy).
+ *
+ * Failure: rejects with ProfileUpdateError. Checks run in a fixed order and
+ * always before any store access:
+ * userId -> updates -> name -> profile -> user lookup.
  */
-export async function updateProfile(userId: string, updates: Partial<User>): Promise<User> {
-  if (!userId) throw new Error('userId required')
+export async function updateProfile(
+  userId: string,
+  updates: Partial<User>,
+  store: ProfileStore = stubStore,
+): Promise<User> {
+  if (typeof userId !== 'string' || userId.trim() === '') {
+    throw new ProfileUpdateError('USER_ID_REQUIRED', 'userId required')
+  }
+  if (!isPlainObject(updates)) {
+    throw new ProfileUpdateError('INVALID_UPDATES', 'updates must be an object')
+  }
 
-  const allowed: (keyof User)[] = ['name', 'profile']
-  const payload: Partial<User> = {}
-  for (const k of allowed) {
-    if (k in updates) {
-      // simple runtime validation
-      if (k === 'name' && updates.name !== undefined && typeof updates.name !== 'string') {
-        throw new Error('name must be a string')
-      }
-      if (k === 'profile' && updates.profile !== undefined && typeof updates.profile !== 'object') {
-        throw new Error('profile must be an object')
-      }
-      // @ts-ignore
-      payload[k] = updates[k]
+  const payload: Partial<Pick<User, 'name' | 'profile'>> = {}
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'name') && updates.name !== undefined) {
+    if (typeof updates.name !== 'string') {
+      throw new ProfileUpdateError('INVALID_NAME', 'name must be a string')
     }
+    const name = updates.name.trim()
+    if (name.length === 0) {
+      throw new ProfileUpdateError('NAME_EMPTY', 'name must not be empty')
+    }
+    if (name.length > MAX_NAME_LENGTH) {
+      throw new ProfileUpdateError(
+        'NAME_TOO_LONG',
+        `name must be at most ${MAX_NAME_LENGTH} characters`,
+      )
+    }
+    payload.name = name
   }
 
-  // Stub: return merged object. In real app, fetch existing user from DB
-  const existing: User = {
-    id: userId,
-    email: 'user@example.com',
-    name: 'Existing User',
-    profile: {},
+  if (Object.prototype.hasOwnProperty.call(updates, 'profile') && updates.profile !== undefined) {
+    if (!isPlainObject(updates.profile)) {
+      throw new ProfileUpdateError('INVALID_PROFILE', 'profile must be an object')
+    }
+    payload.profile = { ...updates.profile }
   }
 
-  const updated: User = {
-    ...existing,
-    ...payload,
+  const existing = await store.findById(userId)
+  if (!existing) {
+    throw new ProfileUpdateError('USER_NOT_FOUND', 'user not found')
   }
 
-  return updated
+  return store.save({ ...existing, ...payload, id: existing.id, email: existing.email })
 }
 
 export default updateProfile
