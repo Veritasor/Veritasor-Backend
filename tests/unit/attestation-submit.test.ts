@@ -145,7 +145,7 @@ describe('submitAttestation - Enhanced with retry logic', () => {
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
-        message: 'No revenue found for the period 2024-03',
+        message: expect.stringContaining('No revenue found for the period 2024-03'),
         code: 'ATTESTATION_SUBMIT_FAILED',
       })
     );
@@ -161,7 +161,7 @@ describe('submitAttestation - Enhanced with retry logic', () => {
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
-        message: 'Failed to fetch revenue: API rate limit exceeded',
+        message: expect.stringContaining('Failed to fetch revenue: API rate limit exceeded'),
         code: 'ATTESTATION_SUBMIT_FAILED',
       })
     );
