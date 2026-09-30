@@ -88,7 +88,7 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -146,7 +146,7 @@ describe('Shopify OAuth Callback', () => {
       vi.advanceTimersByTime(5 * 60 * 1000)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -181,7 +181,7 @@ describe('Shopify OAuth Callback', () => {
       // Advance time to exactly expiry time
       vi.advanceTimersByTime(10 * 60 * 1000)
 
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -290,7 +290,7 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolved({
+      mockFetch.mockResolvedValue({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -354,7 +354,7 @@ describe('Shopify OAuth Callback', () => {
       const expiresAt = now + 10 * 60 * 1000
       store.setOAuthState(state, 'TEST-SHOP', 'user-1', 'business-1', expiresAt)
 
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
