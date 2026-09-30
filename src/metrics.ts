@@ -484,6 +484,25 @@ export const statsdDualWriteMetricsCount = new Gauge({
 });
 
 /**
+ * Generic background-job instrumentation metrics.
+ *
+ * - `job_duration_seconds` (histogram, labels: job): wall-clock duration of a
+ *   single job run. Used by `runInstrumentedJob` in `src/jobs/jobRunner.ts`.
+ *
+ * - `job_runs_total` (counter, labels: job, outcome): total job runs, tagged
+ *   with `outcome="success"` or `outcome="failure"`.
+ *
+ * - `job_items_processed_total` (counter, labels: job): cumulative count of
+ *   business items processed across all runs of each job.
+ *
+ * - `job_last_run_timestamp` (gauge, labels: job): Unix timestamp (seconds)
+ *   of the most recent run. Lets operators detect stale jobs.
+ */
+export const jobDurationSeconds = new Histogram({
+  name: 'job_duration_seconds',
+  help: 'Duration of a background job run in seconds',
+  labelNames: ['job'] as const,
+  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2.5, 5, 10, 30, 60],
  * Batch job runner metrics (consumed by `src/jobs/jobRunner.ts`).
  *
  * `runInstrumentedJob` records one duration observation, one run-outcome
@@ -500,6 +519,9 @@ export const jobDurationSeconds = new Histogram({
 });
 
 export const jobRunsTotal = new Counter({
+  name: 'job_runs_total',
+  help: 'Total number of background job runs',
+  labelNames: ['job', 'outcome'] as const,
   name: "job_runs_total",
   help: "Total instrumented batch job runs, labelled by outcome",
   labelNames: ["job", "outcome"] as const,
@@ -507,6 +529,9 @@ export const jobRunsTotal = new Counter({
 });
 
 export const jobItemsProcessedTotal = new Counter({
+  name: 'job_items_processed_total',
+  help: 'Total number of items processed by background jobs',
+  labelNames: ['job'] as const,
   name: "job_items_processed_total",
   help: "Total business items acted on by instrumented batch jobs",
   labelNames: ["job"] as const,
@@ -514,6 +539,9 @@ export const jobItemsProcessedTotal = new Counter({
 });
 
 export const jobLastRunTimestamp = new Gauge({
+  name: 'job_last_run_timestamp',
+  help: 'Unix timestamp (seconds) of the most recent background job run',
+  labelNames: ['job'] as const,
   name: "job_last_run_timestamp_seconds",
   help: "Unix timestamp (seconds) of the last instrumented batch job run",
   labelNames: ["job"] as const,
