@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { requireAuth } from '../middleware/requireAuth.js'
-import updateProfile from '../services/user/updateProfile.js'
+import updateProfile, { ProfileUpdateError } from '../services/user/updateProfile.js'
 import { validateBody } from '../middleware/validate.js'
 import { updateUserProfileSchema } from './users.schema.js'
 import {
@@ -26,7 +26,11 @@ usersRouter.patch('/me', requireAuth, validateBody(updateUserProfileSchema), asy
     const userId = req.user.id
     const updated = await updateProfile(userId, updates)
     return res.json(updated)
-  } catch (err: any) {
+    } catch (err: any) {
+    if (err instanceof ProfileUpdateError) {
+      const status = err.code === 'USER_NOT_FOUND' ? 404 : 400
+      return res.status(status).json({ message: err.message, code: err.code })
+    }
     return res.status(400).json({ message: err?.message ?? 'Invalid input' })
   }
 })

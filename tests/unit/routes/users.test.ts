@@ -18,7 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import request from 'supertest'
 import express from 'express'
-
+import { ProfileUpdateError } from '../../../src/services/user/updateProfile.js'
 import usersRouter from '../../../src/routes/users.js'
 import { errorHandler } from '../../../src/middleware/errorHandler.js'
 
@@ -39,9 +39,13 @@ vi.mock('../../../src/middleware/requireAuth.js', () => ({
   },
 }))
 
-vi.mock('../../../src/services/user/updateProfile.js', () => ({
-  default: mocks.updateProfile,
-}))
+vi.mock('../../../src/services/user/updateProfile.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/services/user/updateProfile.js')>()
+  return {
+    ...actual,
+    default: mocks.updateProfile,
+  }
+})
 
 vi.mock('../../../src/services/user/dataExportService.js', () => ({
   initiateDataExport: mocks.initiateDataExport,
@@ -170,6 +174,34 @@ describe('PATCH /api/users/me', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.message).toBe('name must be a string')
+  })
+
+  it('returns 400 with an error code for a ProfileUpdateError', async () => {
+    mocks.updateProfile.mockRejectedValue(
+      new ProfileUpdateError('NAME_EMPTY', 'name must not be empty'),
+    )
+
+    const res = await request(app)
+      .patch('/api/users/me')
+      .set('Authorization', AUTH)
+      .send({ name: 'Alice' })
+
+    expect(res.status).toBe(400)
+    expect(res.body).toEqual({ message: 'name must not be empty', code: 'NAME_EMPTY' })
+  })
+
+  it('returns 404 with an error code when the user is not found', async () => {
+    mocks.updateProfile.mockRejectedValue(
+      new ProfileUpdateError('USER_NOT_FOUND', 'user not found'),
+    )
+
+    const res = await request(app)
+      .patch('/api/users/me')
+      .set('Authorization', AUTH)
+      .send({ name: 'Alice' })
+
+    expect(res.status).toBe(404)
+    expect(res.body).toEqual({ message: 'user not found', code: 'USER_NOT_FOUND' })
   })
 
   it('falls back to a generic message when the service rejects without one', async () => {
