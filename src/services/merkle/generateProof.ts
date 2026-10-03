@@ -59,6 +59,7 @@ export function isProofStep(value: unknown): value is ProofStep {
  */
 export function isProof(value: unknown): value is Proof {
   if (!Array.isArray(value)) return false;
+  if (value.length === 0) return false;
   if (value.length > MERKLE_PROOF_MAX_STEPS) return false;
   return value.every((step) => isProofStep(step));
 }
