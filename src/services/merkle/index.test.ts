@@ -177,22 +177,39 @@ describe("merkle index – success paths", () => {
     });
 
     it('returns false for invalid leaf type', () => {
+      const leaves = ['a', 'b', 'c', 'd'];
+      const tree = buildTree(leaves);
+      const root = getRoot(tree, leaves.length);
+      const proof = generateProof(leaves, 0);
       expect(verifyProof(123 as unknown as string, proof, root)).toBe(false);
     });
 
     it('returns false for invalid proof type', () => {
+      const leaves = ['a', 'b', 'c', 'd'];
+      const tree = buildTree(leaves);
+      const root = getRoot(tree, leaves.length);
       expect(verifyProof('a', {} as any, root)).toBe(false);
     });
 
     it('returns false for null leaf', () => {
+      const leaves = ['a', 'b', 'c', 'd'];
+      const tree = buildTree(leaves);
+      const root = getRoot(tree, leaves.length);
+      const proof = generateProof(leaves, 0);
       expect(verifyProof(null as unknown as string, proof, root)).toBe(false);
     });
 
     it('returns false for null proof', () => {
+      const leaves = ['a', 'b', 'c', 'd'];
+      const tree = buildTree(leaves);
+      const root = getRoot(tree, leaves.length);
       expect(verifyProof('a', null as unknown as any, root)).toBe(false);
     });
 
     it('returns false for empty proof when tree has >1 leaf', () => {
+      const leaves = ['a', 'b', 'c', 'd'];
+      const tree = buildTree(leaves);
+      const root = getRoot(tree, leaves.length);
       expect(verifyProof('a', [], root)).toBe(false);
     });
   });
