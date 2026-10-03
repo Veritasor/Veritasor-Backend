@@ -6,7 +6,7 @@ export type PaginationParams = {
 
 /**
  * Parse query params and return limit/offset for DB queries.
- * Accepts `{ page, limit }` from req.query and applies sane defaults and caps.
+ * Accepts `{page, limit}` from req.query and applies sane defaults and caps.
  */
 export function getPagination(query?: { page?: string | number; limit?: string | number }): PaginationParams {
   const rawPage = query?.page ?? 1
@@ -19,18 +19,44 @@ export function getPagination(query?: { page?: string | number; limit?: string |
   return { page, limit, offset }
 }
 
-/**
- * Format a paginated response payload.
- * Returns an object containing `data`, `total`, `page`, and `limit`.
- */
-export function formatPaginatedResponse<T>(data: T[], total: number, page: number, limit: number) {
-  return {
-    data,
-    total,
-    page,
-    limit,
-    totalPages: Math.ceil(total / limit) || 0,
-  }
+// ---------------------------------------------------------------------------
+// Keyset (cursor) pagination helpers
+//
+// The cursor is the base64 encoding of a JSON payload `{ value, id }` where
+// `value` is the sort key of the last item on the previous page and `id` is
+// that item's primary key (a stable tiebreaker for equal sort values).
+// ---------------------------------------------------------------------------
+
+export type CursorPayload = {
+  value: string
+  id: string
 }
 
-export default { getPagination, formatPaginatedResponse }
+/**
+ * Encode a cursor payload as a URL-safe opaque string.
+ * Deterministic: the same payload always yields the same cursor.
+ */
+export function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify({ value: payload.value, id: payload.id }), 'utf8').toString('base64')
+}
+
+/**
+ * Decode a cursor string produced by {@link encodeCursor}.
+ *
+ * Returns `null` for undefined/empty cursors (meaning "first page") and for
+ * any cursor that is malformed or decodes to a payload without string
+ * `value` and `id` fields. Never throws, so callers can treat `null` as
+ * "ignore the cursor" or as their own invalid-cursor error.
+ */
+export function decodeCursor(cursor?: string | null): CursorPayload | null {
+  if (cursor === undefined || cursor === null || cursor === '') return null
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'))
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { value, id } = parsed as Record<string, unknown>
+    if (typeof value !== 'string' || typeof id !== 'string') return null
+    return { value, id }
+  } catch {
+    return null
+  }
+}

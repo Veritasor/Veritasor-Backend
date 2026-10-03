@@ -1,0 +1,30 @@
+name: Prometheus alert rule tests
+
+on:
+  push:
+    paths:
+      - 'ops/alerts/**'
+  pull_request:
+    paths:
+      - 'ops/alerts/**'
+
+jobs:
+  promtool:
+    name: promtool test rules
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Prometheus
+        run: |
+          PROM_VERSION=2.53.0
+          curl -sSLf "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin prometheus-${PROM_VERSION}.linux-amd64/promtool
+          promtool --version
+
+      - name: Lint alert rules
+        run: promtool check rules ops/alerts/backend.rules.yaml
+
+      - name: Run unit tests
+        run: promtool test rules ops/alerts/tests.yaml

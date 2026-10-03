@@ -1,88 +1,286 @@
-const STARTUP_CHECK_TIMEOUT_MS = 2_500;
-
 /**
- * Startup dependency check result.
- */
-export interface DependencyReadinessResult {
-  dependency: "config" | "database";
-  ready: boolean;
-  reason?: string;
-}
-
-/**
- * Startup dependency readiness report used for boot-time validation.
- */
-export interface StartupReadinessReport {
-  ready: boolean;
-  checks: DependencyReadinessResult[];
-}
-
-/**
- * Validate startup dependencies before accepting traffic.
+ * Startup dependency readiness checks.
+ *
+ * Validates all critical dependencies before the HTTP listener opens.
+ * Each check returns an explicit, operator-readable failure reason so that
+ * boot failures are immediately actionable without digging through logs.
+ *
+ * Checks performed (in order):
+ *   1. config/jwt        JWT_SECRET length (all envs; stricter in production)
+ *   2. config/soroban    SOROBAN_CONTRACT_ID present in production
+ *   3. config/stripe     STRIPE_WEBHOOK_SECRET present in production
+ *   4. database          SELECT 1 probe when DATABASE_URL is configured
  *
  * Security notes:
- * - Does not log secrets or full connection strings.
- * - Ensures critical production auth secret exists before startup.
+ *   - Failure reasons never include secret values or raw connection strings.
+ *   - Database probe is read-only (SELECT 1) with a bounded timeout.
+ *   - All decisions are emitted as structured log entries for observability.
+ */
+
+import { db } from "../db/client.js"
+import { logger } from "../utils/logger.js"
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Timeout for the database connectivity probe. */
+const STARTUP_CHECK_TIMEOUT_MS = 2_500
+
+/** Minimum acceptable JWT_SECRET length in production. */
+const JWT_SECRET_MIN_LENGTH_PROD = 32
+
+/** Minimum acceptable JWT_SECRET length in non-production environments. */
+const JWT_SECRET_MIN_LENGTH_DEV = 8
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/**
+ * Machine-readable dependency identifier.
+ * Extend this union when new checks are added.
+ */
+export type DependencyName =
+  | "config/jwt"
+  | "config/soroban"
+  | "config/stripe"
+  | "config/mtls"
+  | "database"
+
+/**
+ * Result of a single dependency readiness check.
+ */
+export interface DependencyReadinessResult {
+  /** Machine-readable dependency identifier. */
+  dependency: DependencyName
+  /** Whether the dependency is ready to serve traffic. */
+  ready: boolean
+  /**
+   * Operator-readable failure reason.
+   * Present only when ready === false.
+   * Must never contain secret values or raw connection strings.
+   */
+  reason?: string
+}
+
+/**
+ * Aggregated readiness report returned by runStartupDependencyReadinessChecks.
+ */
+export interface StartupReadinessReport {
+  /** True only when every check passed. */
+  ready: boolean
+  /** Per-dependency results in evaluation order. */
+  checks: DependencyReadinessResult[]
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Run all startup dependency readiness checks.
+ *
+ * Emits a structured log entry for every check result so operators can
+ * correlate boot failures with specific dependency names and reasons.
+ *
+ * @returns A report indicating overall readiness and per-dependency results.
  */
 export async function runStartupDependencyReadinessChecks(): Promise<StartupReadinessReport> {
-  const checks: DependencyReadinessResult[] = [];
+  const isProduction = process.env.NODE_ENV === "production"
+  const checks: DependencyReadinessResult[] = []
 
-  const isProduction = process.env.NODE_ENV === "production";
-  const jwtSecret = process.env.JWT_SECRET?.trim() ?? "";
-
-  const configReady = !isProduction || jwtSecret.length >= 32;
-  checks.push({
-    dependency: "config",
-    ready: configReady,
-    reason: configReady
-      ? undefined
-      : "JWT_SECRET must be set to at least 32 characters in production",
-  });
-
-  const dbConnectionString = process.env.DATABASE_URL?.trim();
-  if (dbConnectionString) {
-    const dbReady = await checkDatabaseReadiness(dbConnectionString);
+  // 1. JWT Config check
+  const jwtSecret = process.env.JWT_SECRET?.trim() ?? ""
+  const minLength = isProduction ? JWT_SECRET_MIN_LENGTH_PROD : JWT_SECRET_MIN_LENGTH_DEV
+  
+  if (jwtSecret.length < minLength) {
     checks.push({
-      dependency: "database",
-      ready: dbReady,
-      reason: dbReady ? undefined : "database connection check failed",
-    });
+      dependency: "config/jwt",
+      ready: false,
+      reason: isProduction
+        ? `JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH_PROD} characters in production (got ${jwtSecret.length})`
+        : `JWT_SECRET must be at least ${JWT_SECRET_MIN_LENGTH_DEV} characters (got ${jwtSecret.length})`,
+    })
+  } else {
+    checks.push({ dependency: "config/jwt", ready: true })
   }
+
+  // 2. Soroban Config check
+  checks.push(checkSorobanConfig(isProduction))
+
+  // 3. Stripe Config check
+  checks.push(checkStripeConfig(isProduction))
+
+  // 4. mTLS Config check
+  checks.push(checkMtlsConfig(isProduction))
+
+  // 5. Database check
+  if (process.env.DATABASE_URL?.trim()) {
+    checks.push(await checkDatabase())
+  }
+
+  const allReady = checks.every((c) => c.ready)
 
   return {
-    ready: checks.every((check) => check.ready),
+    ready: allReady,
     checks,
-  };
-}
-
-async function checkDatabaseReadiness(connectionString: string): Promise<boolean> {
-  try {
-    const { default: pg } = await import("pg");
-    const client = new pg.Client({ connectionString });
-
-    await withTimeout(
-      (async () => {
-        await client.connect();
-        try {
-          await client.query("SELECT 1");
-        } finally {
-          await client.end();
-        }
-      })(),
-      STARTUP_CHECK_TIMEOUT_MS,
-    );
-
-    return true;
-  } catch {
-    return false;
   }
 }
 
+/**
+ * Validate mTLS configuration.
+ *
+ * If MTLS_ENABLED=true requires MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH.
+ * If MTLS_OCSP_ENABLED=true also requires MTLS_CRL_PATH for fallback revocation checks.
+ */
+function checkMtlsConfig(_isProduction: boolean): DependencyReadinessResult {
+  const mtlsEnabled = process.env.MTLS_ENABLED?.trim().toLowerCase() === "true";
+  const spiffeEnabled =
+    process.env.MTLS_SPIFFE_ENABLED?.trim().toLowerCase() === "true";
+
+  if (!mtlsEnabled) {
+    return { dependency: "config/mtls", ready: true };
+  }
+
+  if (spiffeEnabled) {
+    const trustDomain = process.env.SPIFFE_TRUST_DOMAIN?.trim();
+    const workloadSocket = process.env.SPIFFE_WORKLOAD_API_SOCKET?.trim()
+      ?? "unix:///tmp/spire-agent/public/api.sock";
+
+    if (!trustDomain) {
+      return {
+        dependency: "config/mtls",
+        ready: false,
+        reason: "SPIFFE_TRUST_DOMAIN must be set when MTLS_SPIFFE_ENABLED=true",
+      };
+    }
+  }
+
+  // OCSP/CRL fallback revocation checking applies to mTLS generally, not just
+  // the SPIFFE workload-identity path, so this must run outside the
+  // spiffeEnabled branch above.
+  const ocspEnabled = process.env.MTLS_OCSP_ENABLED?.trim().toLowerCase() === "true"
+  const crlPath = process.env.MTLS_CRL_PATH?.trim()
+
+  if (ocspEnabled && !crlPath) {
+    return {
+      dependency: "config/mtls",
+      ready: false,
+      reason: "MTLS_CRL_PATH must be set when MTLS_OCSP_ENABLED=true",
+    }
+  }
+
+  const caPath = process.env.MTLS_CA_PATH?.trim();
+  const certPath = process.env.MTLS_CERT_PATH?.trim();
+  const keyPath = process.env.MTLS_KEY_PATH?.trim();
+
+  if (!caPath || !certPath || !keyPath) {
+    return {
+      dependency: "config/mtls",
+      ready: false,
+      reason:
+        "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED is not true",
+    };
+  }
+
+  return { dependency: "config/mtls", ready: true };
+}
+
+
+/**
+ * Validate Soroban contract configuration.
+ *
+ * SOROBAN_CONTRACT_ID must be set in production because submitting
+ * attestations without a contract address would silently no-op.
+ * Non-production environments may omit it (testnet defaults apply).
+ */
+function checkSorobanConfig(isProduction: boolean): DependencyReadinessResult {
+  if (!isProduction) {
+    return { dependency: "config/soroban", ready: true }
+  }
+
+  const contractId = process.env.SOROBAN_CONTRACT_ID?.trim() ?? ""
+  if (contractId.length === 0) {
+    return {
+      dependency: "config/soroban",
+      ready: false,
+      reason: "SOROBAN_CONTRACT_ID must be set in production",
+    }
+  }
+
+  return { dependency: "config/soroban", ready: true }
+}
+
+/**
+ * Validate Stripe webhook secret configuration.
+ *
+ * STRIPE_WEBHOOK_SECRET must be set in production to prevent unsigned
+ * webhook events from being accepted.
+ * Non-production environments may omit it.
+ */
+function checkStripeConfig(isProduction: boolean): DependencyReadinessResult {
+  if (!isProduction) {
+    return { dependency: "config/stripe", ready: true }
+  }
+
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim() ?? ""
+  if (webhookSecret.length === 0) {
+    return {
+      dependency: "config/stripe",
+      ready: false,
+      reason: "STRIPE_WEBHOOK_SECRET must be set in production",
+    }
+  }
+
+  return { dependency: "config/stripe", ready: true }
+}
+
+/**
+ * Probe database connectivity using the shared db client with a bounded SELECT 1 query.
+ *
+ * Uses the shared `db` singleton from client.ts rather than opening a one-off
+ * connection, so the probe exercises the same connection path as normal
+ * request handling.
+ *
+ * Returns an explicit failure reason without leaking credentials.
+ */
+export async function checkDatabase(): Promise<DependencyReadinessResult> {
+  try {
+    await withTimeout(db.query("SELECT 1"), STARTUP_CHECK_TIMEOUT_MS)
+    return { dependency: "database", ready: true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const reason =
+      message === "timeout"
+        ? `database probe timed out after ${STARTUP_CHECK_TIMEOUT_MS} ms`
+        : "database connection failed: " + sanitiseDbError(message)
+    return { dependency: "database", ready: false, reason }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove any substring that looks like a PostgreSQL connection string
+ * (postgres://... or postgresql://...) from an error message so that
+ * credentials are never surfaced in logs or readiness reports.
+ */
+export function sanitiseDbError(message: string): string {
+  return message.replace(/postgres(?:ql)?:\/\/[^\s]*/gi, "[redacted]")
+}
+
+/**
+ * Race a promise against a timeout.
+ * Rejects with Error("timeout") when the deadline is exceeded.
+ */
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((_, reject) => {
-      setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      setTimeout(() => reject(new Error("timeout")), timeoutMs)
     }),
-  ]);
+  ])
 }

@@ -1,0 +1,180 @@
+name: Nightly 24h soak with heap-diff detector
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_h:
+        description: "Soak duration in hours (default: 24)"
+        required: false
+        default: "24"
+      vus:
+        description: "Number of virtual users (default: 10)"
+        required: false
+        default: "10"
+      heap_interval_s:
+        description: "Seconds between heap snapshots (default: 3600)"
+        required: false
+        default: "3600"
+      leak_threshold_mb:
+        description: "Retained-heap growth that triggers a failure in MB (default: 50)"
+        required: false
+        default: "50"
+  schedule:
+    # 02:00 UTC every night – runs after nightly k6 peak-load so they don't overlap.
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+
+# Only one soak run at a time.  A manually-triggered run cancels the scheduled
+# one in the same group.
+concurrency:
+  group: soak-memory-detector
+  cancel-in-progress: false
+
+env:
+  # Resolved from workflow_dispatch inputs or defaults.
+  SOAK_DURATION_H:    ${{ github.event.inputs.duration_h || '24' }}
+  SOAK_VUS:           ${{ github.event.inputs.vus || '10' }}
+  HEAP_INTERVAL_S:    ${{ github.event.inputs.heap_interval_s || '3600' }}
+  LEAK_THRESHOLD_MB:  ${{ github.event.inputs.leak_threshold_mb || '50' }}
+  RESULTS_DIR:        ops/k6/results
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 1 – input validation (runs in ~5 s; catches bad values before the
+  # 24-hour job spins up).
+  # ─────────────────────────────────────────────────────────────────────────
+  validate-inputs:
+    name: Validate workflow inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate numeric inputs
+        run: |
+          for var in "$SOAK_DURATION_H" "$SOAK_VUS" "$HEAP_INTERVAL_S" "$LEAK_THRESHOLD_MB"; do
+            if ! [[ "$var" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: All numeric inputs must be positive integers. Got: $var"
+              exit 1
+            fi
+          done
+          echo "Inputs valid: duration=${SOAK_DURATION_H}h  vus=${SOAK_VUS}  interval=${HEAP_INTERVAL_S}s  threshold=${LEAK_THRESHOLD_MB}MB"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 2 – main soak run.
+  # ─────────────────────────────────────────────────────────────────────────
+  soak:
+    name: 24h soak – heap-diff memory leak detector
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+
+    # Allow up to 26 h so the job isn't killed just before teardown.
+    timeout-minutes: 1560
+
+    env:
+      K6_AUTH_TOKEN:  ${{ secrets.K6_AUTH_TOKEN }}
+      K6_BASE_URL:    ${{ secrets.K6_BASE_URL }}
+
+    steps:
+      # ── 1. Source ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Runtime setup ─────────────────────────────────────────────────
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        timeout-minutes: 10
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      # ── 3. Pre-flight checks ─────────────────────────────────────────────
+      - name: Validate required secrets
+        run: |
+          [ -n "$K6_BASE_URL" ]   || { echo "K6_BASE_URL secret is required"; exit 1; }
+          [ -n "$K6_AUTH_TOKEN" ] || { echo "K6_AUTH_TOKEN secret is required"; exit 1; }
+
+      - name: Create results directory
+        run: mkdir -p "$RESULTS_DIR"
+
+      # ── 4. Heap sampler (background process) ─────────────────────────────
+      # The sampler runs alongside k6, capturing V8 heap snapshots every
+      # HEAP_INTERVAL_S seconds.  It is terminated after k6 finishes.
+      - name: Start heap sampler
+        run: |
+          node --expose-gc \
+            "$(npm root -g)/tsx/bin/tsx.js" 2>/dev/null || true
+
+          # Use project-local tsx (preferred).
+          npx --yes tsx ops/soak/heap-sampler.ts \
+            --interval "$HEAP_INTERVAL_S" \
+            --output   "$RESULTS_DIR"    \
+            --threshold "$LEAK_THRESHOLD_MB" &
+
+          echo "HEAP_SAMPLER_PID=$!" >> "$GITHUB_ENV"
+          echo "Heap sampler started with PID $HEAP_SAMPLER_PID"
+
+      # ── 5. k6 soak run ───────────────────────────────────────────────────
+      - name: Run k6 soak scenario
+        run: |
+          k6 run \
+            --env K6_BASE_URL="$K6_BASE_URL"     \
+            --env K6_AUTH_TOKEN="$K6_AUTH_TOKEN" \
+            --env SOAK_DURATION_H="$SOAK_DURATION_H" \
+            --env SOAK_VUS="$SOAK_VUS"           \
+            --tag testid=soak-${{ github.run_id }} \
+            --tag workflow=soak-memory           \
+            --summary-export "$RESULTS_DIR/soak-summary.json" \
+            ops/k6/soak-memory.js
+
+      # ── 6. Stop heap sampler and collect report ───────────────────────────
+      - name: Stop heap sampler and collect report
+        if: always()
+        run: |
+          if [ -n "$HEAP_SAMPLER_PID" ]; then
+            kill -SIGTERM "$HEAP_SAMPLER_PID" 2>/dev/null || true
+            # Give the process a few seconds to write the final snapshot + report.
+            sleep 10
+          fi
+
+      # ── 7. Analyse heap growth ────────────────────────────────────────────
+      - name: Analyse heap growth
+        if: always()
+        run: |
+          REPORT="$RESULTS_DIR/soak-heap-report.json"
+          if [ ! -f "$REPORT" ]; then
+            echo "WARNING: heap report not found at $REPORT – sampler may have failed to start."
+            exit 0
+          fi
+
+          echo "=== Heap growth report ==="
+          cat "$REPORT" | python3 -c "
+          import json, sys
+          r = json.load(sys.stdin)
+          print(f'Snapshots taken : {r[\"snapCount\"]}')
+          print(f'Heap growth     : {r[\"deltaMB\"]} MB')
+          print(f'Threshold       : {r[\"thresholdMB\"]} MB')
+          print(f'Leak detected   : {r[\"leakDetected\"]}')
+          print()
+          print(r['message'])
+          sys.exit(1 if r['leakDetected'] else 0)
+          "
+
+      # ── 8. Upload artefacts ───────────────────────────────────────────────
+      - name: Upload soak artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-results-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            ${{ env.RESULTS_DIR }}/soak-summary.json
+            ${{ env.RESULTS_DIR }}/soak-heap-report.json
+            ${{ env.RESULTS_DIR }}/*.heapsnapshot

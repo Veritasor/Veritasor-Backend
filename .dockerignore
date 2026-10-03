@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+.stryker-tmp
+reports
+.git
+.env
+.env.*
+*.local
+*.log

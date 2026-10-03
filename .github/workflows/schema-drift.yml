@@ -1,0 +1,28 @@
+name: Schema Drift Check
+
+on:
+  pull_request:
+    paths:
+      - 'src/graphql/**/*.ts'
+      - 'src/routes/admin.graphql.ts'
+
+jobs:
+  check-schema-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Schema
+        run: npm run docs:openapi # or some script if we had one. Let's just typecheck
+        
+      - name: Run Schema tests
+        run: npm test -- tests/graphql-drift.test.ts

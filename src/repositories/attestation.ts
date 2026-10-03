@@ -7,6 +7,7 @@ export type Attestation = {
   attestedAt: string;
   status?: "active" | "revoked";
   revokedAt?: string;
+  revokeReason?: string;
 };
 
 // Temporary in-memory records until DB integration lands.
@@ -46,6 +47,9 @@ export const attestationRepository = {
     return attestationStore
       .filter((attestation) => attestation.businessId === businessId)
       .sort((a, b) => b.attestedAt.localeCompare(a.attestedAt));
+  },
+  listByBusinessIds(businessIds: readonly string[]): Attestation[][] {
+    return businessIds.map(id => this.listByBusiness(id));
   },
   create(data: Omit<Attestation, "id" | "attestedAt">): Attestation {
     const newAttestation: Attestation = {

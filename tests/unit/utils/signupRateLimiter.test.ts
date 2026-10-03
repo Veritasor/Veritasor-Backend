@@ -1,3 +1,50 @@
+describe("Edge case normalization and adversarial patterns", () => {
+  const testConfig: Partial<SignupRateLimitConfig> = {
+    windowMs: 60000,
+    maxAttemptsPerIp: 2,
+    maxAttemptsPerEmail: 2,
+    maxGlobalAttempts: 10,
+    blockDurationMs: 300000,
+    progressiveDelayThreshold: 1,
+    enableProgressiveDelay: true,
+  };
+
+  it("should treat equivalent IPv6 addresses as the same for rate limiting", () => {
+    const store = createSignupRateLimitStore(testConfig);
+    // ::1 and 0:0:0:0:0:0:0:1 are the same
+    store.recordAttempt("::1", "ipv6@example.com");
+    const result = store.checkLimit("0:0:0:0:0:0:0:1", "ipv6@example.com");
+    expect(result.remainingAttempts).toBeLessThan(testConfig.maxAttemptsPerIp!);
+  });
+
+  it("should treat IPv4-mapped IPv6 as IPv4 for rate limiting", () => {
+    const store = createSignupRateLimitStore(testConfig);
+    // ::ffff:127.0.0.1 and 127.0.0.1 should be treated the same
+    store.recordAttempt("::ffff:127.0.0.1", "ipv6map@example.com");
+    const result = store.checkLimit("127.0.0.1", "ipv6map@example.com");
+    expect(result.remainingAttempts).toBeLessThan(testConfig.maxAttemptsPerIp!);
+  });
+
+  it("should treat plus-addressed emails as the same for rate limiting", () => {
+    const store = createSignupRateLimitStore(testConfig);
+    store.recordAttempt("192.168.1.1", "user+tag@example.com");
+    const result = store.checkLimit("192.168.1.1", "user@example.com");
+    expect(result.remainingAttempts).toBeLessThan(testConfig.maxAttemptsPerEmail!);
+  });
+
+  it("should handle burst traffic and block after limit", () => {
+    const store = createSignupRateLimitStore({ ...testConfig, maxAttemptsPerIp: 3 });
+    const ip = "10.0.0.1";
+    const email = "burst@example.com";
+    // Simulate burst attempts
+    for (let i = 0; i < 3; i++) {
+      store.recordAttempt(ip, email);
+    }
+    const result = store.checkLimit(ip, email);
+    expect(result.allowed).toBe(false);
+    expect(result.blockReason).toContain("IP");
+  });
+});
 /**
  * Unit tests for Signup Rate Limiter
  *

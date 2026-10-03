@@ -146,4 +146,94 @@ describe("Validation Middleware", () => {
       expect(response.body.code).toBe("VALIDATION_ERROR");
     });
   });
+
+  describe("Edge cases", () => {
+    it("should strip extra keys not in schema (strict mode off by default)", async () => {
+      const app = express();
+      app.use(express.json());
+      app.post("/test", validateBody(schema), (req, res) => res.json({ data: req.body }));
+      app.use(errorHandler);
+
+      const response = await request(app)
+        .post("/test")
+        .send({ id: "550e8400-e29b-41d4-a716-446655440000", count: 5, extra: "ignored" });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data).not.toHaveProperty("extra");
+    });
+
+    it("should reject extra keys when schema uses .strict()", async () => {
+      const strictSchema = schema.strict();
+      const app = express();
+      app.use(express.json());
+      app.post("/test", validateBody(strictSchema), (req, res) => res.json({ data: req.body }));
+      app.use(errorHandler);
+
+      const response = await request(app)
+        .post("/test")
+        .send({ id: "550e8400-e29b-41d4-a716-446655440000", count: 5, extra: "bad" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("should coerce string to number in query params", async () => {
+      const app = express();
+      app.get("/test", validateQuery(schema), (req, res) => res.json({ query: req.query }));
+      app.use(errorHandler);
+
+      const response = await request(app)
+        .get("/test")
+        .query({ id: "550e8400-e29b-41d4-a716-446655440000", count: "7" });
+
+      expect(response.status).toBe(200);
+      expect(response.body.query.count).toBe(7);
+    });
+
+    it("should fail coercion for non-numeric string in query", async () => {
+      const app = express();
+      app.get("/test", validateQuery(schema), (req, res) => res.json({ query: req.query }));
+      app.use(errorHandler);
+
+      const response = await request(app)
+        .get("/test")
+        .query({ id: "550e8400-e29b-41d4-a716-446655440000", count: "abc" });
+
+      expect(response.status).toBe(400);
+      expect(response.body.errors.some((e: any) => e.path.includes("count"))).toBe(true);
+    });
+
+    it("should handle union type — accepts first matching branch", async () => {
+      const unionSchema = z.object({ value: z.union([z.string().uuid(), z.coerce.number().int()]) });
+      const app = express();
+      app.use(express.json());
+      app.post("/test", validateBody(unionSchema), (req, res) => res.json({ data: req.body }));
+      app.use(errorHandler);
+
+      const response = await request(app)
+        .post("/test")
+        .send({ value: "550e8400-e29b-41d4-a716-446655440000" });
+
+      expect(response.status).toBe(200);
+    });
+
+    it("should return errors with path array for each nested violation", async () => {
+      const app = express();
+      app.use(express.json());
+      app.post("/nested", validateBody(nestedSchema), (req, res) => res.json({ data: req.body }));
+      app.use(errorHandler);
+
+      const response = await request(app)
+        .post("/nested")
+        .send({ user: { profile: { name: "X", age: 10 }, email: "bad" }, tags: ["ab"] });
+
+      expect(response.status).toBe(400);
+      const errors = response.body.errors;
+      expect(Array.isArray(errors)).toBe(true);
+      errors.forEach((e: any) => {
+        expect(Array.isArray(e.path)).toBe(true);
+        expect(typeof e.message).toBe("string");
+      });
+    });
+  });
 });

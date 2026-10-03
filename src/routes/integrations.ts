@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { requirePermissions, IntegrationPermission } from '../middleware/permissions.js';
-import { listByUserId, deleteById } from '../repositories/integration.js';
+import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
+import { requirePermissions, requirePolicy } from '../middleware/permissions.js';
+import { IntegrationPermission } from '../types/permissions.js';
+import { getById, listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
 
 const router = Router();
@@ -100,16 +102,17 @@ router.get('/', async (req: Request, res: Response) => {
 
 /**
  * @route GET /api/integrations/connected
- * @desc List connected integrations for authenticated user
- * @access Private - requires authentication and read permissions
+ * @desc List connected integrations for authenticated business
+ * @access Private - requires business authentication and read permissions
  */
 router.get('/connected',
-  requireAuth,
+  requireBusinessAuth,
   requirePermissions(IntegrationPermission.READ_CONNECTED),
+  requirePolicy('read', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
-      const userId = req.user!.userId;
-      const connected = await listByUserId(userId);
+      const businessId = req.business!.id;
+      const connected = await listByBusinessId(businessId);
 
       const connectedSafe = connected.map((i) => ({
         id: i.id,
@@ -144,11 +147,12 @@ router.get('/connected',
 /**
  * @route POST /api/integrations/connect
  * @desc Initiate connection process for an integration provider
- * @access Private - requires authentication and connect permissions
+ * @access Private - requires business authentication and connect permissions
  */
 router.post('/connect',
-  requireAuth,
+  requireBusinessAuth,
   requirePermissions(IntegrationPermission.CONNECT),
+  requirePolicy('create', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
       const { provider, redirectUri } = connectIntegrationSchema.parse(req.body);
@@ -170,7 +174,7 @@ router.post('/connect',
       }
 
       // Check if user already has this integration connected
-      const existingIntegrations = await listByUserId(req.user!.userId);
+      const existingIntegrations = await listByBusinessId(req.business!.id);
       const existingConnection = existingIntegrations.find(i => i.provider === provider);
 
       if (existingConnection) {
@@ -216,11 +220,15 @@ router.post('/connect',
 /**
  * @route DELETE /api/integrations/:integrationId
  * @desc Disconnect a specific integration
- * @access Private - requires authentication and disconnect permissions with ownership check
+ * @access Private - requires business authentication and disconnect permissions with ownership check
  */
 router.delete('/:integrationId',
-  requireAuth,
+  requireBusinessAuth,
   requirePermissions(IntegrationPermission.DISCONNECT_OWN, { checkOwnership: true }),
+  requirePolicy('delete', 'integration', {
+    resourceId: (req) => req.params.integrationId,
+    resourceTenantId: async (req) => (await getById(req.params.integrationId))?.businessId,
+  }),
   async (req: Request, res: Response) => {
     try {
       const { integrationId } = req.params;
@@ -233,8 +241,8 @@ router.delete('/:integrationId',
       }
 
       // Verify ownership before deletion
-      const userIntegrations = await listByUserId(req.user!.userId);
-      const integration = userIntegrations.find(i => i.id === integrationId);
+      const businessIntegrations = await listByBusinessId(req.business!.id);
+      const integration = businessIntegrations.find(i => i.id === integrationId);
 
       if (!integration) {
         return res.status(404).json({
@@ -244,7 +252,7 @@ router.delete('/:integrationId',
       }
 
       // Delete the integration
-      const deleted = await deleteById(integrationId);
+      const deleted = await deleteById(req.business!.id, integrationId);
 
       if (!deleted) {
         return res.status(500).json({
@@ -272,11 +280,15 @@ router.delete('/:integrationId',
 /**
  * @route GET /api/integrations/:integrationId
  * @desc Get details of a specific integration
- * @access Private - requires authentication and read permissions with ownership check
+ * @access Private - requires business authentication and read permissions with ownership check
  */
 router.get('/:integrationId',
-  requireAuth,
+  requireBusinessAuth,
   requirePermissions(IntegrationPermission.READ_OWN, { checkOwnership: true }),
+  requirePolicy('read', 'integration', {
+    resourceId: (req) => req.params.integrationId,
+    resourceTenantId: async (req) => (await getById(req.params.integrationId))?.businessId,
+  }),
   async (req: Request, res: Response) => {
     try {
       const { integrationId } = req.params;
@@ -288,8 +300,8 @@ router.get('/:integrationId',
         });
       }
 
-      const userIntegrations = await listByUserId(req.user!.userId);
-      const integration = userIntegrations.find(i => i.id === integrationId);
+      const businessIntegrations = await listByBusinessId(req.business!.id);
+      const integration = businessIntegrations.find(i => i.id === integrationId);
 
       if (!integration) {
         return res.status(404).json({
@@ -327,9 +339,14 @@ router.get('/:integrationId',
 );
 
 /**
- * Helper function to generate authentication URLs for different providers
+ * Build the provider authorization URL for a supported integration.
+ *
+ * Exported so the URL contract (and the unsupported-provider throw) can be
+ * exercised directly by unit tests — the HTTP `/connect` route validates the
+ * provider against a Zod enum first, so this helper's `default` branch is not
+ * reachable through the router alone.
  */
-function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
+export function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
   const baseUrl = redirectUri || 'http://localhost:3000/integrations/callback';
 
   switch (provider) {

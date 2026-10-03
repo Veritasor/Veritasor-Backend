@@ -70,17 +70,19 @@ describe("resetPassword service", () => {
   it("should throw if token or new password is missing", async () => {
     await expect(
       resetPassword({ token: "", newPassword: "newpassword123" })
-    ).rejects.toThrow("Token and new password are required");
+    ).rejects.toThrow("Token is required");
 
     await expect(
       resetPassword({ token: "valid-token", newPassword: "" })
-    ).rejects.toThrow("Token and new password are required");
+    ).rejects.toThrow("New password is required");
+
   });
 
   it("should throw if password is shorter than 6 characters", async () => {
     await expect(
       resetPassword({ token: "valid-token", newPassword: "123" })
-    ).rejects.toThrow("Password must be at least 6 characters");
+    ).rejects.toThrow("Password must be at least 8 characters");
+
   });
 
   it("should throw if reset token is invalid or expired", async () => {
@@ -109,7 +111,8 @@ describe("resetPassword service", () => {
     expect(passwordUtils.hashPassword).toHaveBeenCalledWith("newpassword123");
     expect(updateSpy).toHaveBeenCalledWith("user-123", "hashed-password");
     expect(result).toEqual({
-      message: "Password has been reset successfully",
+      message: "Password has been reset successfully.",
+
     });
   });
 
@@ -124,7 +127,8 @@ describe("resetPassword service", () => {
     await expect(
       resetPassword({ token: "single-use-token", newPassword: "newpassword123" })
     ).resolves.toEqual({
-      message: "Password has been reset successfully",
+      message: "Password has been reset successfully.",
+
     });
 
     await expect(

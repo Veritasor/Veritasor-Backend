@@ -1,0 +1,183 @@
+{
+  "consumer": {
+    "name": "Veritasor-Frontend"
+  },
+  "interactions": [
+    {
+      "description": "a request for a revoked attestation",
+      "providerState": "an attestation exists with hash \"revoked123\" and status \"revoked\"",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/revoked123"
+      },
+      "response": {
+        "body": {
+          "code": "GONE",
+          "message": "Attestation has been revoked",
+          "status": "error"
+        },
+        "headers": {
+          "Age": "0",
+          "Cache-Control": "public, max-age=15, stale-while-revalidate=60",
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "status": 410
+      }
+    },
+    {
+      "description": "a request for an attestation by non-existent hash",
+      "providerState": "no attestation exists with hash \"nonexistent\"",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/nonexistent"
+      },
+      "response": {
+        "body": {
+          "code": "NOT_FOUND",
+          "message": "Attestation not found",
+          "status": "error"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "status": 404
+      }
+    },
+    {
+      "description": "a request for an attestation by valid hash",
+      "providerState": "an attestation exists with hash \"abc123\"",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/abc123"
+      },
+      "response": {
+        "body": {
+          "data": {
+            "attestedAt": "2026-07-29T10:30:00.000Z",
+            "businessId": "bus_12345",
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "merkleRoot": "0xabc123def456",
+            "period": "2026-Q2",
+            "status": "confirmed",
+            "txHash": "0xtxhash789012"
+          },
+          "status": "success"
+        },
+        "headers": {
+          "Age": "0",
+          "Cache-Control": "public, max-age=60, stale-while-revalidate=60",
+          "Content-Type": "application/json; charset=utf-8",
+          "ETag": "\"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk\"",
+          "Last-Modified": "Wed, 29 Jul 2026 10:30:00 GMT"
+        },
+        "matchingRules": {
+          "$.body.data.attestedAt": {
+            "match": "regex",
+            "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          },
+          "$.body.data.businessId": {
+            "match": "type"
+          },
+          "$.body.data.id": {
+            "match": "regex",
+            "regex": "^[a-f0-9-]+$"
+          },
+          "$.body.data.merkleRoot": {
+            "match": "type"
+          },
+          "$.body.data.period": {
+            "match": "type"
+          },
+          "$.body.data.txHash": {
+            "match": "type"
+          }
+        },
+        "status": 200
+      }
+    },
+    {
+      "description": "a request for the health check",
+      "providerState": "server is healthy",
+      "request": {
+        "method": "GET",
+        "path": "/api/health"
+      },
+      "response": {
+        "body": {
+          "service": "veritasor-backend",
+          "status": "ok",
+          "timestamp": "2026-07-29T12:15:15.000Z"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.service": {
+            "match": "type"
+          },
+          "$.body.status": {
+            "match": "type"
+          },
+          "$.body.timestamp": {
+            "match": "type"
+          }
+        },
+        "status": 200
+      }
+    },
+    {
+      "description": "a request with a hash exceeding maximum length",
+      "providerState": "server is healthy",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "response": {
+        "body": {
+          "message": "Invalid attestation identifier",
+          "status": "error",
+          "timestamp": "2026-07-29T12:15:15.000Z",
+          "vrtCode": "VRT-0002"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.timestamp": {
+            "match": "type"
+          }
+        },
+        "status": 400
+      }
+    },
+    {
+      "description": "a request with matching If-None-Match header",
+      "providerState": "an attestation exists with hash \"abc123\" and the request has a matching ETag",
+      "request": {
+        "headers": {
+          "If-None-Match": "\"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk\""
+        },
+        "method": "GET",
+        "path": "/api/v1/public/attestations/abc123"
+      },
+      "response": {
+        "status": 304
+      }
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "13.2.0"
+    },
+    "pactRust": {
+      "ffi": "0.4.22",
+      "models": "1.2.3"
+    },
+    "pactSpecification": {
+      "version": "2.0.0"
+    }
+  },
+  "provider": {
+    "name": "Veritasor-Backend"
+  }
+}

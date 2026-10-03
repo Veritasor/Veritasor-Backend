@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto'
+import { randomBytes } from 'node:crypto'
 
 export interface User {
   id: string
@@ -8,6 +8,7 @@ export interface User {
   updatedAt: Date
   resetToken?: string
   resetTokenExpiry?: Date
+  role: 'user' | 'admin' | 'business_admin'
 }
 
 /**
@@ -19,7 +20,16 @@ export interface UpdateUserData {
   passwordHash?: string
   resetToken?: string | null
   resetTokenExpiry?: Date | null
+  role?: 'user' | 'admin' | 'business_admin'
 }
+
+export type UserRole = User['role']
+
+export type BusinessAdminPromotionResult =
+  | { outcome: 'promoted'; user: User; previousRole: 'user'; newRole: 'business_admin' }
+  | { outcome: 'already_business_admin'; user: User; previousRole: 'business_admin'; newRole: 'business_admin' }
+  | { outcome: 'invalid_current_role'; user: User; previousRole: Exclude<UserRole, 'user' | 'business_admin'>; newRole: 'business_admin' }
+  | { outcome: 'not_found'; user: null; previousRole: null; newRole: 'business_admin' }
 
 // In-memory user storage
 const users: Map<string, User> = new Map()
@@ -68,6 +78,7 @@ export async function createUser(
     passwordHash,
     createdAt: now,
     updatedAt: now,
+    role: 'user', // Default role
   }
 
   const stored = saveUser(user)
@@ -76,6 +87,10 @@ export async function createUser(
 
 /**
  * Find user by email
+ * 
+ * @expectedIndex `email` (Unique)
+ * @migrationNote Ensure a unique B-tree index exists on the `email` column
+ * to prevent duplicate signups and allow fast exact-match lookups during login.
  */
 export async function findUserByEmail(email: string): Promise<User | null> {
   const userId = emailIndex.get(email)
@@ -87,6 +102,10 @@ export async function findUserByEmail(email: string): Promise<User | null> {
 
 /**
  * Find user by ID
+ * 
+ * @expectedIndex `id` (Primary Key)
+ * @migrationNote The `id` column should be the primary key of the users table
+ * with an implicit unique index for O(1) or O(log N) lookups.
  */
 export async function findUserById(id: string): Promise<User | null> {
   const user = users.get(id)
@@ -120,6 +139,7 @@ export async function updateUser(
         : updates.resetTokenExpiry !== undefined
         ? updates.resetTokenExpiry
         : current.resetTokenExpiry,
+    role: updates.role ?? current.role,
     updatedAt: new Date(),
   }
 
@@ -129,6 +149,58 @@ export async function updateUser(
 
   const stored = saveUser(next)
   return cloneUser(stored)
+}
+
+/**
+ * Promote a regular user to business_admin with an expected-current-role guard.
+ *
+ * This direct admin promotion path intentionally supports only the documented
+ * business-tier transition. It is idempotent for retrying an already-completed
+ * promotion and refuses to overwrite admin or other future elevated roles.
+ */
+export async function promoteUserToBusinessAdmin(
+  userId: string,
+): Promise<BusinessAdminPromotionResult> {
+  const current = users.get(userId)
+  if (!current) {
+    return {
+      outcome: 'not_found',
+      user: null,
+      previousRole: null,
+      newRole: 'business_admin',
+    }
+  }
+
+  if (current.role === 'business_admin') {
+    return {
+      outcome: 'already_business_admin',
+      user: cloneUser(current),
+      previousRole: 'business_admin',
+      newRole: 'business_admin',
+    }
+  }
+
+  if (current.role !== 'user') {
+    return {
+      outcome: 'invalid_current_role',
+      user: cloneUser(current),
+      previousRole: current.role,
+      newRole: 'business_admin',
+    }
+  }
+
+  const stored = saveUser({
+    ...current,
+    role: 'business_admin',
+    updatedAt: new Date(),
+  })
+
+  return {
+    outcome: 'promoted',
+    user: cloneUser(stored),
+    previousRole: 'user',
+    newRole: 'business_admin',
+  }
 }
 
 /**
@@ -146,28 +218,64 @@ export async function updateUserPassword(
 }
 
 /**
- * Set password reset token
+ * Persist a password reset token hash for a user.
+ *
+ * Security contract
+ * ─────────────────
+ * This function stores **only the SHA-256 hash** of the reset token, never the
+ * raw token itself.  The caller (`forgotPassword`) is responsible for hashing
+ * the raw token before calling this function.  See `src/utils/tokenHash.ts`
+ * for the security rationale.
+ *
+ * @param userId        - The user whose token is being set.
+ * @param tokenHash     - SHA-256 hex digest of the raw reset token (64 chars).
+ * @param expiryMinutes - TTL in minutes (default 30).
+ *
+ * @expectedIndex `resetToken` (or composite `(resetToken, resetTokenExpiry)`)
+ * @migrationNote A standard index on `resetToken` is required. For high-volume
+ * systems, a composite index on `(resetToken, resetTokenExpiry)` can optimize
+ * queries that filter out expired tokens.  Consider a partial index
+ * `WHERE reset_token IS NOT NULL` to keep the index small.
  */
 export async function setResetToken(
   userId: string,
-  token: string,
-  expiryMinutes: number = 30
+  tokenHash: string,
+  expiryMinutes: number = 30,
 ): Promise<User | null> {
   return updateUser(userId, {
-    resetToken: token,
+    resetToken: tokenHash,
     resetTokenExpiry: new Date(Date.now() + expiryMinutes * 60 * 1000),
   })
 }
 
 /**
- * Find user by reset token
+ * Find a user by the SHA-256 hash of their reset token.
+ *
+ * Security contract
+ * ─────────────────
+ * This function performs an exact-match lookup on the stored hash column.
+ * The raw token is never passed to this function — the service layer hashes
+ * the incoming raw token before calling this.  This ensures the raw token is
+ * never present in any database query, log, or network packet beyond the
+ * initial email link.
+ *
+ * Returns `null` for all failure modes (wrong hash, expired token, already
+ * consumed / null token) so callers cannot distinguish between them and build
+ * an oracle attack.
+ *
+ * @param tokenHash - SHA-256 hex digest of the raw reset token (64 chars).
+ *
+ * @expectedIndex `resetToken` (unique, partial: WHERE reset_token IS NOT NULL)
+ * @migrationNote The same index used by `setResetToken` serves this query.
+ * Ensure the column is indexed before deploying to production to avoid full
+ * table scans on the users table.
  */
-export async function findUserByResetToken(
-  token: string
+export async function findUserByResetTokenHash(
+  tokenHash: string,
 ): Promise<User | null> {
   for (const user of users.values()) {
     if (
-      user.resetToken === token &&
+      user.resetToken === tokenHash &&
       user.resetTokenExpiry &&
       user.resetTokenExpiry > new Date()
     ) {
@@ -175,6 +283,20 @@ export async function findUserByResetToken(
     }
   }
   return null
+}
+
+/**
+ * @deprecated Use `findUserByResetTokenHash` instead.
+ *
+ * This function performed a plaintext token comparison and is retained only
+ * for backward compatibility during migration.  It will be removed in a future
+ * release.  Any call site that passes a raw token to this function is
+ * potentially storing secrets in plaintext and must be updated.
+ */
+export async function findUserByResetToken(
+  token: string,
+): Promise<User | null> {
+  return findUserByResetTokenHash(token)
 }
 
 /**
@@ -188,6 +310,23 @@ export async function deleteUser(userId: string): Promise<boolean> {
   users.delete(userId)
 
   return true
+}
+
+/**
+ * Find users by IDs (for DataLoader)
+ */
+export async function findUsersByIds(ids: readonly string[]): Promise<(User | Error)[]> {
+  return ids.map(id => {
+    const user = users.get(id)
+    return user ? cloneUser(user) : new Error(`User not found: ${id}`)
+  })
+}
+
+/**
+ * Get all users (admin only)
+ */
+export async function getAllUsers(): Promise<User[]> {
+  return Array.from(users.values()).map(cloneUser)
 }
 
 /**

@@ -23,13 +23,13 @@ import {
   resetSignupRateLimitStore,
   getSignupRateLimitStore,
   createSignupRateLimitStore,
-  getSignupRateLimitStore,
 } from "../../src/utils/signupRateLimiter.js";
 import {
   deleteUser,
   findUserByEmail,
 } from "../../src/repositories/userRepository.js";
 import { authRouter } from "../../src/routes/auth.js";
+import { errorHandler } from "../../src/middleware/errorHandler.js";
 
 /**
  * Helper to create a test express app with auth router
@@ -38,6 +38,7 @@ function createTestApp(): Express {
   const app = express();
   app.use(express.json());
   app.use("/api/auth", authRouter);
+  app.use(errorHandler);
   return app;
 }
 
@@ -76,7 +77,8 @@ describe("Signup Service - Abuse Prevention", () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.user.email).toBe("valid.user+tag@example.com");
+      expect(result.user.email).toBe("valid.user@example.com");
+
       await deleteUser(result.user.id);
     });
 
@@ -520,8 +522,8 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body).toHaveProperty("error");
-      expect(response.body).toHaveProperty("type", "EMAIL_INVALID");
+      expect(response.body.status).toBe("error");
+      expect(response.body.code).toBe("EMAIL_INVALID");
     });
 
     it("should return 400 for disposable email", async () => {
@@ -531,7 +533,7 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.type).toBe("EMAIL_DISPOSABLE");
+      expect(response.body.code).toBe("EMAIL_DISPOSABLE");
     });
 
     it("should return 400 for weak password", async () => {
@@ -541,7 +543,7 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.type).toBe("PASSWORD_WEAK");
+      expect(response.body.code).toBe("PASSWORD_WEAK");
     });
 
     it("should return 400 for honeypot trigger", async () => {
@@ -552,7 +554,7 @@ describe("Auth Router - Signup Endpoint", () => {
       });
 
       expect(response.status).toBe(400);
-      expect(response.body.type).toBe("HONEYPOT_TRIGGERED");
+      expect(response.body.code).toBe("HONEYPOT_TRIGGERED");
     });
 
     it("should use client IP from X-Forwarded-For", async () => {
@@ -597,6 +599,247 @@ describe("Auth Router - Signup Endpoint", () => {
       });
       expect(availability.available).toBe(false);
     });
+  });
+});
+
+describe("Schema Validation Edge Cases", () => {
+  beforeEach(() => {
+    resetSignupRateLimitStore();
+  });
+
+  it("should reject missing email with VALIDATION_ERROR and details", async () => {
+    try {
+      await signup({
+        // @ts-expect-error - intentionally omitting email
+        email: undefined,
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.10",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SignupError);
+      const e = error as SignupError;
+      expect(e.type).toBe("VALIDATION_ERROR");
+      expect(e.statusCode).toBe(400);
+      expect(e.details).toBeDefined();
+      expect(e.details!.some((d) => d.includes("email"))).toBe(true);
+    }
+  });
+
+  it("should reject missing password with VALIDATION_ERROR and details", async () => {
+    try {
+      await signup({
+        email: "valid@example.com",
+        // @ts-expect-error - intentionally omitting password
+        password: undefined,
+        ipAddress: "192.168.1.11",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SignupError);
+      const e = error as SignupError;
+      expect(e.type).toBe("VALIDATION_ERROR");
+      expect(e.details!.some((d) => d.includes("password"))).toBe(true);
+    }
+  });
+
+  it("should reject null email with VALIDATION_ERROR", async () => {
+    await expect(
+      signup({
+        // @ts-expect-error - testing runtime null
+        email: null,
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.12",
+      }),
+    ).rejects.toMatchObject({ type: "VALIDATION_ERROR" });
+  });
+
+  it("should reject empty-string email with VALIDATION_ERROR", async () => {
+    await expect(
+      signup({
+        email: "",
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.13",
+      }),
+    ).rejects.toMatchObject({ type: "VALIDATION_ERROR" });
+  });
+
+  it("should reject empty-string password with VALIDATION_ERROR", async () => {
+    await expect(
+      signup({
+        email: "user@example.com",
+        password: "",
+        ipAddress: "192.168.1.14",
+      }),
+    ).rejects.toMatchObject({ type: "VALIDATION_ERROR" });
+  });
+
+  it("should reject non-string email with VALIDATION_ERROR", async () => {
+    await expect(
+      signup({
+        // @ts-expect-error - simulating malformed JSON body
+        email: 12345,
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.15",
+      }),
+    ).rejects.toMatchObject({ type: "VALIDATION_ERROR" });
+  });
+
+  it("should reject non-string password with VALIDATION_ERROR", async () => {
+    await expect(
+      signup({
+        email: "user@example.com",
+        // @ts-expect-error - simulating malformed JSON body
+        password: { not: "a string" },
+        ipAddress: "192.168.1.16",
+      }),
+    ).rejects.toMatchObject({ type: "VALIDATION_ERROR" });
+  });
+
+  it("should reject whitespace-only email with VALIDATION_ERROR", async () => {
+    await expect(
+      signup({
+        email: "    ",
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.17",
+      }),
+    ).rejects.toMatchObject({ type: "VALIDATION_ERROR" });
+  });
+
+  it("should report all missing fields together when both email and password are absent", async () => {
+    try {
+      await signup({
+        // @ts-expect-error - both missing
+        email: undefined,
+        // @ts-expect-error - both missing
+        password: undefined,
+        ipAddress: "192.168.1.18",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      const e = error as SignupError;
+      expect(e.type).toBe("VALIDATION_ERROR");
+      expect(e.details!.length).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("should reject email exceeding RFC 5321 max length", async () => {
+    const longLocal = "a".repeat(250);
+    const tooLongEmail = `${longLocal}@example.com`;
+    await expect(
+      signup({
+        email: tooLongEmail,
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.19",
+      }),
+    ).rejects.toMatchObject({ type: "EMAIL_INVALID" });
+  });
+
+  it("should populate details on EMAIL_INVALID errors for client diagnostics", async () => {
+    try {
+      await signup({
+        email: "not-an-email",
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.20",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      const e = error as SignupError;
+      expect(e.type).toBe("EMAIL_INVALID");
+      expect(e.details).toBeDefined();
+      expect(e.details!.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("should populate details on PASSWORD_WEAK errors for client diagnostics", async () => {
+    try {
+      await signup({
+        email: "weakpw@example.com",
+        password: "short",
+        ipAddress: "192.168.1.21",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      const e = error as SignupError;
+      expect(e.type).toBe("PASSWORD_WEAK");
+      expect(e.details).toBeDefined();
+      expect(e.details!.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("should populate details on HONEYPOT_TRIGGERED errors", async () => {
+    try {
+      await signup({
+        email: "user@example.com",
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.1.22",
+        website: "spam",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      const e = error as SignupError;
+      expect(e.type).toBe("HONEYPOT_TRIGGERED");
+      expect(e.details).toBeDefined();
+    }
+  });
+});
+
+describe("Idempotency Expectations", () => {
+  beforeEach(() => {
+    resetSignupRateLimitStore();
+  });
+
+  it("should produce a single user when concurrent signups race the same email", async () => {
+    const email = "idempotent@example.com";
+    const password = "SecureP@ss123!";
+
+    const results = await Promise.allSettled([
+      signup({ email, password, ipAddress: "192.168.2.1" }),
+      signup({ email, password, ipAddress: "192.168.2.2" }),
+      signup({ email, password, ipAddress: "192.168.2.3" }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(2);
+
+    for (const r of rejected) {
+      const reason = (r as PromiseRejectedResult).reason as SignupError;
+      expect(reason).toBeInstanceOf(SignupError);
+      expect(reason.type).toBe("EMAIL_EXISTS");
+      // Generic message: must NOT leak that the address is already registered
+      expect(reason.message).not.toMatch(/already exists|registered/i);
+    }
+
+    const user = await findUserByEmail(email);
+    expect(user).not.toBeNull();
+    if (user) await deleteUser(user.id);
+  });
+
+  it("should treat second sequential signup with same email as duplicate", async () => {
+    const email = "sequential@example.com";
+    const first = await signup({
+      email,
+      password: "SecureP@ss123!",
+      ipAddress: "192.168.2.10",
+    });
+
+    try {
+      await signup({
+        email,
+        password: "SecureP@ss123!",
+        ipAddress: "192.168.2.11",
+      });
+      expect.fail("Should have thrown");
+    } catch (error) {
+      const e = error as SignupError;
+      expect(e.type).toBe("EMAIL_EXISTS");
+      expect(e.statusCode).toBe(400);
+    }
+
+    await deleteUser(first.user.id);
   });
 });
 

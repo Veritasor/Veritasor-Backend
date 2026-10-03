@@ -13,7 +13,48 @@ API gateway and attestation service for Veritasor. Handles revenue data normaliz
 - Node.js 18+
 - npm or yarn
 
-## Setup
+## Developer Quickstart (Docker Compose)
+
+The fastest way to get a working development environment is with the included docker-compose stack:
+
+```bash
+# 1. Start Postgres, Redis, and mock Soroban RPC
+docker compose -f ops/dev/docker-compose.yml up -d
+
+# 2. Copy and review environment configuration
+cp .env.example .env
+
+# 3. Install dependencies
+npm install
+
+# 4. Apply database migrations
+npm run migrate
+
+# 5. Run the API in development mode
+npm run dev
+```
+
+The compose file provisions:
+
+| Service  | Port  | Purpose                                      |
+|----------|-------|----------------------------------------------|
+| Postgres | 5432  | Application database with pre-seeded dev data |
+| Redis    | 6379  | Caching, rate limiting, idempotency          |
+| Soroban  | 8000  | Mock Soroban RPC for local attestation flows  |
+
+**Seed data** (tables + data applied automatically on first container start — no separate migration step needed for the seed):
+- Dev user: `dev@veritasor.local` / `devpassword123`
+- Dev business: "Veritasor Demo Inc." owned by the dev user
+- Sample attestation record
+
+To tear down and reset:
+```bash
+docker compose -f ops/dev/docker-compose.yml down -v
+```
+
+## Manual Setup
+
+If you prefer to run services natively:
 
 ```bash
 # Install dependencies
@@ -29,7 +70,90 @@ API runs at `http://localhost:3000`. Use `PORT` env var to override.
 
 The shared rate limiter in [src/middleware/rateLimiter.ts](src/middleware/rateLimiter.ts) supports explicit route-level buckets. Apply a stable bucket name per sensitive route so bursts against one endpoint do not consume the budget for another endpoint. Auth routes use this for login, refresh, forgot-password, reset-password, and `me`, while signup keeps its dedicated abuse-prevention limiter.
 
-## Scripts
+## Observability
+
+Prometheus metrics are available at `/metrics` when `METRICS_ENABLED=true`.
+
+### Idempotency TTL semantics
+
+Idempotency keys are cached so duplicate requests within a TTL window return the original response. Default TTL is 24 hours (`getDefaultTtl()` in [src/middleware/idempotency.ts](src/middleware/idempotency.ts)). Per-route overrides use `idempotencyMiddleware({ scope, ttlMs })`.
+
+**Eviction** is cooperative and never blocks the request path:
+
+- The in-memory store evicts on read (`get`) and on overflow (`set` when `MAX_MEMORY_STORE_SIZE` is reached) and additionally on a periodic sweep.
+- The Redis store relies on `PEXPIRE` for self-eviction; the sweeper does not write to Redis.
+- A background sweeper (`IdempotencySweeper`) runs at `IDEMPOTENCY_SWEEP_INTERVAL_MS` (default 60s, hard floor 1s) and emits the metrics below.
+- The sweeper is `unref`'d: it never blocks process exit and is stopped cleanly during graceful shutdown.
+- A single Redis blip does not stop the sweeper — `runOnce()` swallows store errors, increments `idempotency_sweep_runs_total{outcome="error"}`, and the next cycle resumes once ioredis reconnects.
+
+**Metrics for storage pressure** (see [src/metrics.ts](src/metrics.ts)):
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `idempotency_keys_count` | gauge | `backend` (`memory`/`redis`) | Current number of live keys in the store. Driven from `Map.size` (memory) or a `SCAN MATCH idempotency:*` walk (redis). |
+| `idempotency_evictions_total` | counter | `backend`, `reason` (`expired`/`overflow`/`manual`) | Total keys removed. `expired` = TTL sweep, `overflow` = capacity prune in `set`, `manual` = explicit `delete`. |
+| `idempotency_sweep_runs_total` | counter | `backend`, `outcome` (`ok`/`error`) | Sweeper cycles executed; `outcome="error"` indicates a transient store failure. |
+
+Tune the TTL (`ttlMs` per route) or the sweep interval (`IDEMPOTENCY_SWEEP_INTERVAL_MS`) so the gauge plateaus instead of climbing — a continuously-rising gauge signals either a leak in `set()` or a too-long TTL.
+
+Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP traces endpoint, such as `http://localhost:4318/v1/traces`, to initialize the OpenTelemetry Node SDK during app startup. The request logger creates one server span per HTTP request and Soroban RPC retries create child client spans, so slow attestation requests can be correlated with individual blockchain attempts.
+
+Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.
+
+## Health Checks & Container Probes
+
+`src/routes/health.ts` exposes three endpoints so orchestrators can distinguish "the process is alive" from "the process can serve traffic":
+
+| Endpoint | Purpose | Checks | Status codes |
+|---|---|---|---|
+| `GET /api/health/live` | Liveness | None — process-only, never touches the DB, Redis, or Soroban | Always `200` while the HTTP server can respond |
+| `GET /api/health/ready` | Readiness | Database (`checkDatabase()` in `src/startup/readiness.ts`), when `DATABASE_URL` is set | `200` when ready, `503` when the dependency is down |
+| `GET /api/health` | Legacy combined check (kept for backward compatibility) | DB + Redis, plus Soroban + Email when called with `?mode=deep` | `200` (`ok`/`degraded`) or `503` (`unhealthy`, deep mode only) |
+
+**Why the split matters:** liveness answers "should the orchestrator restart this container?" and must never fail because of a slow or unavailable dependency — otherwise a database blip triggers unnecessary restarts instead of the orchestrator simply holding traffic back via readiness. `/api/health/ready` reuses the same bounded `checkDatabase()` probe as startup so the running-instance check and the boot-time check can't drift apart. `/api/health` is unchanged and continues to serve existing callers (load balancers, uptime monitors) that expect the combined shape with `mode`, `db`, `redis`, and `dependencies`.
+
+### Kubernetes probe configuration
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /api/health/live
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/health/ready
+    port: 3000
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+```
+
+Point `livenessProbe` at `/api/health/live` only — pointing it at `/api/health` or `/api/health/ready` risks a restart loop when a dependency (not the process) is unhealthy. `readinessProbe` should use `/api/health/ready` so the pod is pulled out of the load-balancer rotation during a dependency outage without being killed.
+
+The Docker image's `HEALTHCHECK` (see [Dockerfile](Dockerfile)) also targets `/api/health/live` for the same reason.
+
+## Attestation Reminders
+
+The `attestationReminderJob` (`src/jobs/attestationReminder.ts`) sends attestation reminders aligned to each business's reporting calendar rather than on a fixed interval.
+
+**How it works:**
+
+- Each business has a `reportingPeriod` (`weekly` | `monthly`) and a `reportingTimezone` (IANA, e.g. `America/New_York`).
+- The job computes the *next period boundary* since the last send using `Intl.DateTimeFormat` for DST-safe local-date decomposition.
+- A reminder fires only when `now >= nextBoundary`. After sending, `lastReminderSentAt` is persisted to prevent double-firing within the same period.
+- The job accepts an injectable `now: Date` parameter for deterministic testing without `vi.useFakeTimers()`.
+
+**DST safety:** Period boundaries are computed by reading the local calendar date via `Intl`, then constructing a UTC instant via `Date.UTC`. This avoids the spring-forward / fall-back hazards that arise from using JS local-time methods directly.
+
+**Schema changes:** See migration `20260627_001_add_businesses_reminder_columns.sql` which adds `reporting_period`, `reporting_timezone`, and `last_reminder_sent_at` to the `businesses` table.
+
+
 
 | Command          | Description                    |
 |------------------|--------------------------------|
@@ -38,6 +162,175 @@ The shared rate limiter in [src/middleware/rateLimiter.ts](src/middleware/rateLi
 | `npm run start`  | Run compiled `dist/index.js`   |
 | `npm run lint`   | Run ESLint                     |
 | `npm run migrate`| Run database migrations        |
+| `npm run audit:ci` | Run dependency audit and allowlist validation |
+
+## Security audit
+
+This repository includes a GitHub Actions workflow at `.github/workflows/security-audit.yml` that runs:
+
+- `pnpm audit --prod --json` to detect vulnerabilities.
+- `scripts/check-audit.ts` to enforce `.audit-allowlist.json` for temporary, expiring exceptions.
+- A CycloneDX JSON SBOM generated from the full locked npm dependency graph and attached to each release, along with its SHA-256 checksum. Generate one locally with `npm run sbom:generate`; `--no-install` ensures the locked generator is used.
+
+## Release provenance (SLSA)
+
+Every `v*` tag release ships with **SLSA v1 provenance** attached as a signed in-toto attestation, generated by the pinned `slsa-github-generator` reusable workflow and signed keylessly via GitHub OIDC (Sigstore). The provenance binds both the package artifact and its CycloneDX SBOM SHA-256 digest. Artifacts are additionally cosign-signed, and the release is blocked if provenance verification fails inside `.github/workflows/slsa-provenance.yml`.
+
+Verify a downloaded artifact:
+
+```bash
+slsa-verifier verify-artifact veritasor-backend-<tag>.tgz \
+  --provenance-path veritasor-backend-<tag>.intoto.jsonl \
+  --source-uri github.com/aburex12345/Veritasor-Backend \
+  --source-tag <tag>
+```
+
+A structural gate also runs locally/offline: `npm run verify:provenance -- --provenance <file> --artifact <file> --source-repo github.com/aburex12345/Veritasor-Backend`. Full details: [docs/slsa-provenance.md](docs/slsa-provenance.md).
+
+## Authorization
+
+Protected integration operations use an explicit action-on-resource RBAC policy with verified tenant scope and audit logging. See [the policy engine guide](docs/rbac-policy-engine.md).
+
+## Security Tests
+
+[![Security Tests](https://github.com/Veritasor/Veritasor-Backend/actions/workflows/security-tests.yml/badge.svg)](https://github.com/Veritasor/Veritasor-Backend/actions/workflows/security-tests.yml)
+
+Multi-tenant authorization fuzz tests live in `tests/security/multitenant.fuzz.spec.ts`. They use [fast-check](https://github.com/dubzzz/fast-check) property-based testing to generate randomized cross-tenant scenarios and assert `requireBusinessAuth` rejects every off-tenant request, including nested resources (attestations under integrations).
+
+Run the security tests in isolation:
+
+```bash
+npx vitest run tests/security/multitenant.fuzz.spec.ts
+```
+
+Pact contracts are published to the broker from the main-branch security workflow using the `PACT_BROKER_URL` secret and the current commit SHA as the consumer version. To publish locally, run:
+
+```bash
+npm run pact:publish
+```
+
+**What is fuzz-tested:**
+
+| Scenario | Property | Expected outcome |
+|---|---|---|
+| Tenant A claims Tenant B's business | `requestingUser.id ≠ business.userId` | 403 `BUSINESS_NOT_FOUND` |
+| Spoofed `X-Business-Id` header | Non-existent or foreign business ID | 403 `BUSINESS_NOT_FOUND` |
+| Nested attestation access | Attacker requests route protected by foreign business | 403 `BUSINESS_NOT_FOUND` |
+| Suspended business (own owner) | `business.suspended = true` | 403 `BUSINESS_SUSPENDED` |
+| Injection characters in business ID | IDs outside `[a-zA-Z0-9\-_]{1,50}` | 400 `MISSING_BUSINESS_ID` |
+| DB failure during ownership check | `getById` throws | 403 `BUSINESS_NOT_FOUND` (never 500) |
+| Error response data | Any rejection path | No secrets, stack traces, or sensitive fields leaked |
+
+fast-check's shrinking automatically narrows any failing case to the minimal counterexample.
+
+## Security audit allowlist
+
+
+
+- `id`: Advisory identifier
+- `package`: npm package name
+- `severity`: `low`, `moderate`, `high`, or `critical`
+- `reason`: Why the exception is allowed
+- `expires`: ISO 8601 expiration timestamp
+
+Expired allowlist entries are rejected.
+
+## Audit-log hash chain
+
+Audit-log entries in `src/repositories/auditLogRepository.ts` are linked by a tamper-evident HMAC-SHA-256 chain.
+
+### How it works
+
+Each entry carries a `chainHash`:
+
+```
+chainHash[0] = HMAC(GENESIS_SENTINEL || canonical(entry[0]))
+chainHash[N] = HMAC(chainHash[N-1]   || canonical(entry[N]))
+```
+
+`canonical(entry)` is a pipe-delimited string of all immutable fields including `seq`, `id`, `userId`, `action`, `resource`, `resourceId`, `contentHash`, `timestamp`, and a SHA-256 hash of `metadata`.
+
+Tampering with any field, deleting an entry, or re-ordering entries breaks the chain at that position.
+
+### Verify the chain
+
+```bash
+# Verify a live log export
+curl -s -H "Authorization: Bearer $TOKEN" \
+     http://localhost:3000/api/v1/admin/audit-logs \
+     | jq '.data' \
+     | npx tsx scripts/verify-audit-chain.ts --verbose
+
+# Verify a saved snapshot
+npx tsx scripts/verify-audit-chain.ts --file audit-export.json
+```
+
+Exit code `0` = chain intact; `1` = chain broken.
+
+### HMAC key
+
+Set `AUDIT_CHAIN_SECRET` in the environment (inject from a secrets manager in production). The module uses a deterministic fallback for tests when the env var is absent.
+
+### Chain root anchor
+
+`src/jobs/auditAnchorJob.ts` emits the current chain root to the structured logger every hour. Ship those logs to an append-only, off-system sink (CloudWatch Logs, Datadog, S3 with object lock). A discrepancy between the anchored root and the current computed root is evidence of tampering.
+
+Start the anchor job from `src/index.ts`:
+
+```typescript
+import { createAuditAnchorJob } from './jobs/auditAnchorJob.js'
+const anchorJob = createAuditAnchorJob()
+// Stop during graceful shutdown:
+anchorJob.stop()
+```
+
+## Performance testing
+
+Peak-load k6 scenarios for `/api/v1/attestations` live in `ops/k6/`.
+
+- Local entrypoint: `npm run perf:k6:attestations`
+- Scenario docs: `ops/k6/README.md`
+- Nightly workflow: `.github/workflows/nightly-k6-attestations.yml`
+- Grafana dashboard: `ops/k6/grafana/peak-attestation-dashboard.json`
+
+### Soak testing (autocannon)
+
+An autocannon-based soak harness measures sustained throughput, p50/p95/p99 latency, and error rates on the attestation submit path. It exits non-zero when p95 or error-rate thresholds are breached, so it can gate CI.
+
+```bash
+# Quick soak (30s, 10 connections)
+SOAK_AUTH_TOKEN=<jwt> npm run soak
+
+# Longer soak with custom thresholds
+SOAK_AUTH_TOKEN=<jwt> SOAK_DURATION=300 SOAK_CONNECTIONS=50 \
+  SOAK_P95_THRESHOLD_MS=300 SOAK_ERROR_RATE_THRESHOLD=0.01 \
+  npm run soak
+
+# CLI flags override env vars
+npm run soak -- --token <jwt> --duration 60 --connections 20
+```
+
+All configuration options:
+
+| Option | Env var | Default | Description |
+|--------|---------|---------|-------------|
+| `--url` | `SOAK_BASE_URL` | `http://127.0.0.1:3000` | Base URL of the running instance |
+| `--path` | `SOAK_PATH` | `/api/v1/attestations` | Attestation endpoint path |
+| `--token` | `SOAK_AUTH_TOKEN` | (required) | JWT auth token |
+| `--duration` | `SOAK_DURATION` | `30` | Duration in seconds |
+| `--connections` | `SOAK_CONNECTIONS` | `10` | Number of concurrent connections |
+| `--businessId` | `SOAK_BUSINESS_ID` | (empty) | Business ID for the request |
+| `--merkleRoot` | `SOAK_MERKLE_ROOT` | `0xab...` | Merkle root hex string |
+| `--p95ThresholdMs` | `SOAK_P95_THRESHOLD_MS` | `500` | p95 latency threshold in ms |
+| `--errorRateThreshold` | `SOAK_ERROR_RATE_THRESHOLD` | `0.01` | Max error rate (0-1) |
+| `--writeRatio` | `SOAK_WRITE_RATIO` | `1.0` | Fraction of requests that are POST writes |
+| `--bailout` | `SOAK_BAILOUT` | `0` | Error count before bail (0 = never bail) |
+| `--timeout` | `SOAK_TIMEOUT` | `10` | Response timeout in seconds |
+
+Edge cases handled:
+- Zero duration or zero connections exits cleanly with code 0.
+- Missing token exits with code 1 and a usage hint.
+- Unreachable server triggers autocannon bailout, prints results, and exits non-zero.
 
 ## API Versioning
 
@@ -53,6 +346,8 @@ Routes may be mounted with an `/api/v{n}` prefix and/or legacy unversioned paths
 | Method | Path                      | Description              | Auth Required |
 |--------|---------------------------|--------------------------|---------------|
 | GET    | `/api/v1/health`          | Health check             | No |
+| GET    | `/api/health/live`        | Liveness probe (process-only) | No |
+| GET    | `/api/health/ready`       | Readiness probe (dependency checks) | No |
 | GET    | `/api/v1/attestations`    | List attestations (stub) | User Auth |
 | POST   | `/api/v1/attestations`    | Submit attestation (stub)| User Auth |
 | GET    | `/api/v1/businesses/me`   | Get user business        | User Auth |
@@ -128,6 +423,8 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/dbname npx tsx src/db/migrate
 
 Requires Node 18+ and a running PostgreSQL instance.
 
+**Rollback verification (CI):** `npm run migrate:verify-rollback` dry-runs apply-then-rollback for each migration against a disposable scratch database and reports any schema drift a `down.sql` leaves behind. It refuses to run against anything that doesn't look like a scratch DB — see [docs/migration-rollback-verification.md](docs/migration-rollback-verification.md).
+
 ## Environment
 
 Optional `.env`:
@@ -135,6 +432,14 @@ Optional `.env`:
 ```
 PORT=3000
 DATABASE_URL=postgresql://user:password@localhost:5432/veritasor
+# Redis Configuration (Standalone, Cluster, or Sentinel)
+# REDIS_URL=redis://localhost:6379
+# REDIS_CLUSTER_NODES=localhost:7000,localhost:7001
+REDIS_MODE=sentinel
+REDIS_SENTINELS=localhost:26379,localhost:26380
+REDIS_SENTINEL_NAME=mymaster
+# MIGRATION_LOCK_TIMEOUT_MS=5000
+# MIGRATION_STATEMENT_TIMEOUT_MS=60000
 ```
 
 ## Merging to remote

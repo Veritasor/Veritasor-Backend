@@ -1,0 +1,1362 @@
+
+> veritasor-backend@0.1.0 test
+> vitest run
+
+
+[1m[46m RUN [49m[22m [36mv4.1.2 [39m[90mC:/Users/Kroman/Veritasor-Backend-1[39m
+
+[90mstderr[2m | tests/unit/permissions.test.ts[2m > [22m[2mrequirePermissions middleware[2m > [22m[2mshould handle ownership check without integration ID
+[22m[39mPermission middleware error: TypeError: Cannot read properties of undefined (reading 'id')
+    at C:/Users/Kroman/Veritasor-Backend-1/src/middleware/permissions.ts:135:42
+    at C:/Users/Kroman/Veritasor-Backend-1/tests/unit/permissions.test.ts:271:11
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:302:11
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:1893:26
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2316:20
+    at new Promise (<anonymous>)
+    at runWithCancel [90m(file:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2313:10[90m)[39m
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2295:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2262:10[90m)[39m
+
+[90mstderr[2m | tests/unit/permissions.test.ts[2m > [22m[2mrequirePermissions middleware[2m > [22m[2mshould handle errors in custom check
+[22m[39mPermission middleware error: Error: Custom error
+    at C:/Users/Kroman/Veritasor-Backend-1/tests/unit/permissions.test.ts:277:51
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:302:11
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:1893:26
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2316:20
+    at new Promise (<anonymous>)
+    at runWithCancel [90m(file:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2313:10[90m)[39m
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2295:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2262:10[90m)[39m
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2945:64
+
+ [31m❯[39m tests/unit/permissions.test.ts [2m([22m[2m24 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 83[2mms[22m[39m
+       [32m✓[39m should return correct permissions for user role[32m 9[2mms[22m[39m
+       [32m✓[39m should return correct permissions for business_admin role[32m 1[2mms[22m[39m
+[31m       [31m×[31m should return all permissions for admin role[39m[32m 21[2mms[22m[39m
+       [32m✓[39m should return empty array for invalid role[32m 1[2mms[22m[39m
+       [32m✓[39m should allow access when user has all required permissions[32m 1[2mms[22m[39m
+       [32m✓[39m should allow access when user has multiple required permissions[32m 1[2mms[22m[39m
+       [32m✓[39m should deny access when user lacks required permissions[32m 1[2mms[22m[39m
+       [32m✓[39m should deny access when user has some but not all required permissions[32m 1[2mms[22m[39m
+       [32m✓[39m should handle empty required permissions[32m 1[2mms[22m[39m
+       [32m✓[39m should handle empty user permissions[32m 1[2mms[22m[39m
+       [32m✓[39m should create permission context with all fields[32m 1[2mms[22m[39m
+       [32m✓[39m should create context without business ID[32m 1[2mms[22m[39m
+       [32m✓[39m should default role to user[32m 1[2mms[22m[39m
+     [32m✓[39m should call next when user has required permissions[32m 6[2mms[22m[39m
+     [32m✓[39m should set permission context on request[32m 1[2mms[22m[39m
+     [32m✓[39m should return 401 when user is not authenticated[32m 7[2mms[22m[39m
+     [32m✓[39m should return 403 when user lacks permissions[32m 4[2mms[22m[39m
+     [32m✓[39m should handle multiple required permissions[32m 2[2mms[22m[39m
+     [32m✓[39m should use user role from headers[32m 1[2mms[22m[39m
+     [32m✓[39m should use business ID from headers[32m 1[2mms[22m[39m
+     [32m✓[39m should handle custom ownership check[32m 1[2mms[22m[39m
+[31m     [31m×[31m should pass custom ownership check[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m should handle ownership check without integration ID[39m[32m 9[2mms[22m[39m
+     [32m✓[39m should handle errors in custom check[32m 3[2mms[22m[39m
+ [31m❯[39m tests/unit/services/integration/auth.test.ts [2m([22m[2m11 tests[22m[2m | [22m[31m10 failed[39m[2m)[22m[32m 273[2mms[22m[39m
+[31m     [31m×[31m should load config successfully when all required env vars are present[39m[32m 30[2mms[22m[39m
+[31m     [31m×[31m should throw when DATABASE_URL is missing[39m[32m 24[2mms[22m[39m
+[31m     [31m×[31m should throw when JWT_SECRET is missing[39m[32m 24[2mms[22m[39m
+[31m     [31m×[31m should throw when RAZORPAY_KEY_ID is missing[39m[32m 9[2mms[22m[39m
+[31m     [31m×[31m should throw when RAZORPAY_KEY_SECRET is missing[39m[32m 10[2mms[22m[39m
+[31m     [31m×[31m should throw when RAZORPAY_WEBHOOK_SECRET is missing[39m[32m 106[2mms[22m[39m
+[31m     [31m×[31m should throw when JWT_SECRET is shorter than 32 characters[39m[32m 35[2mms[22m[39m
+     [32m✓[39m should throw when NODE_ENV is an invalid value[32m 8[2mms[22m[39m
+[31m     [31m×[31m should default PORT to 3000 when not set[39m[32m 6[2mms[22m[39m
+[31m     [31m×[31m should default NODE_ENV to development when not set[39m[32m 7[2mms[22m[39m
+[31m     [31m×[31m should report ALL missing vars in a single error, not just the first[39m[32m 9[2mms[22m[39m
+[90mstderr[2m | tests/unit/middleware/validate.test.ts[2m > [22m[2mValidation Middleware[2m > [22m[2mvalidateBody[2m > [22m[2mshould return 400 for invalid request body
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/src/middleware/validate.ts:12:21\n'[39m +
+    [32m'    at processTicksAndRejections (node:internal/process/task_queues:104:5)'[39m,
+  path: [32m'/test'[39m,
+  method: [32m'POST'[39m,
+  requestId: [90mundefined[39m,
+  timestamp: [32m'2026-04-25T23:15:58.829Z'[39m
+}
+
+[90mstderr[2m | tests/unit/middleware/validate.test.ts[2m > [22m[2mValidation Middleware[2m > [22m[2mvalidateBody[2m > [22m[2mshould return detailed errors for nested body schema violations
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/src/middleware/validate.ts:12:21\n'[39m +
+    [32m'    at processTicksAndRejections (node:internal/process/task_queues:104:5)'[39m,
+  path: [32m'/nested'[39m,
+  method: [32m'POST'[39m,
+  requestId: [90mundefined[39m,
+  timestamp: [32m'2026-04-25T23:15:58.853Z'[39m
+}
+
+[90mstderr[2m | tests/unit/middleware/validate.test.ts[2m > [22m[2mValidation Middleware[2m > [22m[2mvalidateQuery[2m > [22m[2mshould return detailed errors for nested query schema violations
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/src/middleware/validate.ts:26:21\n'[39m +
+    [32m'    at processTicksAndRejections (node:internal/process/task_queues:104:5)'[39m,
+  path: [32m'/nested'[39m,
+  method: [32m'GET'[39m,
+  requestId: [90mundefined[39m,
+  timestamp: [32m'2026-04-25T23:15:58.884Z'[39m
+}
+
+[90mstderr[2m | tests/unit/middleware/validate.test.ts[2m > [22m[2mValidation Middleware[2m > [22m[2mvalidateQuery[2m > [22m[2mshould return 400 for invalid query params
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/src/middleware/validate.ts:26:21\n'[39m +
+    [32m'    at processTicksAndRejections (node:internal/process/task_queues:104:5)'[39m,
+  path: [32m'/test'[39m,
+  method: [32m'GET'[39m,
+  requestId: [90mundefined[39m,
+  timestamp: [32m'2026-04-25T23:15:58.916Z'[39m
+}
+
+ [31m❯[39m tests/unit/middleware/validate.test.ts [2m([22m[2m6 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 227[2mms[22m[39m
+       [32m✓[39m should pass for valid request body[32m 105[2mms[22m[39m
+[31m       [31m×[31m should return 400 for invalid request body[39m[32m 32[2mms[22m[39m
+[31m       [31m×[31m should return detailed errors for nested body schema violations[39m[32m 17[2mms[22m[39m
+       [32m✓[39m should pass for valid query params (with coercion)[32m 16[2mms[22m[39m
+[31m       [31m×[31m should return detailed errors for nested query schema violations[39m[32m 30[2mms[22m[39m
+       [32m✓[39m should return 400 for invalid query params[32m 20[2mms[22m[39m
+ [31m❯[39m tests/unit/middleware/requireBusinessAuth.test.ts [2m([22m[2m14 tests[22m[2m | [22m[31m8 failed[39m[2m)[22m[32m 67[2mms[22m[39m
+       [32m✓[39m should reject requests without Authorization header[32m 13[2mms[22m[39m
+       [32m✓[39m should reject requests with invalid Authorization format[32m 2[2mms[22m[39m
+       [32m✓[39m should reject requests with invalid JWT token[32m 3[2mms[22m[39m
+       [32m✓[39m should reject requests when user not found in database[32m 2[2mms[22m[39m
+[31m       [31m×[31m should reject requests without business ID[39m[32m 19[2mms[22m[39m
+[31m       [31m×[31m should reject requests with invalid business ID format in header[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m should accept business ID from request body (businessId field)[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m should accept business ID from request body (business_id field)[39m[32m 3[2mms[22m[39m
+[31m       [31m×[31m should prioritize header over body business ID[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m should reject requests for non-existent business[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m should reject requests for business owned by different user[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m should allow requests for business owned by authenticated user[39m[32m 2[2mms[22m[39m
+       [32m✓[39m should handle JWT verification errors gracefully[32m 2[2mms[22m[39m
+       [32m✓[39m should handle database errors gracefully[32m 1[2mms[22m[39m
+ [31m❯[39m tests/integration/attestations.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m tests/integration/business.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m tests/integration/integrations.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m tests/integration/signup-abuse-prevention.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m tests/integration/shopify-disconnect.test.ts [2m([22m[2m0 test[22m[2m)[22m
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/signup[2m > [22m[2mshould return 400 with error envelope when missing required fields
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:129:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964104_nd50eb'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.107Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/signup[2m > [22m[2mshould return 409 with error envelope when email already exists
+[22m[39m[Error] {
+  message: [32m'Email already exists'[39m,
+  stack: [32m'ConflictError: Email already exists\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:137:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964135_8pdhqk'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.136Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/login[2m > [22m[2mshould return 401 with error envelope for invalid password
+[22m[39m[Error] {
+  message: [32m'Invalid credentials'[39m,
+  stack: [32m'AuthenticationError: Invalid credentials\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:189:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964248_uc3m7q'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.249Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/login[2m > [22m[2mshould return 401 with error envelope for non-existent email
+[22m[39m[Error] {
+  message: [32m'Invalid credentials'[39m,
+  stack: [32m'AuthenticationError: Invalid credentials\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:189:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964285_3rauxq'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.286Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/login[2m > [22m[2mshould return 400 with error envelope when missing credentials
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:180:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964327_nquodg'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.329Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/refresh[2m > [22m[2mshould return 401 with error envelope for invalid refresh token
+[22m[39m[Error] {
+  message: [32m'Invalid refresh token'[39m,
+  stack: [32m'AuthenticationError: Invalid refresh token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:230:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/refresh'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964361_bc2u8h'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.362Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/refresh[2m > [22m[2mshould return 400 with error envelope when refresh token is missing
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:222:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/refresh'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964382_r7vt8q'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.382Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/refresh[2m > [22m[2mshould invalidate old refresh token after use
+[22m[39m[Error] {
+  message: [32m'Invalid refresh token'[39m,
+  stack: [32m'AuthenticationError: Invalid refresh token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:230:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/refresh'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964411_bpyac'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.412Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/refresh[2m > [22m[2mshould reject a replayed refresh token while allowing the rotated token
+[22m[39m[Error] {
+  message: [32m'Invalid refresh token'[39m,
+  stack: [32m'AuthenticationError: Invalid refresh token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:230:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/refresh'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964432_bmuxd6'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.433Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mGET /api/auth/me[2m > [22m[2mshould return 401 with error envelope without token
+[22m[39m[Error] {
+  message: [32m'Unauthorized'[39m,
+  stack: [32m'AuthenticationError: Unauthorized\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:262:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/me'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158964486_yohjr'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.486Z'[39m
+}
+
+[90mstderr[2m | tests/unit/middleware/idempotency.test.ts[2m > [22m[2midempotencyMiddleware[2m > [22m[2mEdge Cases[2m > [22m[2mshould handle store errors gracefully
+[22m[39m[idempotency] Failed to cache response: Error: Store error
+    at C:/Users/Kroman/Veritasor-Backend-1/tests/unit/middleware/idempotency.test.ts:476:40
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:302:11
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:1893:26
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2316:20
+    at new Promise (<anonymous>)
+    at runWithCancel [90m(file:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2313:10[90m)[39m
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2295:20
+    at new Promise (<anonymous>)
+    at runWithTimeout [90m(file:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2262:10[90m)[39m
+    at [90mfile:///C:/Users/Kroman/Veritasor-Backend-1/[39mnode_modules/[4m@vitest/runner[24m/dist/chunk-artifact.js:2945:64
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mGET /api/auth/me[2m > [22m[2mshould return 401 with error envelope for invalid token
+[22m[39m[Error] {
+  message: [32m'Invalid or expired token'[39m,
+  stack: [32m'AuthenticationError: Invalid or expired token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:269:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/me'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158964535_r3majf'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.536Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mGET /api/auth/me[2m > [22m[2mshould return 401 with error envelope for malformed authorization header
+[22m[39m[Error] {
+  message: [32m'Unauthorized'[39m,
+  stack: [32m'AuthenticationError: Unauthorized\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:262:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/me'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158964552_t8okwp'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.553Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/forgot-password[2m > [22m[2mshould return 400 with error envelope when email is missing
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:296:17\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/forgot-password'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964606_4d53t'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.606Z'[39m
+}
+
+ [32m✓[39m tests/unit/middleware/idempotency.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 345[2mms[22m[39m
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/reset-password[2m > [22m[2mshould not allow login with old password after reset
+[22m[39m[Error] {
+  message: [32m'Invalid credentials'[39m,
+  stack: [32m'AuthenticationError: Invalid credentials\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:189:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964686_pbj7gk'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.686Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/reset-password[2m > [22m[2mshould return 400 with error envelope for invalid reset token
+[22m[39m[Error] {
+  message: [32m'Invalid or expired reset token'[39m,
+  stack: [32m'AppError: Invalid or expired reset token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:346:17\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/reset-password'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964742_n1ctx'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.742Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/reset-password[2m > [22m[2mshould return 400 with error envelope when missing required fields
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:337:17\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/reset-password'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964766_qtnmmu'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.767Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mPOST /api/auth/reset-password[2m > [22m[2mshould not allow reusing reset token
+[22m[39m[Error] {
+  message: [32m'Invalid or expired reset token'[39m,
+  stack: [32m'AppError: Invalid or expired reset token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:346:17\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/reset-password'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964796_syp7am'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.796Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould include timestamp in all error responses
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:129:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964823_c20yn4'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.825Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould include requestId in error responses when available
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:180:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964836_vkcb7o'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.836Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould return proper error envelope for 404 Not Found
+[22m[39m[Error] {
+  message: [32m'This endpoint does not exist'[39m,
+  stack: [32m'NotFoundError: This endpoint does not exist\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:378:13\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/nonexistent'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158964848_23auk'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.849Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould return proper error envelope for 500 Internal Server Error
+[22m[39m[Error] {
+  message: [32m'Internal server error simulation'[39m,
+  stack: [32m'AppError: Internal server error simulation\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:387:13\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/internal-error'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964866_mrcyw'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.867Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould include details for validation errors
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:180:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964883_ipcr6'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.884Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould handle multiple validation errors in details
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:129:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964892_w8ploi'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.893Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould handle ConflictError with CONFLICT code
+[22m[39m[Error] {
+  message: [32m'Email already exists'[39m,
+  stack: [32m'ConflictError: Email already exists\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:137:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158964907_57uuj9'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.907Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould handle AuthenticationError with AUTHENTICATION_ERROR code
+[22m[39m[Error] {
+  message: [32m'Unauthorized'[39m,
+  stack: [32m'AuthenticationError: Unauthorized\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:262:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/me'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158964916_zysnt'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.917Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mError Envelope Standardization[2m > [22m[2mshould handle NotFoundError with NOT_FOUND code
+[22m[39m[Error] {
+  message: [32m'This endpoint does not exist'[39m,
+  stack: [32m'NotFoundError: This endpoint does not exist\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:378:13\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/nonexistent'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158964924_24qsi'[39m,
+  timestamp: [32m'2026-04-25T23:16:04.925Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mAuth flow integration[2m > [22m[2mshould preserve the active session when an attacker replays a rotated refresh token
+[22m[39m[Error] {
+  message: [32m'Invalid refresh token'[39m,
+  stack: [32m'AuthenticationError: Invalid refresh token\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:230:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/refresh'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158965111_39hmtl'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.111Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould not expose internal error messages in production-like scenarios
+[22m[39m[Error] {
+  message: [32m'Internal server error simulation'[39m,
+  stack: [32m'AppError: Internal server error simulation\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:387:13\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/internal-error'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158965186_823vdg'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.189Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould include status: error in all error responses
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:129:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158965196_qoqwb'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.197Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould include status: error in all error responses
+[22m[39m[Error] {
+  message: [32m'Unauthorized'[39m,
+  stack: [32m'AuthenticationError: Unauthorized\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:262:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/me'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158965204_n2b1o8'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.205Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould include status: error in all error responses
+[22m[39m[Error] {
+  message: [32m'This endpoint does not exist'[39m,
+  stack: [32m'NotFoundError: This endpoint does not exist\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:378:13\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/nonexistent'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158965211_032gn'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.212Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould use proper error codes for different error types
+[22m[39m[Error] {
+  message: [32m'Validation Error'[39m,
+  stack: [32m'ValidationError: Validation Error\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:180:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/login'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158965249_3icdif'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.250Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould use proper error codes for different error types
+[22m[39m[Error] {
+  message: [32m'Unauthorized'[39m,
+  stack: [32m'AuthenticationError: Unauthorized\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:262:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/me'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158965257_tmctg'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.257Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould use proper error codes for different error types
+[22m[39m[Error] {
+  message: [32m'Email already exists'[39m,
+  stack: [32m'ConflictError: Email already exists\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:137:15\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/signup'[39m,
+  method: [32m'POST'[39m,
+  requestId: [32m'req_1777158965273_i2h7ca'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.308Z'[39m
+}
+
+[90mstderr[2m | tests/integration/auth.test.ts[2m > [22m[2mSecurity Considerations[2m > [22m[2mshould use proper error codes for different error types
+[22m[39m[Error] {
+  message: [32m'This endpoint does not exist'[39m,
+  stack: [32m'NotFoundError: This endpoint does not exist\n'[39m +
+    [32m'    at C:/Users/Kroman/Veritasor-Backend-1/tests/integration/auth.test.ts:378:13\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:149:13)\n'[39m +
+    [32m'    at Route.dispatch (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\route.js:119:3)\n'[39m +
+    [32m'    at Layer.handle [as handle_request] (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\layer.js:95:5)\n'[39m +
+    [32m'    at C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:284:15\n'[39m +
+    [32m'    at router.process_params (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:346:12)\n'[39m +
+    [32m'    at next (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:280:10)\n'[39m +
+    [32m'    at router.handle (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:175:3)\n'[39m +
+    [32m'    at router (C:\\Users\\Kroman\\Veritasor-Backend-1\\node_modules\\express\\lib\\router\\index.js:47:12)'[39m,
+  path: [32m'/api/auth/nonexistent'[39m,
+  method: [32m'GET'[39m,
+  requestId: [32m'req_1777158965317_44m5tg'[39m,
+  timestamp: [32m'2026-04-25T23:16:05.318Z'[39m
+}
+
+ [32m✓[39m tests/integration/auth.test.ts [2m([22m[2m55 tests[22m[2m)[22m[33m 1420[2mms[22m[39m
+ [32m✓[39m tests/unit/services/integrations/stripe/store.property.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 263[2mms[22m[39m
+ [32m✓[39m tests/unit/utils/jwt.test.ts [2m([22m[2m73 tests[22m[2m)[22m[32m 201[2mms[22m[39m
+ [32m✓[39m tests/unit/utils/password.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 4884[2mms[22m[39m
+     [33m[2m✓[22m[39m should produce different hashes for the same plain text (salt randomness) [33m 495[2mms[22m[39m
+     [33m[2m✓[22m[39m should verify correctly with the right password [33m 804[2mms[22m[39m
+     [33m[2m✓[22m[39m should return false for a wrong password [33m 641[2mms[22m[39m
+       [33m[2m✓[22m[39m should hash and verify passwords with emojis [33m 859[2mms[22m[39m
+       [33m[2m✓[22m[39m should hash and verify passwords with combining characters [33m 862[2mms[22m[39m
+       [33m[2m✓[22m[39m should hash and verify passwords with non-Latin scripts [33m 903[2mms[22m[39m
+ [32m✓[39m tests/unit/repositories/integration.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 142[2mms[22m[39m
+ [32m✓[39m tests/unit/routes/admin.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 263[2mms[22m[39m
+ [32m✓[39m tests/unit/services/business/schemas.test.ts [2m([22m[2m34 tests[22m[2m)[22m[32m 78[2mms[22m[39m
+ [32m✓[39m tests/unit/middleware/apiVersion.test.ts [2m([22m[2m24 tests[22m[2m)[22m[32m 134[2mms[22m[39m
+ [32m✓[39m tests/integration/stripe-router-mount.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 138[2mms[22m[39m
+ [32m✓[39m tests/unit/utils/abusePrevention.test.ts [2m([22m[2m81 tests[22m[2m)[22m[32m 98[2mms[22m[39m
+ [32m✓[39m tests/unit/services/revenue/normalize.test.ts [2m([22m[2m63 tests[22m[2m)[22m[32m 99[2mms[22m[39m
+[90mstderr[2m | tests/unit/services/soroban/client.test.ts[2m > [22m[2mSoroban client retry and timeout policy[2m > [22m[2mexecuteSorobanRequest[2m > [22m[2mretries a transient transport failure and then succeeds
+[22m[39m[WARN] [object Object] soroban: retrying RPC call after transient transport error
+
+[90mstderr[2m | tests/unit/services/soroban/client.test.ts[2m > [22m[2mSoroban client retry and timeout policy[2m > [22m[2mexecuteSorobanRequest[2m > [22m[2mapplies jittered backoff while keeping the delay bounded
+[22m[39m[WARN] [object Object] soroban: retrying RPC call after transient transport error
+
+[90mstderr[2m | tests/unit/services/soroban/client.test.ts[2m > [22m[2mSoroban client retry and timeout policy[2m > [22m[2mexecuteSorobanRequest[2m > [22m[2mretries a TRY_AGAIN_LATER response and returns the eventual success response
+[22m[39m[WARN] [object Object] soroban: retrying RPC call after retryable response
+
+[90mstderr[2m | tests/unit/services/soroban/client.test.ts[2m > [22m[2mSoroban client retry and timeout policy[2m > [22m[2mcreateSorobanRpcServer[2m > [22m[2mapplies the retry wrapper to getAccount
+[22m[39m[WARN] [object Object] soroban: retrying RPC call after transient transport error
+
+[90mstderr[2m | tests/unit/services/soroban/client.test.ts[2m > [22m[2mSoroban client retry and timeout policy[2m > [22m[2mcreateSorobanRpcServer[2m > [22m[2mretries TRY_AGAIN_LATER sendTransaction responses
+[22m[39m[WARN] [object Object] soroban: retrying RPC call after retryable response
+
+ [32m✓[39m tests/unit/services/soroban/client.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 94[2mms[22m[39m
+ [32m✓[39m tests/unit/utils/signupRateLimiter.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+ [32m✓[39m tests/unit/middleware/rateLimiter.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m tests/unit/repositories/attestationRepository.test.ts [2m([22m[2m40 tests[22m[2m | [22m[33m1 skipped[39m[2m)[22m[32m 78[2mms[22m[39m
+ [32m✓[39m tests/unit/middleware/optionalAuth.test.ts [2m([22m[2m59 tests[22m[2m)[22m[32m 61[2mms[22m[39m
+ [32m✓[39m tests/unit/services/integrations/stripe/connect.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 46[2mms[22m[39m
+ [32m✓[39m tests/unit/services/integrations/stripe/callback.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 135[2mms[22m[39m
+ [32m✓[39m tests/unit/services/business/normalize.test.ts [2m([22m[2m46 tests[22m[2m)[22m[32m 66[2mms[22m[39m
+ [32m✓[39m tests/unit/services/integrations/stripe/store.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 37[2mms[22m[39m
+ [32m✓[39m tests/unit/services/merkle.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 5 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/integration/attestations.test.ts[2m [ tests/integration/attestations.test.ts ][22m
+[41m[1m FAIL [22m[49m tests/integration/business.test.ts[2m [ tests/integration/business.test.ts ][22m
+[31m[1mError[22m: DATABASE_URL environment variable is required[39m
+[36m [2m❯[22m src/db/client.ts:[2m6:9[22m[39m
+    [90m  4|[39m
+    [90m  5|[39m [35mif[39m ([33m![39mconnectionString) {
+    [90m  6|[39m   [35mthrow[39m [35mnew[39m [33mError[39m([32m'DATABASE_URL environment variable is required'[39m)[33m;[39m
+    [90m   |[39m         [31m^[39m
+    [90m  7|[39m }
+    [90m  8|[39m
+[90m [2m❯[22m src/routes/admin.ts:[2m8:1[22m[39m
+[90m [2m❯[22m src/app.ts:[2m12:1[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/integration/integrations.test.ts[2m [ tests/integration/integrations.test.ts ][22m
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'READ_CONNECTED')[39m
+[36m [2m❯[22m src/routes/integrations.ts:[2m108:44[22m[39m
+    [90m106|[39m router[33m.[39m[35mget[39m([32m'/connected'[39m[33m,[39m
+    [90m107|[39m   requireAuth[33m,[39m
+    [90m108|[39m   [34mrequirePermissions[39m([33mIntegrationPermission[39m[33m.[39m[33mREAD_CONNECTED[39m)[33m,[39m
+    [90m   |[39m                                            [31m^[39m
+    [90m109|[39m   [35masync[39m (req[33m:[39m [33mRequest[39m[33m,[39m res[33m:[39m [33mResponse[39m) [33m=>[39m {
+    [90m110|[39m     [35mtry[39m {
+[90m [2m❯[22m tests/integration/integrations.test.ts:[2m4:1[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/integration/shopify-disconnect.test.ts[2m [ tests/integration/shopify-disconnect.test.ts ][22m
+[31m[1mError[22m[39m: Transform failed with 3 errors:
+
+[31m[PARSE_ERROR] Error:[0m Identifier `code` has already been declared
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m src/services/integrations/shopify/callback.ts:28:11 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m28 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0mcode[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mh[0m[38;5;249mo[0m[38;5;249mp[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mm[0m[38;5;249ms[0m
+ [38;5;240m   │[0m           ──┬─  
+ [38;5;240m   │[0m             ╰─── `code` has already been declared here
+ [38;5;240m   │[0m 
+ [38;5;246m32 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0mcode[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mh[0m[38;5;249mo[0m[38;5;249mp[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249mh[0m[38;5;249mm[0m[38;5;249ma[0m[38;5;249mc[0m[38;5;249m [0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mm[0m[38;5;249ms[0m
+ [38;5;240m   │[0m           ──┬─  
+ [38;5;240m   │[0m             ╰─── It can not be redeclared here
+[38;5;246m────╯[0m
+
+[31m[PARSE_ERROR] Error:[0m Identifier `shop` has already been declared
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m src/services/integrations/shopify/callback.ts:28:17 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m28 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249md[0m[38;5;249me[0m[38;5;249m,[0m[38;5;249m [0mshop[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249m [0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mm[0m[38;5;249ms[0m
+ [38;5;240m   │[0m                 ──┬─  
+ [38;5;240m   │[0m                   ╰─── `shop` has already been declared here
+ [38;5;240m   │[0m 
+ [38;5;246m32 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249md[0m[38;5;249me[0m[38;5;249m,[0m[38;5;249m [0mshop[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249ma[0m[38;5;249mt[0m[38;5;249me[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249mh[0m[38;5;249mm[0m[38;5;249ma[0m[38;5;249mc[0m[38;5;249m [0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mm[0m[38;5;249ms[0m
+ [38;5;240m   │[0m                 ──┬─  
+ [38;5;240m   │[0m                   ╰─── It can not be redeclared here
+[38;5;246m────╯[0m
+
+[31m[PARSE_ERROR] Error:[0m Identifier `state` has already been declared
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m src/services/integrations/shopify/callback.ts:28:23 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m28 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249md[0m[38;5;249me[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mh[0m[38;5;249mo[0m[38;5;249mp[0m[38;5;249m,[0m[38;5;249m [0mstate[38;5;249m [0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mm[0m[38;5;249ms[0m
+ [38;5;240m   │[0m                       ──┬──  
+ [38;5;240m   │[0m                         ╰──── `state` has already been declared here
+ [38;5;240m   │[0m 
+ [38;5;246m32 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249ms[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249m{[0m[38;5;249m [0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249md[0m[38;5;249me[0m[38;5;249m,[0m[38;5;249m [0m[38;5;249ms[0m[38;5;249mh[0m[38;5;249mo[0m[38;5;249mp[0m[38;5;249m,[0m[38;5;249m [0mstate[38;5;249m,[0m[38;5;249m [0m[38;5;249mh[0m[38;5;249mm[0m[38;5;249ma[0m[38;5;249mc[0m[38;5;249m [0m[38;5;249m}[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0m[38;5;249mp[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249ma[0m[38;5;249mm[0m[38;5;249ms[0m
+ [38;5;240m   │[0m                       ──┬──  
+ [38;5;240m   │[0m                         ╰──── It can not be redeclared here
+[38;5;246m────╯[0m
+
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/Kroman/Veritasor-Backend-1/src/services/integrations/shopify/callback.ts[39m
+[90m [2m❯[22m transformWithOxc node_modules/vite/dist/node/chunks/node.js:[2m3720:19[22m[39m
+[90m [2m❯[22m TransformPluginContext.transform node_modules/vite/dist/node/chunks/node.js:[2m3788:26[22m[39m
+[90m [2m❯[22m EnvironmentPluginContainer.transform node_modules/vite/dist/node/chunks/node.js:[2m30048:51[22m[39m
+[90m [2m❯[22m loadAndTransform node_modules/vite/dist/node/chunks/node.js:[2m24177:26[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/integration/signup-abuse-prevention.test.ts[2m [ tests/integration/signup-abuse-prevention.test.ts ][22m
+[31m[1mError[22m: Transform failed with 1 error:
+
+[31m[PARSE_ERROR] Error:[0m Identifier `getSignupRateLimitStore` has already been declared
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m tests/integration/signup-abuse-prevention.test.ts:24:3 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m24 │[0m [38;5;249m [0m[38;5;249m [0mgetSignupRateLimitStore[38;5;249m,[0m
+ [38;5;240m   │[0m   ───────────┬───────────  
+ [38;5;240m   │[0m              ╰───────────── `getSignupRateLimitStore` has already been declared here
+ [38;5;240m   │[0m 
+ [38;5;246m26 │[0m [38;5;249m [0m[38;5;249m [0mgetSignupRateLimitStore[38;5;249m,[0m
+ [38;5;240m   │[0m   ───────────┬───────────  
+ [38;5;240m   │[0m              ╰───────────── It can not be redeclared here
+[38;5;246m────╯[0m
+[39m
+  Plugin: [35mvite:oxc[39m
+  File: [36mC:/Users/Kroman/Veritasor-Backend-1/tests/integration/signup-abuse-prevention.test.ts[39m
+[90m [2m❯[22m transformWithOxc node_modules/vite/dist/node/chunks/node.js:[2m3720:19[22m[39m
+[90m [2m❯[22m TransformPluginContext.transform node_modules/vite/dist/node/chunks/node.js:[2m3788:26[22m[39m
+[90m [2m❯[22m EnvironmentPluginContainer.transform node_modules/vite/dist/node/chunks/node.js:[2m30048:51[22m[39m
+[90m [2m❯[22m loadAndTransform node_modules/vite/dist/node/chunks/node.js:[2m24177:26[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/29]⎯[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 24 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/unit/permissions.test.ts[2m > [22mPermissionService[2m > [22mgetUserPermissions[2m > [22mshould return all permissions for admin role
+[31m[1mAssertionError[22m: expected 15 to be 12 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 12[39m
+[31m+ 15[39m
+
+[36m [2m❯[22m tests/unit/permissions.test.ts:[2m33:34[22m[39m
+    [90m 31|[39m
+    [90m 32|[39m       [34mexpect[39m(permissions)[33m.[39m[34mtoContain[39m([33mIntegrationPermission[39m[33m.[39m[33mADMIN[39m)[33m;[39m
+    [90m 33|[39m       expect(permissions.length).toBe(Object.values(IntegrationPermiss…
+    [90m   |[39m                                  [31m^[39m
+    [90m 34|[39m     })[33m;[39m
+    [90m 35|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/permissions.test.ts[2m > [22mrequirePermissions middleware[2m > [22mshould pass custom ownership check
+[31m[1mAssertionError[22m: expected "vi.fn()" to be called at least once[39m
+[36m [2m❯[22m tests/unit/permissions.test.ts:[2m262:22[22m[39m
+    [90m260|[39m     await middleware(mockReq as Request, mockRes as Response, mockNext…
+    [90m261|[39m
+    [90m262|[39m     [34mexpect[39m(mockNext)[33m.[39m[34mtoHaveBeenCalled[39m()[33m;[39m
+    [90m   |[39m                      [31m^[39m
+    [90m263|[39m   })[33m;[39m
+    [90m264|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/permissions.test.ts[2m > [22mrequirePermissions middleware[2m > [22mshould handle ownership check without integration ID
+[31m[1mAssertionError[22m: expected "vi.fn()" to be called at least once[39m
+[36m [2m❯[22m tests/unit/permissions.test.ts:[2m273:22[22m[39m
+    [90m271|[39m     await middleware(mockReq as Request, mockRes as Response, mockNext…
+    [90m272|[39m
+    [90m273|[39m     expect(mockNext).toHaveBeenCalled(); // Should pass since no owner…
+    [90m   |[39m                      [31m^[39m
+    [90m274|[39m   })[33m;[39m
+    [90m275|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness ID Validation[2m > [22mshould reject requests without business ID
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m139:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness ID Validation[2m > [22mshould reject requests with invalid business ID format in header
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m169:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness ID Validation[2m > [22mshould accept business ID from request body (businessId field)
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m207:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness ID Validation[2m > [22mshould accept business ID from request body (business_id field)
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m249:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness ID Validation[2m > [22mshould prioritize header over body business ID
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m292:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness Authorization[2m > [22mshould reject requests for non-existent business
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m320:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness Authorization[2m > [22mshould reject requests for business owned by different user
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m355:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/requireBusinessAuth.test.ts[2m > [22mrequireBusinessAuth middleware[2m > [22mBusiness Authorization[2m > [22mshould allow requests for business owned by authenticated user
+[31m[1mTypeError[22m: req.header is not a function[39m
+[36m [2m❯[22m extractBusinessId src/middleware/requireBusinessAuth.ts:[2m102:32[22m[39m
+    [90m100|[39m [35mfunction[39m [34mextractBusinessId[39m(req[33m:[39m [33mRequest[39m)[33m:[39m string [33m|[39m [35mnull[39m {
+    [90m101|[39m   [90m// Priority 1: x-business-id header (explicit business context)[39m
+    [90m102|[39m   [35mconst[39m businessIdHeader [33m=[39m req[33m.[39m[34mheader[39m([32m'x-business-id'[39m)[33m;[39m
+    [90m   |[39m                                [31m^[39m
+    [90m103|[39m   [35mif[39m (businessIdHeader [33m&&[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m.[39mlength [33m>[39m [34m0[39m) {
+    [90m104|[39m     [35mconst[39m trimmed [33m=[39m businessIdHeader[33m.[39m[34mtrim[39m()[33m;[39m
+[90m [2m❯[22m requireBusinessAuth src/middleware/requireBusinessAuth.ts:[2m182:22[22m[39m
+[90m [2m❯[22m tests/unit/middleware/requireBusinessAuth.test.ts:[2m395:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/validate.test.ts[2m > [22mValidation Middleware[2m > [22mvalidateBody[2m > [22mshould return 400 for invalid request body
+[31m[1mAssertionError[22m: Target cannot be null or undefined.[39m
+[36m [2m❯[22m tests/unit/middleware/validate.test.ts:[2m53:36[22m[39m
+    [90m 51|[39m       [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m400[39m)[33m;[39m
+    [90m 52|[39m       [34mexpect[39m(response[33m.[39mbody[33m.[39mcode)[33m.[39m[34mtoBe[39m([32m"VALIDATION_ERROR"[39m)[33m;[39m
+    [90m 53|[39m       [34mexpect[39m(response[33m.[39mbody[33m.[39merrors)[33m.[39m[34mtoHaveLength[39m([34m2[39m)[33m;[39m
+    [90m   |[39m                                    [31m^[39m
+    [90m 54|[39m     })[33m;[39m
+    [90m 55|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/validate.test.ts[2m > [22mValidation Middleware[2m > [22mvalidateBody[2m > [22mshould return detailed errors for nested body schema violations
+[31m[1mAssertionError[22m: Target cannot be null or undefined.[39m
+[36m [2m❯[22m tests/unit/middleware/validate.test.ts:[2m77:36[22m[39m
+    [90m 75|[39m
+    [90m 76|[39m       [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m400[39m)[33m;[39m
+    [90m 77|[39m       [34mexpect[39m(response[33m.[39mbody[33m.[39merrors)[33m.[39m[34mtoHaveLength[39m([34m5[39m)[33m;[39m
+    [90m   |[39m                                    [31m^[39m
+    [90m 78|[39m     })[33m;[39m
+    [90m 79|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/middleware/validate.test.ts[2m > [22mValidation Middleware[2m > [22mvalidateQuery[2m > [22mshould return detailed errors for nested query schema violations
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+[36m [2m❯[22m tests/unit/middleware/validate.test.ts:[2m123:51[22m[39m
+    [90m121|[39m       [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m400[39m)[33m;[39m
+    [90m122|[39m       [34mexpect[39m(response[33m.[39mbody[33m.[39mcode)[33m.[39m[34mtoBe[39m([32m"VALIDATION_ERROR"[39m)[33m;[39m
+    [90m123|[39m       [34mexpect[39m([33mArray[39m[33m.[39m[34misArray[39m(response[33m.[39mbody[33m.[39merrors))[33m.[39m[34mtoBe[39m([35mtrue[39m)[33m;[39m
+    [90m   |[39m                                                   [31m^[39m
+    [90m124|[39m
+    [90m125|[39m       [90m// This will now correctly return 5[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould load config successfully when all required env vars are present
+[31m[1mError[22m: Cannot find module '/tests/unit/src/config/index.js?1777158958033' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts[39m
+[36m [2m❯[22m loadConfig tests/unit/services/integration/auth.test.ts:[2m19:15[22m[39m
+    [90m 17|[39m [35masync[39m [35mfunction[39m [34mloadConfig[39m() {
+    [90m 18|[39m   [90m// Clear module cache to force re-execution of validateConfig()[39m
+    [90m 19|[39m   [35mconst[39m mod [33m=[39m [35mawait[39m [35mimport[39m([32m"../../src/config/index.js?"[39m [33m+[39m [33mDate[39m[33m.[39m[34mnow[39m())[33m;[39m
+    [90m   |[39m               [31m^[39m
+    [90m 20|[39m   [35mreturn[39m mod[33m.[39mconfig[33m;[39m
+    [90m 21|[39m }
+[90m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m46:20[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould throw when DATABASE_URL is missing
+[31m[1mAssertionError[22m: expected [Function] to throw error including 'DATABASE_URL' but got 'Cannot find module \'/tests/unit/src/…'[39m
+
+Expected: [32m"DATABASE_URL"[39m
+Received: [31m"Cannot find module '/tests/unit/src/config/index.js?1777158958059' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m60:31[22m[39m
+    [90m 58|[39m   [34mit[39m([32m"should throw when DATABASE_URL is missing"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m 59|[39m     [35mdelete[39m process[33m.[39menv[33m.[39m[33mDATABASE_URL[39m[33m;[39m
+    [90m 60|[39m     [35mawait[39m [34mexpect[39m([34mloadConfig[39m())[33m.[39mrejects[33m.[39m[34mtoThrow[39m([32m"DATABASE_URL"[39m)[33m;[39m
+    [90m   |[39m                               [31m^[39m
+    [90m 61|[39m   })[33m;[39m
+    [90m 62|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould throw when JWT_SECRET is missing
+[31m[1mAssertionError[22m: expected [Function] to throw error including 'JWT_SECRET' but got 'Cannot find module \'/tests/unit/src/…'[39m
+
+Expected: [32m"JWT_SECRET"[39m
+Received: [31m"Cannot find module '/tests/unit/src/config/index.js?1777158958083' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m65:31[22m[39m
+    [90m 63|[39m   [34mit[39m([32m"should throw when JWT_SECRET is missing"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m 64|[39m     [35mdelete[39m process[33m.[39menv[33m.[39m[33mJWT_SECRET[39m[33m;[39m
+    [90m 65|[39m     [35mawait[39m [34mexpect[39m([34mloadConfig[39m())[33m.[39mrejects[33m.[39m[34mtoThrow[39m([32m"JWT_SECRET"[39m)[33m;[39m
+    [90m   |[39m                               [31m^[39m
+    [90m 66|[39m   })[33m;[39m
+    [90m 67|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould throw when RAZORPAY_KEY_ID is missing
+[31m[1mAssertionError[22m: expected [Function] to throw error including 'RAZORPAY_KEY_ID' but got 'Cannot find module \'/tests/unit/src/…'[39m
+
+Expected: [32m"RAZORPAY_KEY_ID"[39m
+Received: [31m"Cannot find module '/tests/unit/src/config/index.js?1777158958107' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m70:31[22m[39m
+    [90m 68|[39m   [34mit[39m([32m"should throw when RAZORPAY_KEY_ID is missing"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m 69|[39m     [35mdelete[39m process[33m.[39menv[33m.[39m[33mRAZORPAY_KEY_ID[39m[33m;[39m
+    [90m 70|[39m     [35mawait[39m [34mexpect[39m([34mloadConfig[39m())[33m.[39mrejects[33m.[39m[34mtoThrow[39m([32m"RAZORPAY_KEY_ID"[39m)[33m;[39m
+    [90m   |[39m                               [31m^[39m
+    [90m 71|[39m   })[33m;[39m
+    [90m 72|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould throw when RAZORPAY_KEY_SECRET is missing
+[31m[1mAssertionError[22m: expected [Function] to throw error including 'RAZORPAY_KEY_SECRET' but got 'Cannot find module \'/tests/unit/src/…'[39m
+
+Expected: [32m"RAZORPAY_KEY_SECRET"[39m
+Received: [31m"Cannot find module '/tests/unit/src/config/index.js?1777158958116' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m75:31[22m[39m
+    [90m 73|[39m   [34mit[39m([32m"should throw when RAZORPAY_KEY_SECRET is missing"[39m[33m,[39m [35masync[39m () [33m=>[39m {
+    [90m 74|[39m     [35mdelete[39m process[33m.[39menv[33m.[39m[33mRAZORPAY_KEY_SECRET[39m[33m;[39m
+    [90m 75|[39m     [35mawait[39m [34mexpect[39m([34mloadConfig[39m())[33m.[39mrejects[33m.[39m[34mtoThrow[39m([32m"RAZORPAY_KEY_SECRET"[39m)[33m;[39m
+    [90m   |[39m                               [31m^[39m
+    [90m 76|[39m   })[33m;[39m
+    [90m 77|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould throw when RAZORPAY_WEBHOOK_SECRET is missing
+[31m[1mAssertionError[22m: expected [Function] to throw error including 'RAZORPAY_WEBHOOK_SECRET' but got 'Cannot find module \'/tests/unit/src/…'[39m
+
+Expected: [32m"RAZORPAY_WEBHOOK_SECRET"[39m
+Received: [31m"Cannot find module '/tests/unit/src/config/index.js?1777158958125' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m80:31[22m[39m
+    [90m 78|[39m   it("should throw when RAZORPAY_WEBHOOK_SECRET is missing", async () …
+    [90m 79|[39m     [35mdelete[39m process[33m.[39menv[33m.[39m[33mRAZORPAY_WEBHOOK_SECRET[39m[33m;[39m
+    [90m 80|[39m     await expect(loadConfig()).rejects.toThrow("RAZORPAY_WEBHOOK_SECRE…
+    [90m   |[39m                               [31m^[39m
+    [90m 81|[39m   })[33m;[39m
+    [90m 82|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould throw when JWT_SECRET is shorter than 32 characters
+[31m[1mAssertionError[22m: expected [Function] to throw error including 'JWT_SECRET must be at least 32 charac…' but got 'Cannot find module \'/tests/unit/src/…'[39m
+
+Expected: [32m"[7mJWT_SECRET must be at least 32 character[27ms"[39m
+Received: [31m"[7mCannot find module '/tests/unit/src/config/index.js?1777158958232' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.t[27ms"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m87:31[22m[39m
+    [90m 85|[39m   it("should throw when JWT_SECRET is shorter than 32 characters", asy…
+    [90m 86|[39m     process[33m.[39menv[33m.[39m[33mJWT_SECRET[39m [33m=[39m [32m"tooshort"[39m[33m;[39m
+    [90m 87|[39m     [35mawait[39m [34mexpect[39m([34mloadConfig[39m())[33m.[39mrejects[33m.[39m[34mtoThrow[39m(
+    [90m   |[39m                               [31m^[39m
+    [90m 88|[39m       [32m"JWT_SECRET must be at least 32 characters"[39m
+    [90m 89|[39m     )[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould default PORT to 3000 when not set
+[31m[1mError[22m: Cannot find module '/tests/unit/src/config/index.js?1777158958275' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts[39m
+[36m [2m❯[22m loadConfig tests/unit/services/integration/auth.test.ts:[2m19:15[22m[39m
+    [90m 17|[39m [35masync[39m [35mfunction[39m [34mloadConfig[39m() {
+    [90m 18|[39m   [90m// Clear module cache to force re-execution of validateConfig()[39m
+    [90m 19|[39m   [35mconst[39m mod [33m=[39m [35mawait[39m [35mimport[39m([32m"../../src/config/index.js?"[39m [33m+[39m [33mDate[39m[33m.[39m[34mnow[39m())[33m;[39m
+    [90m   |[39m               [31m^[39m
+    [90m 20|[39m   [35mreturn[39m mod[33m.[39mconfig[33m;[39m
+    [90m 21|[39m }
+[90m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m101:20[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould default NODE_ENV to development when not set
+[31m[1mError[22m: Cannot find module '/tests/unit/src/config/index.js?1777158958281' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts[39m
+[36m [2m❯[22m loadConfig tests/unit/services/integration/auth.test.ts:[2m19:15[22m[39m
+    [90m 17|[39m [35masync[39m [35mfunction[39m [34mloadConfig[39m() {
+    [90m 18|[39m   [90m// Clear module cache to force re-execution of validateConfig()[39m
+    [90m 19|[39m   [35mconst[39m mod [33m=[39m [35mawait[39m [35mimport[39m([32m"../../src/config/index.js?"[39m [33m+[39m [33mDate[39m[33m.[39m[34mnow[39m())[33m;[39m
+    [90m   |[39m               [31m^[39m
+    [90m 20|[39m   [35mreturn[39m mod[33m.[39mconfig[33m;[39m
+    [90m 21|[39m }
+[90m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m107:20[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/29]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/unit/services/integration/auth.test.ts[2m > [22mConfig Validation[2m > [22mshould report ALL missing vars in a single error, not just the first
+[31m[1mAssertionError[22m: expected 'Cannot find module \'/tests/unit/src/…' to contain 'DATABASE_URL'[39m
+
+Expected: [32m"DATABASE_URL"[39m
+Received: [31m"Cannot find module '/tests/unit/src/config/index.js?1777158958288' imported from C:/Users/Kroman/Veritasor-Backend-1/tests/unit/services/integration/auth.test.ts"[39m
+
+[36m [2m❯[22m tests/unit/services/integration/auth.test.ts:[2m122:27[22m[39m
+    [90m120|[39m       expect[33m.[39m[34mfail[39m([32m"Should have thrown"[39m)[33m;[39m
+    [90m121|[39m     } [35mcatch[39m (err[33m:[39m any) {
+    [90m122|[39m       [34mexpect[39m(err[33m.[39mmessage)[33m.[39m[34mtoContain[39m([32m"DATABASE_URL"[39m)[33m;[39m
+    [90m   |[39m                           [31m^[39m
+    [90m123|[39m       [34mexpect[39m(err[33m.[39mmessage)[33m.[39m[34mtoContain[39m([32m"JWT_SECRET"[39m)[33m;[39m
+    [90m124|[39m       [34mexpect[39m(err[33m.[39mmessage)[33m.[39m[34mtoContain[39m([32m"RAZORPAY_KEY_ID"[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[28/29]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m9 failed[39m[22m[2m | [22m[1m[32m22 passed[39m[22m[90m (31)[39m
+[2m      Tests [22m [1m[31m24 failed[39m[22m[2m | [22m[1m[32m672 passed[39m[22m[2m | [22m[33m1 skipped[39m[90m (697)[39m
+[2m   Start at [22m 00:15:57
+[2m   Duration [22m 17.47s[2m (transform 3.80s, setup 0ms, import 9.48s, tests 9.35s, environment 13ms)[22m
+

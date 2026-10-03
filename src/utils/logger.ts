@@ -1,67 +1,309 @@
+import {
+  context,
+  createContextKey,
+  isSpanContextValid,
+  trace,
+} from "@opentelemetry/api";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+
 /**
- * Structured logger utility with JSON support for request tracing.
- *
- * Features:
- * - Supports both plain text and structured JSON logging
- * - Automatic JSON parsing for structured log entries
- * - Consistent log level prefixes
- * - Compatible with log aggregation tools (e.g., ELK, Datadog)
+ * Structured logger utility with request-scoped context.
  *
  * Security considerations:
- * - Never logs sensitive data (passwords, tokens, PII)
- * - Sanitizes output to prevent log injection attacks
+ * - Sensitive fields are redacted recursively before output.
+ * - Control characters are stripped from string values to prevent log injection.
+ * - Error objects are reduced to non-secret operational fields.
  *
  * @module logger
  */
 
+export type LogContext = Record<string, unknown>;
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+const REDACTED = "[REDACTED]";
+const LOGGER_CONTEXT_KEY = createContextKey("veritasor.logger.context");
+const loggerContextStack: LogContext[] = [];
+
+export const SENSITIVE_LOG_FIELDS = new Set([
+  "authorization",
+  "cookie",
+  "set-cookie",
+  "password",
+  "passwordhash",
+  "token",
+  "accesstoken",
+  "access_token",
+  "refreshtoken",
+  "refresh_token",
+  "resettoken",
+  "reset_token",
+  "resetlink",
+  "secret",
+  "apikey",
+  "api_key",
+  "x-api-key",
+  "x-auth-token",
+  "email",
+]);
+
+export function runWithLoggerContext<T>(
+  logContext: LogContext,
+  callback: () => T,
+): T {
+  const parentContext = context.active();
+  const currentLogContext = getLoggerContext(parentContext);
+  const mergedLogContext = {
+    ...currentLogContext,
+    ...(sanitizeLogValue(logContext) as LogContext),
+  };
+
+  loggerContextStack.push(mergedLogContext);
+
+  try {
+    return context.with(
+      parentContext.setValue(LOGGER_CONTEXT_KEY, mergedLogContext),
+      callback,
+    );
+  } finally {
+    loggerContextStack.pop();
+  }
+}
+
+export function getLoggerContext(activeContext = context.active()): LogContext {
+  return (
+    (activeContext.getValue(LOGGER_CONTEXT_KEY) as LogContext | undefined) ??
+    loggerContextStack[loggerContextStack.length - 1] ??
+    {}
+  );
+}
+
 export const logger = {
-  /**
-   * Log informational messages.
-   * @param {...any} args - Message arguments (string or JSON string)
-   */
-  info: (...args: any[]) => {
-    const message = formatLogMessage(args);
-    console.log("[INFO]", message);
-  },
-
-  /**
-   * Log warning messages.
-   * @param {...any} args - Message arguments (string or JSON string)
-   */
-  warn: (...args: any[]) => {
-    const message = formatLogMessage(args);
-    console.warn("[WARN]", message);
-  },
-
-  /**
-   * Log error messages.
-   * @param {...any} args - Message arguments (string or JSON string)
-   */
-  error: (...args: any[]) => {
-    const message = formatLogMessage(args);
-    console.error("[ERROR]", message);
-  },
+  debug: (...args: unknown[]) => writeLog("debug", args),
+  info: (...args: unknown[]) => writeLog("info", args),
+  warn: (...args: unknown[]) => writeLog("warn", args),
+  error: (...args: unknown[]) => writeLog("error", args),
 };
 
 /**
- * Format log message arguments, handling JSON strings appropriately.
- * @param {any[]} args - Log message arguments
- * @returns {string} Formatted log message
+ * Scoped, class-style logger.
+ *
+ * `Logger` is a thin adapter over the same {@link writeLog} pipeline as the
+ * module-level {@link logger} object, so scoped call sites keep redaction,
+ * request-correlation and OpenTelemetry emission identical to unscoped ones.
+ * The scope is emitted as the leading message segment.
+ *
+ * Usage: `const log = new Logger("DLQ"); log.info("archived", { count: 3 });`
  */
-function formatLogMessage(args: any[]): string {
-  return args
-    .map((arg) => {
-      if (typeof arg === "string") {
-        // Try to parse JSON strings for pretty printing
-        try {
-          const parsed = JSON.parse(arg);
-          return JSON.stringify(parsed, null, 2);
-        } catch {
-          // Not JSON, return as-is
-          return arg;
-        }
+export class Logger {
+  constructor(private readonly scope: string) {}
+
+  debug(...args: unknown[]): void {
+    writeLog("debug", [this.scope, ...args]);
+  }
+
+  info(...args: unknown[]): void {
+    writeLog("info", [this.scope, ...args]);
+  }
+
+  warn(...args: unknown[]): void {
+    writeLog("warn", [this.scope, ...args]);
+  }
+
+  error(...args: unknown[]): void {
+    writeLog("error", [this.scope, ...args]);
+  }
+}
+
+function writeLog(level: LogLevel, args: unknown[]): void {
+  const entry = buildLogEntry(level, args);
+  const output = JSON.stringify(entry);
+
+  try {
+    const otelLogger = logs.getLogger("veritasor-logger");
+    const severityNumber = 
+      level === "error" ? SeverityNumber.ERROR : 
+      level === "warn" ? SeverityNumber.WARN : 
+      SeverityNumber.INFO;
+
+    otelLogger.emit({
+      severityNumber,
+      severityText: level.toUpperCase(),
+      body: entry.message || output,
+      attributes: entry as any,
+    });
+  } catch (e) {
+    // Ignore OTel bridge errors
+  }
+
+  if (level === "error") {
+    console.error(output);
+    return;
+  }
+
+  if (level === "warn") {
+    console.warn(output);
+    return;
+  }
+
+  console.log(output);
+}
+
+export function buildLogEntry(level: LogLevel, args: unknown[]): LogContext {
+  const { message, context: entryContext } = normalizeLogArgs(args);
+  const scopedContext = sanitizeLogValue(getLoggerContext()) as LogContext;
+  const traceContext = getActiveTraceCorrelation();
+  const structuredContext = sanitizeLogValue(entryContext) as LogContext;
+
+  const entry = {
+    ...scopedContext,
+    ...traceContext,
+    ...structuredContext,
+    ...(message ? { message: sanitizeString(message) } : {}),
+    timestamp: new Date().toISOString(),
+    level,
+  };
+
+  assertTraceCorrelation(entry, traceContext);
+
+  return entry;
+}
+
+function normalizeLogArgs(args: unknown[]): {
+  message?: string;
+  context: LogContext;
+} {
+  const context: LogContext = {};
+  const messages: string[] = [];
+
+  for (const arg of args) {
+    if (arg === undefined) {
+      continue;
+    }
+
+    if (typeof arg === "string") {
+      const parsed = tryParseJsonObject(arg);
+      if (parsed) {
+        Object.assign(context, parsed);
+      } else {
+        messages.push(arg);
       }
-      return String(arg);
-    })
-    .join(" ");
+      continue;
+    }
+
+    if (isPlainRecord(arg)) {
+      Object.assign(context, arg);
+      continue;
+    }
+
+    if (arg instanceof Error) {
+      context.err = {
+        name: arg.name,
+        message: arg.message,
+        stack: arg.stack,
+      };
+      continue;
+    }
+
+    messages.push(String(arg));
+  }
+
+  return {
+    message: messages.length > 0 ? messages.join(" ") : undefined,
+    context,
+  };
+}
+
+function tryParseJsonObject(value: string): LogContext | undefined {
+  try {
+    const parsed = JSON.parse(value);
+    return isPlainRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getActiveTraceCorrelation(): LogContext {
+  const activeSpan = trace.getActiveSpan();
+  const spanContext = activeSpan?.spanContext();
+
+  if (!spanContext || !isSpanContextValid(spanContext)) {
+    return {};
+  }
+
+  return {
+    trace_id: spanContext.traceId,
+    span_id: spanContext.spanId,
+  };
+}
+
+function assertTraceCorrelation(
+  entry: LogContext,
+  traceContext: LogContext,
+): void {
+  if (process.env.NODE_ENV !== "test") {
+    return;
+  }
+
+  if (!traceContext.trace_id || !traceContext.span_id) {
+    return;
+  }
+
+  if (
+    entry.trace_id !== traceContext.trace_id ||
+    entry.span_id !== traceContext.span_id
+  ) {
+    throw new Error(
+      "Log entry is missing active OpenTelemetry trace correlation fields while a span is active.",
+    );
+  }
+}
+
+function sanitizeLogValue(value: unknown, key?: string): unknown {
+  if (key && SENSITIVE_LOG_FIELDS.has(normalizeFieldName(key))) {
+    return REDACTED;
+  }
+
+  if (typeof value === "string") {
+    return sanitizeString(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeLogValue(item));
+  }
+
+  if (value instanceof Error) {
+    return {
+      name: sanitizeString(value.name),
+      message: sanitizeString(value.message),
+      stack: value.stack ? sanitizeString(value.stack) : undefined,
+    };
+  }
+
+  if (isPlainRecord(value)) {
+    const sanitized: LogContext = {};
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+      sanitized[entryKey] = sanitizeLogValue(entryValue, entryKey);
+    }
+    return sanitized;
+  }
+
+  return value;
+}
+
+function sanitizeString(value: string): string {
+  return value.replace(/[\r\n\t\u0000-\u001f\u007f]+/g, " ");
+}
+
+function normalizeFieldName(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+}
+
+function isPlainRecord(value: unknown): value is LogContext {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !(value instanceof Date) &&
+    !(value instanceof Error)
+  );
 }

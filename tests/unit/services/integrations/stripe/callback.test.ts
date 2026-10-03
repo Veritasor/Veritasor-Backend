@@ -16,7 +16,9 @@ vi.mock('../../../../../src/repositories/integration.js')
 
 describe('Stripe OAuth Callback Service', () => {
   const mockUserId = 'user-123'
+  const mockBusinessId = 'biz-456'
   const mockCode = 'auth-code-xyz'
+
   const mockState = 'a'.repeat(64)
   const mockStripeUserId = 'acct_stripe123'
   
@@ -31,7 +33,8 @@ describe('Stripe OAuth Callback Service', () => {
     // Mock global fetch
     global.fetch = vi.fn()
 
-    vi.mocked(IntegrationRepository.listByUserId).mockResolvedValue([])
+    vi.mocked(IntegrationRepository.listByBusinessId).mockResolvedValue([])
+
     vi.mocked(IntegrationRepository.update).mockResolvedValue(null)
   })
   
@@ -43,8 +46,10 @@ describe('Stripe OAuth Callback Service', () => {
     it('should return error when code is missing', async () => {
       const result = await handleCallback(
         { code: '', state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Missing code, or state')
@@ -53,8 +58,10 @@ describe('Stripe OAuth Callback Service', () => {
     it('should return error when state is missing', async () => {
       const result = await handleCallback(
         { code: mockCode, state: '' },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Missing code, or state')
@@ -63,8 +70,10 @@ describe('Stripe OAuth Callback Service', () => {
     it('should return error when both code and state are missing', async () => {
       const result = await handleCallback(
         { code: '', state: '' },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Missing code, or state')
@@ -83,8 +92,10 @@ describe('Stripe OAuth Callback Service', () => {
     it('should return error when state token format is malformed', async () => {
       const result = await handleCallback(
         { code: mockCode, state: 'not-hex' },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
 
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid OAuth state format')
@@ -97,8 +108,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid or expired state')
@@ -110,8 +123,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: 'b'.repeat(64) },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid or expired state')
@@ -128,8 +143,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Failed to reach Stripe API')
@@ -144,8 +161,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('Token exchange failed')
@@ -163,8 +182,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(false)
       expect(result.error).toBe('No access token in response')
@@ -182,8 +203,10 @@ describe('Stripe OAuth Callback Service', () => {
 
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
 
       expect(result.success).toBe(false)
       expect(result.error).toBe('No Stripe account ID in response')
@@ -221,8 +244,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(global.fetch).toHaveBeenCalledWith(
         'https://connect.stripe.com/oauth/token',
@@ -282,12 +307,16 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(IntegrationRepository.create).toHaveBeenCalledWith({
         userId: mockUserId,
+        businessId: mockBusinessId,
         provider: 'stripe',
+
         externalId: mockStripeUserId,
         token: {
           accessToken: mockAccessToken,
@@ -332,7 +361,8 @@ describe('Stripe OAuth Callback Service', () => {
         })
       } as Response)
 
-      vi.mocked(IntegrationRepository.listByUserId).mockResolvedValue([existingIntegration])
+      vi.mocked(IntegrationRepository.listByBusinessId
+).mockResolvedValue([existingIntegration])
       vi.mocked(IntegrationRepository.update).mockResolvedValue({
         ...existingIntegration,
         token: {
@@ -346,11 +376,15 @@ describe('Stripe OAuth Callback Service', () => {
 
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
 
-      expect(IntegrationRepository.listByUserId).toHaveBeenCalledWith(mockUserId)
-      expect(IntegrationRepository.update).toHaveBeenCalledWith('integration-existing', {
+
+      expect(IntegrationRepository.listByBusinessId).toHaveBeenCalledWith(mockBusinessId)
+
+      expect(IntegrationRepository.update).toHaveBeenCalledWith(mockBusinessId, 'integration-existing', {
+
         token: {
           accessToken: mockAccessToken,
           refreshToken: mockRefreshToken,
@@ -379,7 +413,8 @@ describe('Stripe OAuth Callback Service', () => {
         })
       } as Response)
 
-      vi.mocked(IntegrationRepository.listByUserId).mockResolvedValue([
+      vi.mocked(IntegrationRepository.listByBusinessId
+).mockResolvedValue([
         {
           id: 'integration-other-provider',
           userId: mockUserId,
@@ -419,13 +454,17 @@ describe('Stripe OAuth Callback Service', () => {
 
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
 
       expect(IntegrationRepository.update).not.toHaveBeenCalled()
       expect(IntegrationRepository.create).toHaveBeenCalledWith({
         userId: mockUserId,
+        businessId: mockBusinessId,
         provider: 'stripe',
+
         externalId: mockStripeUserId,
         token: {
           accessToken: mockAccessToken,
@@ -471,8 +510,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.success).toBe(true)
       expect(result.stripeAccountId).toBe(mockStripeUserId)
@@ -516,8 +557,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result).toEqual({
         success: true,
@@ -545,8 +588,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.error).not.toContain(mockAccessToken)
       expect(result.error).toBe('Token exchange failed')
@@ -561,8 +606,10 @@ describe('Stripe OAuth Callback Service', () => {
       
       const result = await handleCallback(
         { code: mockCode, state: mockState },
-        mockUserId
+        mockUserId,
+        mockBusinessId
       )
+
       
       expect(result.error).not.toContain(mockRefreshToken)
       expect(result.error).toBe('Failed to reach Stripe API')

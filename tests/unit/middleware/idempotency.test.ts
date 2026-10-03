@@ -13,6 +13,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { 
   idempotencyMiddleware, 
   inMemoryIdempotencyStore,
+  RedisIdempotencyStore,
   getDefaultTtl,
   getIdempotencyHeaderName,
   clearIdempotencyStore,
@@ -174,6 +175,42 @@ describe('idempotencyMiddleware', () => {
       // Should return cached response without calling next
       expect(res2.status).toHaveBeenCalledWith(201);
       expect(res2.json).toHaveBeenCalledWith({ id: '123', status: 'created' });
+      expect(next2).not.toHaveBeenCalled();
+    });
+
+    it('should return 422 when same key is used with different body', async () => {
+      const key = 'collision-test-key';
+      const middleware = idempotencyMiddleware({ scope: 'test' });
+
+      // First request
+      const req1 = createMockRequest({ 
+        headers: { 'idempotency-key': key },
+        body: { amount: 100 }
+      });
+      const res1 = createMockResponse();
+      const next1 = createMockNext();
+      
+      await middleware(req1, res1, next1);
+      res1.status(201);
+      res1.json({ success: true });
+
+      // Second request with SAME key but DIFFERENT body
+      const req2 = createMockRequest({ 
+        headers: { 'idempotency-key': key },
+        body: { amount: 200 } // Different!
+      });
+      const res2 = createMockResponse();
+      const next2 = createMockNext();
+      
+      await middleware(req2, res2, next2);
+
+      // Should return 422
+      expect(res2.status).toHaveBeenCalledWith(422);
+      expect(res2.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: 'IDEMPOTENCY_KEY_COLLISION',
+        })
+      );
       expect(next2).not.toHaveBeenCalled();
     });
 
@@ -518,7 +555,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should store and retrieve entries', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 60000);
     
     const result = await inMemoryIdempotencyStore.get('key1');
@@ -531,7 +573,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should delete entries', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 60000);
     
     if (inMemoryIdempotencyStore.delete) {
@@ -542,7 +589,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should clear all entries', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 60000);
     await inMemoryIdempotencyStore.set('key2', entry, 60000);
     
@@ -556,7 +608,12 @@ describe('In-Memory Store', () => {
   });
 
   it('should expire entries after TTL', async () => {
-    const entry = { status: 200, body: { test: true }, createdAt: Date.now() };
+    const entry = { 
+      status: 200, 
+      body: { test: true }, 
+      requestHash: 'hash123',
+      createdAt: Date.now() 
+    };
     await inMemoryIdempotencyStore.set('key1', entry, 50);
     
     // Wait for expiration
@@ -564,5 +621,86 @@ describe('In-Memory Store', () => {
     
     const result = await inMemoryIdempotencyStore.get('key1');
     expect(result).toBeUndefined();
+  });
+});
+
+describe('RedisIdempotencyStore', () => {
+  function makeClient(overrides: Record<string, unknown> = {}) {
+    return {
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue('OK'),
+      del: vi.fn().mockResolvedValue(1),
+      ...overrides,
+    };
+  }
+
+  const entry = {
+    status: 201,
+    body: { id: 'abc' },
+    requestHash: 'hash-xyz',
+    createdAt: Date.now(),
+  };
+
+  it('returns undefined when key is not in Redis', async () => {
+    const store = new RedisIdempotencyStore(makeClient());
+    const result = await store.get('missing-key');
+    expect(result).toBeUndefined();
+  });
+
+  it('returns parsed entry when key exists', async () => {
+    const client = makeClient({ get: vi.fn().mockResolvedValue(JSON.stringify(entry)) });
+    const store = new RedisIdempotencyStore(client);
+    const result = await store.get('k1');
+    expect(result).toEqual(entry);
+  });
+
+  it('returns undefined when stored value is invalid JSON', async () => {
+    const client = makeClient({ get: vi.fn().mockResolvedValue('not-json{{{') });
+    const store = new RedisIdempotencyStore(client);
+    const result = await store.get('k1');
+    expect(result).toBeUndefined();
+  });
+
+  it('calls SET with PX and ttlMs when storing an entry', async () => {
+    const client = makeClient();
+    const store = new RedisIdempotencyStore(client);
+    await store.set('k1', entry, 60000);
+    expect(client.set).toHaveBeenCalledWith('k1', JSON.stringify(entry), 'PX', 60000);
+  });
+
+  it('calls DEL when deleting a key', async () => {
+    const client = makeClient();
+    const store = new RedisIdempotencyStore(client);
+    await store.delete('k1');
+    expect(client.del).toHaveBeenCalledWith('k1');
+  });
+
+  it('works end-to-end with idempotencyMiddleware', async () => {
+    const stored = new Map<string, string>();
+    const client = {
+      get: vi.fn(async (k: string) => stored.get(k) ?? null),
+      set: vi.fn(async (k: string, v: string) => { stored.set(k, v); return 'OK'; }),
+      del: vi.fn(async (k: string) => { stored.delete(k); return 1; }),
+    };
+    const store = new RedisIdempotencyStore(client);
+    const middleware = idempotencyMiddleware({ scope: 'payments', store });
+
+    const req1 = { headers: { 'idempotency-key': 'pay-key-001' }, ip: '1.2.3.4', method: 'POST' } as unknown as Request;
+    const res1 = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnThis() } as unknown as Response;
+    const next1 = vi.fn() as unknown as NextFunction;
+
+    await middleware(req1 as any, res1 as any, next1 as any);
+    (res1 as any).status(201);
+    (res1 as any).json({ txId: 'tx-99' });
+
+    // duplicate
+    const req2 = { headers: { 'idempotency-key': 'pay-key-001' }, ip: '1.2.3.4', method: 'POST' } as unknown as Request;
+    const res2 = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnThis() } as unknown as Response;
+    const next2 = vi.fn() as unknown as NextFunction;
+
+    await middleware(req2 as any, res2 as any, next2 as any);
+    expect((res2 as any).status).toHaveBeenCalledWith(201);
+    expect((res2 as any).json).toHaveBeenCalledWith({ txId: 'tx-99' });
+    expect(next2).not.toHaveBeenCalled();
   });
 });

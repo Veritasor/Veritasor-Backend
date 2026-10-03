@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-07-30T04:06:02.310Z",
+  "saturationBaseline": [
+    {
+      "clientCount": 10,
+      "messagesSent": 10,
+      "latencyMs": 0.7998999999981606,
+      "dropRate": 0
+    },
+    {
+      "clientCount": 50,
+      "messagesSent": 50,
+      "latencyMs": 0.4474000000045635,
+      "dropRate": 0
+    },
+    {
+      "clientCount": 100,
+      "messagesSent": 100,
+      "latencyMs": 1.263199999986682,
+      "dropRate": 0
+    }
+  ],
+  "sloPassed": true
+}

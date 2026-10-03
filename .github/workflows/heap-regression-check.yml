@@ -1,0 +1,79 @@
+name: Heap regression check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "ops/heap-regression/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "ops/heap-regression/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heap-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  heap-regression:
+    name: Memory-pressure soak with heap snapshot diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ALLOCATION_SIZE_MB: "20"
+      ALLOCATION_STEPS: "3"
+      GC_BETWEEN_STEPS: "true"
+      REGRESSION_THRESHOLD_MB: "10"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate baseline exists
+        run: |
+          test -f ops/heap-regression/baseline.json || {
+            echo "Baseline missing — bootstrap disabled in CI; exiting."
+            exit 1
+          }
+
+      - name: Run heap regression soak
+        id: soak
+        continue-on-error: true
+        run: |
+          node --expose-gc --import tsx ops/heap-regression/soak.ts 2>&1 | tee soak-output.txt
+
+      - name: Upload heap snapshot on failure
+        if: steps.soak.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: heap-snapshot-${{ github.run_id }}
+          path: |
+            *.heapsnapshot
+            soak-output.txt
+          if-no-files-found: warn
+
+      - name: Check soak result
+        if: steps.soak.outcome == 'failure'
+        run: |
+          echo "::error::Heap regression detected — see uploaded artifact for snapshot"
+          exit 1

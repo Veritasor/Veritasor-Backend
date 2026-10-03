@@ -1,4 +1,6 @@
+import { z } from 'zod';
 import { getMailTransport } from './client.js';
+import { logger } from '../../utils/logger.js';
 
 const MAIL_FROM = process.env.MAIL_FROM ?? process.env.SMTP_USER ?? 'noreply@veritasor.local';
 const IS_DEV = process.env.NODE_ENV !== 'production';
@@ -41,6 +43,27 @@ export function isRetryableEmailError(error: unknown): boolean {
 }
 
 /**
+ * Simple HTML escape function to prevent template injection.
+ * Replaces critical characters with their HTML entity equivalents.
+ */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+const ResetEmailSchema = z.object({
+  email: z.string().email(),
+  resetLink: z.string().url().refine(
+    (url) => url.startsWith('https://') || (IS_DEV && url.startsWith('http://')),
+    { message: "Unsafe URL protocol in reset link" }
+  ),
+});
+
+/**
  * Send a password reset email. Does not throw; callers can decide whether to retry
  * or degrade gracefully based on the returned classification.
  */
@@ -48,17 +71,26 @@ export async function sendPasswordResetEmail(
   email: string,
   resetLink: string
 ): Promise<PasswordResetEmailResult> {
+  // Validate inputs to prevent injection and malformed emails
+  const validation = ResetEmailSchema.safeParse({ email, resetLink });
+  if (!validation.success) {
+    logger.warn({ errors: validation.error.format(), email }, 'Invalid password reset input');
+    return { error: new Error('Invalid input'), retryable: false };
+  }
+
   const transport = getMailTransport();
 
   if (!transport) {
     if (IS_DEV) {
-      console.info('[email] (dev stub) Password reset link:', resetLink, '->', email);
+      logger.info({ resetLink, email }, '[email] (dev stub) Password reset link sent');
       return { retryable: false };
     }
 
-    console.warn('[email] No SMTP config; skipping password reset email to', email);
+    logger.warn({ email }, '[email] No SMTP config; skipping password reset email');
     return { error: new Error('Email not configured'), retryable: false };
   }
+
+  const escapedLink = escapeHtml(resetLink);
 
   try {
     await transport.sendMail({
@@ -66,13 +98,14 @@ export async function sendPasswordResetEmail(
       to: email,
       subject: 'Reset your password',
       text: `Use this link to reset your password: ${resetLink}`,
-      html: `<!DOCTYPE html><html><body><p>Use this link to reset your password:</p><p><a href="${resetLink}">${resetLink}</a></p></body></html>`,
+      html: `<!DOCTYPE html><html><body><p>Use this link to reset your password:</p><p><a href="${escapedLink}">${escapedLink}</a></p></body></html>`,
     });
 
+    logger.info({ email }, 'Password reset email sent successfully');
     return { retryable: false };
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    console.error('[email] Failed to send password reset:', error.message, '->', email);
+    logger.error({ err: error, email }, 'Failed to send password reset email');
     return { error, retryable: isRetryableEmailError(error) };
   }
 }

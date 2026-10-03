@@ -5,7 +5,9 @@
  */
 
 import { consumeOAuthState } from './store.js'
-import * as IntegrationRepository from '../../../repositories/integration.js'
+import { executeWithRetry } from '../clientWrapper.js'
+import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
+import { IntegrationRepository } from '../../../repositories/IntegrationRepository.js'
 
 export interface CallbackParams {
   code: string
@@ -38,7 +40,8 @@ export function isValidStripeOAuthState(state: string): boolean {
  */
 export async function handleCallback(
   params: CallbackParams,
-  userId: string
+  userId: string,
+  businessId: string
 ): Promise<CallbackResult> {
   // Validate required parameters
   const code = params.code?.trim()
@@ -80,17 +83,27 @@ export async function handleCallback(
   
   let response: Response
   try {
-    response = await fetch('https://connect.stripe.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+    response = await executeWithRetry(
+      () =>
+        fetch('https://connect.stripe.com/oauth/token', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: tokenRequestBody.toString(),
+        }),
+      {
+        provider: 'stripe',
+        operation: 'oauth_token',
+        maxRetries: 2,
       },
-      body: tokenRequestBody.toString()
-    })
+    )
   } catch (error) {
     return {
       success: false,
-      error: 'Failed to reach Stripe API'
+      error: error instanceof GlobalRetryBudgetExceededError
+        ? 'Global outbound retry budget exhausted'
+        : 'Failed to reach Stripe API',
     }
   }
   
@@ -129,6 +142,7 @@ export async function handleCallback(
   
   const integrationData = {
     userId,
+    businessId,
     provider: 'stripe',
     externalId: stripeUserId,
     token: {
@@ -140,13 +154,14 @@ export async function handleCallback(
     metadata: {}
   }
 
-  const existingIntegrations = await IntegrationRepository.listByUserId(userId)
+  const existingIntegrations = (await IntegrationRepository.listByBusinessId(businessId)) || []
   const existingStripeIntegration = existingIntegrations.find((integration) =>
     integration.provider === 'stripe' && integration.externalId === stripeUserId
   )
 
+
   if (existingStripeIntegration) {
-    await IntegrationRepository.update(existingStripeIntegration.id, {
+    await IntegrationRepository.update(businessId, existingStripeIntegration.id, {
       token: integrationData.token,
       metadata: integrationData.metadata
     })

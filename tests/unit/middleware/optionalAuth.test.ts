@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Request, Response, NextFunction } from 'express'
-import { optionalAuth, extractBearerToken } from '../../../src/middleware/optionalAuth.js'
+import { optionalAuth, extractBearerToken, AuthEventType } from '../../../src/middleware/optionalAuth.js'
 import * as jwt from '../../../src/utils/jwt.js'
 import * as userRepository from '../../../src/repositories/userRepository.js'
 
@@ -174,7 +174,315 @@ describe('extractBearerToken - Helper Function', () => {
   })
 })
 
-describe('optionalAuth middleware - Task 2.1: Token Verification & Consistency', () => {
+// Mock console methods to capture structured logs
+const mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+describe('Enhanced optionalAuth middleware - Auth Event Classification', () => {
+  let mockRequest: Partial<Request>
+  let mockResponse: Partial<Response>
+  let mockNext: NextFunction
+
+  beforeEach(() => {
+    mockRequest = {
+      headers: {},
+      ip: '127.0.0.1'
+    }
+    mockResponse = {}
+    mockNext = vi.fn()
+    vi.clearAllMocks()
+    mockConsoleLog.mockClear()
+    mockConsoleWarn.mockClear()
+    
+    // Default mock for findUserById to return a user with required role
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
+      id: '123',
+      email: 'test@example.com',
+      passwordHash: 'hash',
+      role: 'user',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    })
+  })
+
+  it('should log NO_TOKEN event when Authorization header is missing', async () => {
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    // Verify structured log was created
+    expect(mockConsoleWarn).toHaveBeenCalledWith(
+      expect.stringMatching(/\{"event":"NO_TOKEN"/)
+    )
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'NO_TOKEN',
+      service: 'optional-auth',
+      level: 'warn',
+      headerPresent: false,
+      hasBearerPrefix: false
+    })
+  })
+
+  it('should log MALFORMED_HEADER event when Authorization header is empty', async () => {
+    mockRequest.headers = { authorization: '' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'MALFORMED_HEADER',
+      headerPresent: true,
+      hasBearerPrefix: false,
+      tokenLength: 0
+    })
+  })
+
+  it('should log MALFORMED_HEADER event when Authorization header has wrong scheme', async () => {
+    mockRequest.headers = { authorization: 'Basic dXNlcjpwYXNz' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'MALFORMED_HEADER',
+      headerPresent: true,
+      hasBearerPrefix: false
+    })
+  })
+
+  it('should log EXPIRED_TOKEN event when JWT is expired', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockImplementation(() => {
+      const error = new Error('Token expired')
+      error.message = 'jwt expired'
+      throw error
+    })
+
+    mockRequest.headers = { authorization: 'Bearer expired-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'EXPIRED_TOKEN',
+      error: 'jwt expired',
+      tokenLength: 13
+    })
+  })
+
+  it('should log WRONG_ISSUER event when JWT has wrong issuer', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockImplementation(() => {
+      const error = new Error('Invalid issuer')
+      error.message = 'jwt issuer invalid'
+      throw error
+    })
+
+    mockRequest.headers = { authorization: 'Bearer wrong-issuer-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'WRONG_ISSUER',
+      error: 'jwt issuer invalid'
+    })
+  })
+
+  it('should log WRONG_AUDIENCE event when JWT has wrong audience', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockImplementation(() => {
+      const error = new Error('Invalid audience')
+      error.message = 'jwt audience invalid'
+      throw error
+    })
+
+    mockRequest.headers = { authorization: 'Bearer wrong-audience-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'WRONG_AUDIENCE',
+      error: 'jwt audience invalid'
+    })
+  })
+
+  it('should log INVALID_TOKEN event when JWT is cryptographically invalid', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockImplementation(() => {
+      throw new Error('Invalid signature')
+    })
+
+    mockRequest.headers = { authorization: 'Bearer invalid-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'INVALID_TOKEN',
+      error: 'Invalid signature'
+    })
+  })
+
+  it('should log USER_NOT_FOUND event when token is valid but user not found', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({
+      userId: 'non-existent-user',
+      email: 'none@test.com'
+    })
+    
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue(null)
+
+    mockRequest.headers = { authorization: 'Bearer valid-token-but-no-user' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'USER_NOT_FOUND',
+      userId: 'non-existent-user'
+    })
+  })
+
+  it('should log DATABASE_ERROR event when database lookup fails', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({
+      userId: 'user-123',
+      email: 'test@example.com'
+    })
+    
+    vi.spyOn(userRepository, 'findUserById').mockRejectedValue(new Error('Database connection failed'))
+
+    mockRequest.headers = { authorization: 'Bearer valid-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'DATABASE_ERROR',
+      error: 'Database connection failed',
+      userId: 'user-123'
+    })
+  })
+
+  it('should log AUTH_SUCCESS event when token is valid and user found', async () => {
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue({
+      userId: 'user-456',
+      email: 'user@test.com'
+    })
+    
+    vi.spyOn(userRepository, 'findUserById').mockResolvedValue({
+      id: 'user-456',
+      email: 'user@test.com',
+      passwordHash: 'hash',
+      role: 'user',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    })
+
+    mockRequest.headers = { authorization: 'Bearer valid-token' }
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toEqual({
+      id: 'user-456',
+      userId: 'user-456',
+      email: 'user@test.com'
+    })
+    
+    // Verify success log was created with info level
+    expect(mockConsoleLog).toHaveBeenCalledWith(
+      expect.stringMatching(/\{"event":"AUTH_SUCCESS"/)
+    )
+    
+    const logEntry = JSON.parse(mockConsoleLog.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'AUTH_SUCCESS',
+      service: 'optional-auth',
+      level: 'info',
+      userId: 'user-456'
+    })
+  })
+
+  it('should include request metadata in all log entries', async () => {
+    const testRequest = {
+      headers: { 
+        authorization: 'Bearer test-token',
+        'user-agent': 'TestAgent/1.0',
+        'x-request-id': 'req-123'
+      },
+      ip: '192.168.1.100'
+    } as unknown as Request
+
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
+
+    await optionalAuth(testRequest, mockResponse as Response, mockNext)
+
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      userAgent: 'TestAgent/1.0',
+      ip: '192.168.1.100',
+      requestId: 'req-123',
+      duration: expect.any(Number)
+    })
+  })
+
+  it('should generate requestId when not provided in headers', async () => {
+    mockRequest.headers = { authorization: 'Bearer test-token' }
+
+    vi.spyOn(jwt, 'verifyToken').mockReturnValue(null)
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry.requestId).toMatch(/^req_\d+_[a-z0-9]+$/)
+  })
+
+  it('should handle UNEXPECTED_ERROR when header access throws', async () => {
+    // Simulate an unexpected error by making headers.authorization throw
+    Object.defineProperty(mockRequest, 'headers', {
+      get: () => {
+        throw new Error('Unexpected error accessing headers')
+      },
+    })
+
+    await optionalAuth(mockRequest as Request, mockResponse as Response, mockNext)
+
+    expect(mockNext).toHaveBeenCalledOnce()
+    expect(mockRequest.user).toBeUndefined()
+    
+    const logEntry = JSON.parse(mockConsoleWarn.mock.calls[0][0])
+    expect(logEntry).toMatchObject({
+      event: 'UNEXPECTED_ERROR',
+      error: 'Unexpected error accessing headers'
+    })
+  })
+})
+
+describe('optionalAuth middleware - Token Verification & Consistency', () => {
   let mockRequest: Partial<Request>
   let mockResponse: Partial<Response>
   let mockNext: NextFunction
@@ -192,6 +500,7 @@ describe('optionalAuth middleware - Task 2.1: Token Verification & Consistency',
       id: '123',
       email: 'test@example.com',
       passwordHash: 'hash',
+      role: 'user',
       createdAt: new Date(),
       updatedAt: new Date()
     })
@@ -220,6 +529,7 @@ describe('optionalAuth middleware - Task 2.1: Token Verification & Consistency',
       id: 'user-456',
       email: 'user@test.com',
       passwordHash: 'hash',
+      role: 'user',
       createdAt: new Date(),
       updatedAt: new Date()
     })
@@ -364,6 +674,7 @@ describe('optionalAuth middleware - Task 2.3: Ensure next() is always called', (
       id: 'user-789',
       email: 'success@example.com',
       passwordHash: 'hash',
+      role: 'user',
       createdAt: new Date(),
       updatedAt: new Date()
     })

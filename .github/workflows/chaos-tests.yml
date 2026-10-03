@@ -1,0 +1,189 @@
+name: Chaos Tests (Toxiproxy)
+
+# ── Trigger rules ─────────────────────────────────────────────────────────
+# Chaos tests are expensive and intentionally flaky-in-the-small, so they
+# never run on every push.  They run:
+#   1. Nightly on main (scheduled, 04:17 UTC — off-peak)
+#   2. Manually via workflow_dispatch against any branch/ref
+#   3. Label-gated — adding the `run-chaos-tests` label to a PR triggers
+#      a run on that PR's head SHA.
+#
+# The `CHAOS_TESTS=true` env var gates the individual Vitest suites in
+# tests/chaos/*.spec.ts so they can also be skipped inside the workflow
+# step for debugging without editing YAML.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Chaos suite to run ("all", "smoke", "redis", "postgres")'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - smoke
+          - redis
+          - postgres
+  pull_request:
+    types: [labeled]
+
+env:
+  NODE_VERSION: '22.x'
+  PNPM_VERSION: '9'
+  CHAOS_TESTS: 'true'
+  TOXIPROXY_URL: 'http://localhost:8474'
+  PG_UPSTREAM: 'localhost:5433'
+  REDIS_UPSTREAM: 'localhost:6380'
+  CHAOS_DATABASE_URL: 'postgresql://veritasor:testpassword@localhost:15432/veritasor_test'
+  DATABASE_URL: 'postgresql://veritasor:testpassword@localhost:5432/veritasor_test'
+  REDIS_URL: 'redis://localhost:6379'
+  SOROBAN_CONTRACT_ID: 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM'
+  JWT_SECRET: 'chaos-test-jwt-secret-key-at-least-thirty-two-characters-long'
+  ENCRYPTION_KEY: '01234567890123456789012345678901'
+
+concurrency:
+  # One chaos run per ref / label event at a time — cancel in-flight runs
+  # when a new head push happens on the same PR.
+  group: chaos-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Label gate ─────────────────────────────────────────────────────────
+  # Short-circuit immediately unless this is a scheduled run, a manual
+  # dispatch, or a PR that just received the `run-chaos-tests` label.
+  check-trigger:
+    name: Validate trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.decide.outputs.should-run }}
+      suite: ${{ steps.decide.outputs.suite }}
+    steps:
+      - id: decide
+        name: Decide whether to proceed
+        run: |
+          SUITE="all"
+          RUN="false"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            RUN="true"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RUN="true"
+            SUITE="${{ github.event.inputs.suite }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            LABEL="${{ github.event.label.name }}"
+            if [ "$LABEL" = "run-chaos-tests" ]; then
+              RUN="true"
+            fi
+          fi
+          echo "should-run=$RUN"       >> "$GITHUB_OUTPUT"
+          echo "suite=$SUITE"           >> "$GITHUB_OUTPUT"
+          echo "trigger=${{ github.event_name }} label=$LABEL suite=$SUITE run=$RUN"
+
+  # ── The actual run ─────────────────────────────────────────────────────
+  toxiproxy-scenarios:
+    name: Toxiproxy scenarios (${{ needs.check-trigger.outputs.suite }})
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should-run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      # Docker Compose is started as a separate step below so that we can
+      # use the checked-in compose file with healthchecks and port maps.
+      # No service containers at the Actions level.
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "dir=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.dir }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        timeout-minutes: 15
+
+      - name: Start Toxiproxy + Postgres + Redis stack
+        run: docker compose -f tests/chaos/docker-compose.yml up -d --wait
+        timeout-minutes: 5
+
+      - name: Verify stack health
+        run: |
+          set -e
+          echo "→ Toxiproxy version:"
+          curl -fsS http://localhost:8474/version
+          echo
+          echo "→ Postgres via raw port:"
+          docker compose -f tests/chaos/docker-compose.yml exec -T postgres \
+            pg_isready -U veritasor -d veritasor_test
+          echo "→ Redis via raw port:"
+          redis-cli -h localhost -p 6380 ping
+          echo "→ Proxied Postgres reachable:"
+          timeout 5 bash -c 'cat < /dev/tcp/localhost/5432; echo ok' || true
+          echo "→ Proxied Redis reachable:"
+          timeout 5 bash -c 'cat < /dev/tcp/localhost/6379; echo ok' || true
+          echo "→ Dedicated chaos ports reachable:"
+          timeout 5 bash -c 'cat < /dev/tcp/localhost/15432; echo ok' || true
+          timeout 5 bash -c 'cat < /dev/tcp/localhost/16379; echo ok' || true
+        timeout-minutes: 2
+
+      - name: Run migrations against proxied Postgres
+        run: |
+          DATABASE_URL="${{ env.DATABASE_URL }}" pnpm migrate
+        timeout-minutes: 5
+
+      - name: Run smoke suite
+        if: needs.check-trigger.outputs.suite == 'all' || needs.check-trigger.outputs.suite == 'smoke'
+        run: pnpm test tests/chaos/toxiproxy.spec.ts --reporter=verbose
+        timeout-minutes: 10
+
+      - name: Run Redis chaos suite
+        if: needs.check-trigger.outputs.suite == 'all' || needs.check-trigger.outputs.suite == 'redis'
+        run: pnpm test tests/chaos/redis-chaos.spec.ts --reporter=verbose
+        timeout-minutes: 20
+
+      - name: Run Postgres chaos suite
+        if: needs.check-trigger.outputs.suite == 'all' || needs.check-trigger.outputs.suite == 'postgres'
+        run: pnpm test tests/chaos/postgres-chaos.spec.ts --reporter=verbose
+        timeout-minutes: 20
+
+      - name: Tear down Compose stack
+        if: always()
+        run: |
+          docker compose -f tests/chaos/docker-compose.yml logs --tail="200" toxiproxy || true
+          docker compose -f tests/chaos/docker-compose.yml logs --tail="200" postgres || true
+          docker compose -f tests/chaos/docker-compose.yml logs --tail="200" redis || true
+          docker compose -f tests/chaos/docker-compose.yml down -v
+
+      - name: Upload chaos diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-diagnostics-${{ github.run_id }}
+          path: |
+            test-results/
+            coverage/
+          if-no-files-found: ignore
+          retention-days: 14

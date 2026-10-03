@@ -1,0 +1,70 @@
+name: Nightly k6 attestation peak load
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-k6-attestations
+  cancel-in-progress: false
+
+jobs:
+  k6-attestation-peak-load:
+    name: Attestation peak-load suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      K6_ATT_RUN_ID: nightly-${{ github.run_id }}
+      K6_ATT_SUBMIT_ON_CHAIN: "false"
+      K6_ATT_WRITE_RATIO: "1"
+      K6_AUTH_TOKEN: ${{ secrets.K6_AUTH_TOKEN }}
+      K6_BASE_URL: ${{ secrets.K6_BASE_URL }}
+      K6_PROMETHEUS_RW_BEARER_TOKEN: ${{ secrets.K6_PROMETHEUS_RW_BEARER_TOKEN }}
+      K6_PROMETHEUS_RW_PASSWORD: ${{ secrets.K6_PROMETHEUS_RW_PASSWORD }}
+      K6_PROMETHEUS_RW_SERVER_URL: ${{ secrets.K6_PROMETHEUS_RW_SERVER_URL }}
+      K6_PROMETHEUS_RW_TREND_STATS: p(95),p(99),avg,max
+      K6_PROMETHEUS_RW_USERNAME: ${{ secrets.K6_PROMETHEUS_RW_USERNAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Validate workflow configuration
+        run: |
+          test -n "$K6_BASE_URL" || { echo "K6_BASE_URL secret is required"; exit 1; }
+          test -n "$K6_AUTH_TOKEN" || { echo "K6_AUTH_TOKEN secret is required"; exit 1; }
+          mkdir -p ops/k6/results
+
+      - name: Run peak-load suite with Prometheus remote write
+        if: ${{ env.K6_PROMETHEUS_RW_SERVER_URL != '' }}
+        run: >
+          k6 run
+          -o experimental-prometheus-rw
+          --tag testid=nightly-${{ github.run_id }}
+          --tag workflow=nightly-k6-attestations
+          --summary-export ops/k6/results/peak-attestation-summary.json
+          ops/k6/peak-attestation.js
+
+      - name: Run peak-load suite without Prometheus remote write
+        if: ${{ env.K6_PROMETHEUS_RW_SERVER_URL == '' }}
+        run: >
+          k6 run
+          --tag testid=nightly-${{ github.run_id }}
+          --tag workflow=nightly-k6-attestations
+          --summary-export ops/k6/results/peak-attestation-summary.json
+          ops/k6/peak-attestation.js
+
+      - name: Upload k6 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-attestation-peak-load-${{ github.run_id }}
+          path: |
+            ops/k6/results/peak-attestation-summary.json
+            ops/k6/grafana/peak-attestation-dashboard.json

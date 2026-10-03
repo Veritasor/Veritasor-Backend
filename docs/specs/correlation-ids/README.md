@@ -1,8 +1,8 @@
-# Structured Request Logging with Correlation IDs
+# Structured Request Logging with Correlation IDs and Trace Context
 
 ## Overview
 
-This document describes the implementation of structured request logging with correlation IDs in the Veritasor-Backend API. Correlation IDs enable request tracing across distributed systems, improving debugging, monitoring, and security audit capabilities.
+This document describes the implementation of structured request logging with correlation IDs and OpenTelemetry trace correlation in the Veritasor-Backend API. Correlation IDs enable request tracing across distributed systems, while `trace_id` and `span_id` let operators join logs to traces for a single in-flight request.
 
 ## Features
 
@@ -17,7 +17,8 @@ This document describes the implementation of structured request logging with co
 - Returns correlation ID in response header for client-side tracking
 
 ### 3. Structured JSON Logging
-- Logs both request and response with correlation ID
+- Logs request, handler, and response events with correlation metadata
+- Adds `trace_id` and `span_id` whenever an OpenTelemetry span is active
 - Includes metadata: method, path, status code, duration, timestamp
 - Compatible with log aggregation tools (ELK, Datadog, Splunk)
 
@@ -60,6 +61,7 @@ const requestLog = {
 - JSON serialization prevents log injection attacks
 - Structured logging format separates data from message
 - No string concatenation in log messages
+- In tests, the logger throws immediately if a log line is emitted while a span is active but the final record does not contain the active `trace_id` and `span_id`
 
 ### 4. IP Address Logging
 - Logs client IP for abuse detection and security auditing
@@ -97,19 +99,22 @@ curl -H "X-Request-ID: trace-12345" http://service-b/api/process
 ```typescript
 import { CorrelatedRequest } from '../middleware/requestLogger.js';
 
-app.get('/api/example', (req: Request, res: Response) => {
+app.get('/api/example', async (req: Request, res: Response) => {
   const correlationId = (req as CorrelatedRequest).correlationId;
-  
-  // Use correlation ID for downstream logging
-  logger.info(JSON.stringify({
+
+  await someAsyncWork();
+
+  logger.info({
     type: 'business_logic',
     correlationId,
     message: 'Processing request',
-  }));
-  
+  });
+
   res.json({ success: true });
 });
 ```
+
+When OpenTelemetry is enabled, the logger automatically enriches that log line with the active `trace_id` and `span_id` from the request span.
 
 ## Log Format
 
@@ -118,6 +123,8 @@ app.get('/api/example', (req: Request, res: Response) => {
 {
   "type": "request",
   "correlationId": "f4d68654-78e5-4b92-97d6-25d8bedfda35",
+  "trace_id": "11111111111111111111111111111111",
+  "span_id": "2222222222222222",
   "method": "GET",
   "path": "/api/health",
   "query": {},
@@ -132,6 +139,8 @@ app.get('/api/example', (req: Request, res: Response) => {
 {
   "type": "response",
   "correlationId": "f4d68654-78e5-4b92-97d6-25d8bedfda35",
+  "trace_id": "11111111111111111111111111111111",
+  "span_id": "2222222222222222",
   "method": "GET",
   "path": "/api/health",
   "statusCode": 200,
@@ -143,17 +152,16 @@ app.get('/api/example', (req: Request, res: Response) => {
 ## Testing
 
 ### Unit Tests
-Located in `tests/integration/attestations.test.ts`:
+Located in `src/utils/logger.correlation.spec.ts`:
 
-1. **Correlation ID Generation**: Verifies UUID format and uniqueness
-2. **Header Propagation**: Tests X-Request-ID header reuse
-3. **Consistency**: Validates same correlation ID across multiple requests
-4. **Uniqueness**: Ensures different requests get different IDs
-5. **Authenticated Requests**: Confirms correlation ID in protected routes
+1. **Fail-fast enforcement**: Verifies tests throw if a log line masks `trace_id` or `span_id` while a span is active
+2. **Request lifecycle correlation**: Validates request, handler, and response logs all carry the active trace metadata
+3. **Async propagation**: Confirms correlation survives `await` boundaries inside handlers
+4. **Redaction compatibility**: Ensures sensitive query values remain redacted while trace correlation is present
 
 ### Running Tests
 ```bash
-npm test -- tests/integration/attestations.test.ts
+npm test
 ```
 
 ## Performance Considerations
@@ -167,9 +175,10 @@ npm test -- tests/integration/attestations.test.ts
 
 ### Recommended Alerts
 1. **Missing Correlation IDs**: Alert if requests lack correlation IDs
-2. **Duplicate Correlation IDs**: Detect ID reuse (potential security issue)
-3. **Log Volume**: Monitor log volume by correlation ID
-4. **Error Rate**: Track errors per correlation ID
+2. **Missing Trace Correlation**: Alert if in-request logs are missing `trace_id` or `span_id`
+3. **Duplicate Correlation IDs**: Detect ID reuse (potential security issue)
+4. **Log Volume**: Monitor log volume by correlation ID
+5. **Error Rate**: Track errors per correlation ID
 
 ### Log Aggregation
 Query logs by correlation ID:
@@ -187,11 +196,10 @@ GET /logs/_search
 
 ## Future Enhancements
 
-1. **Trace Context**: Support W3C Trace Context standard
-2. **Span IDs**: Add span IDs for distributed tracing
-3. **Baggage**: Propagate custom metadata across services
-4. **Sampling**: Implement sampling for high-traffic scenarios
-5. **Correlation ID Length**: Configurable ID length/entropy
+1. **Baggage**: Propagate custom metadata across services
+2. **Sampling**: Implement sampling for high-traffic scenarios
+3. **Correlation ID Length**: Configurable ID length/entropy
+4. **Log/trace dashboards**: Add canned observability dashboards keyed by `correlationId`, `trace_id`, and `span_id`
 
 ## References
 

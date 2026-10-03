@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { startConnect } from '../services/integrations/stripe/connect.js'
 import { handleCallback } from '../services/integrations/stripe/callback.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js'
 
 export const integrationsStripeRouter = Router()
 export const path = '/integrations/stripe'
@@ -11,7 +11,7 @@ export const path = '/integrations/stripe'
  * Initiates Stripe OAuth flow by redirecting to Stripe authorization screen.
  * Requires authentication.
  */
-integrationsStripeRouter.post('/connect', requireAuth, (req: Request, res: Response) => {
+integrationsStripeRouter.post('/connect', requireBusinessAuth, (req: Request, res: Response) => {
   // Validate environment configuration
   const clientId = process.env.STRIPE_CLIENT_ID
   const redirectUri = process.env.STRIPE_REDIRECT_URI
@@ -35,14 +35,16 @@ integrationsStripeRouter.post('/connect', requireAuth, (req: Request, res: Respo
  * Exchanges code for access token and stores it; redirects to success URL or returns JSON.
  * Requires authentication.
  */
-integrationsStripeRouter.get('/callback', requireAuth, async (req: Request, res: Response) => {
+integrationsStripeRouter.get('/callback', requireBusinessAuth, async (req: Request, res: Response) => {
   const code = req.query.code as string | undefined
   const state = req.query.state as string | undefined
   const userId = req.user!.userId
+  const businessId = req.business!.id
   
   const result = await handleCallback(
     { code: code ?? '', state: state ?? '' },
-    userId
+    userId,
+    businessId
   )
   
   // Handle network errors (502)

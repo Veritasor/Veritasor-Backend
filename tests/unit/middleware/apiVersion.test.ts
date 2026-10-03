@@ -217,3 +217,285 @@ describe('apiVersion + versionResponse middleware', () => {
     expect(vary.toLowerCase()).toContain('accept')
   })
 })
+
+// ─── Contract tests: version negotiation ─────────────────────────────────────
+//
+// These tests pin the stable negotiation contract described in the README and
+// docs/specs/api-version-negotiation.md.  They cover every negotiation source,
+// all invalid-input edge cases, and the response-header contract.
+
+describe('parseVersionToken — contract', () => {
+  it('returns null for undefined', () => {
+    expect(parseVersionToken(undefined)).toBeNull()
+  })
+
+  it('returns null for empty string', () => {
+    expect(parseVersionToken('')).toBeNull()
+  })
+
+  it('returns null for string longer than 32 chars', () => {
+    expect(parseVersionToken('v' + '1'.repeat(32))).toBeNull()
+  })
+
+  it('returns null for v0', () => {
+    expect(parseVersionToken('v0')).toBeNull()
+  })
+
+  it('returns null for float', () => {
+    expect(parseVersionToken('1.0')).toBeNull()
+  })
+
+  it('returns null for alphanumeric junk', () => {
+    expect(parseVersionToken('v1beta')).toBeNull()
+  })
+
+  it('accepts v1 (canonical form)', () => {
+    expect(parseVersionToken('v1')).toBe(1)
+  })
+
+  it('accepts bare integer 1', () => {
+    expect(parseVersionToken('1')).toBe(1)
+  })
+
+  it('accepts uppercase V prefix', () => {
+    expect(parseVersionToken('V1')).toBe(1)
+  })
+})
+
+describe('extractVersionFromAccept — contract', () => {
+  it('reads v= parameter', () => {
+    expect(extractVersionFromAccept('application/json; v=1')).toBe(1)
+  })
+
+  it('reads v= with v-prefix value', () => {
+    expect(extractVersionFromAccept('application/json; v=v1')).toBe(1)
+  })
+
+  it('returns null for undefined input', () => {
+    expect(extractVersionFromAccept(undefined)).toBeNull()
+  })
+
+  it('returns null for non-string input', () => {
+    expect(extractVersionFromAccept(42 as any)).toBeNull()
+  })
+
+  it('ignores unknown parameter keys', () => {
+    expect(extractVersionFromAccept('application/json; charset=utf-8')).toBeNull()
+  })
+
+  it('picks first matching segment in multi-type Accept', () => {
+    expect(
+      extractVersionFromAccept('text/html, application/json; version=1')
+    ).toBe(1)
+  })
+})
+
+describe('negotiateApiVersion — contract: all sources', () => {
+  it('path /api/v1/... → source=path, version=v1, fallback=false', () => {
+    const r = negotiateApiVersion(partialReq({ path: '/api/v1/health' }))
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'path' })
+  })
+
+  it('path /api/v2/... → source=path, fallback=true (unsupported)', () => {
+    const r = negotiateApiVersion(partialReq({ path: '/api/v2/health' }))
+    expect(r).toEqual({ version: DEFAULT_API_VERSION, fallback: true, source: 'path' })
+  })
+
+  it('X-API-Version: 1 → source=x-api-version', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', headers: { 'x-api-version': '1' } })
+    )
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'x-api-version' })
+  })
+
+  it('X-API-Version: 99 → fallback=true, source=x-api-version', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', headers: { 'x-api-version': '99' } })
+    )
+    expect(r).toEqual({ version: DEFAULT_API_VERSION, fallback: true, source: 'x-api-version' })
+  })
+
+  it('Accept-Version: 1 → source=accept-version', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', headers: { 'accept-version': '1' } })
+    )
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'accept-version' })
+  })
+
+  it('query apiVersion=1 → source=query', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', query: { apiVersion: '1' } })
+    )
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'query' })
+  })
+
+  it('query api_version=1 → source=query', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', query: { api_version: '1' } })
+    )
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'query' })
+  })
+
+  it('Accept: application/json; version=1 → source=accept', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', headers: { accept: 'application/json; version=1' } })
+    )
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'accept' })
+  })
+
+  it('Accept: application/json; v=1 → source=accept', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/x', headers: { accept: 'application/json; v=1' } })
+    )
+    expect(r).toEqual({ version: 'v1', fallback: false, source: 'accept' })
+  })
+
+  it('no signals → source=default, version=v1, fallback=false', () => {
+    const r = negotiateApiVersion(partialReq({ path: '/api/x' }))
+    expect(r).toEqual({ version: DEFAULT_API_VERSION, fallback: false, source: 'default' })
+  })
+
+  it('path wins over X-API-Version (priority order)', () => {
+    const r = negotiateApiVersion(
+      partialReq({ path: '/api/v1/x', headers: { 'x-api-version': '99' } })
+    )
+    expect(r.source).toBe('path')
+    expect(r.version).toBe('v1')
+  })
+
+  it('X-API-Version wins over Accept-Version', () => {
+    const r = negotiateApiVersion(
+      partialReq({
+        path: '/api/x',
+        headers: { 'x-api-version': '1', 'accept-version': '99' },
+      })
+    )
+    expect(r.source).toBe('x-api-version')
+  })
+
+  it('Accept-Version wins over query', () => {
+    const r = negotiateApiVersion(
+      partialReq({
+        path: '/api/x',
+        headers: { 'accept-version': '1' },
+        query: { apiVersion: '99' },
+      })
+    )
+    expect(r.source).toBe('accept-version')
+  })
+
+  it('query wins over Accept header', () => {
+    const r = negotiateApiVersion(
+      partialReq({
+        path: '/api/x',
+        query: { apiVersion: '1' },
+        headers: { accept: 'application/json; version=99' },
+      })
+    )
+    expect(r.source).toBe('query')
+  })
+
+  it('invalid X-API-Version falls through to Accept-Version', () => {
+    const r = negotiateApiVersion(
+      partialReq({
+        path: '/api/x',
+        headers: { 'x-api-version': 'garbage', 'accept-version': '1' },
+      })
+    )
+    expect(r.source).toBe('accept-version')
+    expect(r.version).toBe('v1')
+  })
+
+  it('invalid query falls through to Accept header', () => {
+    const r = negotiateApiVersion(
+      partialReq({
+        path: '/api/x',
+        query: { apiVersion: 'bad' },
+        headers: { accept: 'application/json; version=1' },
+      })
+    )
+    expect(r.source).toBe('accept')
+  })
+
+  it('all invalid signals → default', () => {
+    const r = negotiateApiVersion(
+      partialReq({
+        path: '/api/x',
+        headers: { 'x-api-version': '!', 'accept-version': '!', accept: 'text/html' },
+        query: { apiVersion: '!' },
+      })
+    )
+    expect(r.source).toBe('default')
+    expect(r.fallback).toBe(false)
+  })
+})
+
+describe('versionResponseMiddleware — contract', () => {
+  it('sets API-Version header to v1 by default', async () => {
+    const app = express()
+    app.use(apiVersionMiddleware)
+    app.use(versionResponseMiddleware)
+    app.get('/t', (_req, res) => res.sendStatus(200))
+    const res = await request(app).get('/t')
+    expect(res.headers['api-version']).toBe('v1')
+  })
+
+  it('does not set API-Version-Fallback when version is supported', async () => {
+    const app = express()
+    app.use(apiVersionMiddleware)
+    app.use(versionResponseMiddleware)
+    app.get('/t', (_req, res) => res.sendStatus(200))
+    const res = await request(app).get('/t').set('X-API-Version', '1')
+    expect(res.headers['api-version-fallback']).toBeUndefined()
+  })
+
+  it('sets API-Version-Fallback: true for unsupported version', async () => {
+    const app = express()
+    app.use(apiVersionMiddleware)
+    app.use(versionResponseMiddleware)
+    app.get('/t', (_req, res) => res.sendStatus(200))
+    const res = await request(app).get('/t').set('X-API-Version', '999')
+    expect(res.headers['api-version']).toBe('v1')
+    expect(res.headers['api-version-fallback']).toBe('true')
+  })
+
+  it('merges Vary when existing value is an array', async () => {
+    // Simulates a proxy or earlier middleware that set Vary as an array
+    const app = express()
+    app.use((_req, res, next) => {
+      // Force array-valued Vary header
+      res.setHeader('Vary', ['Origin', 'Cookie'])
+      next()
+    })
+    app.use(apiVersionMiddleware)
+    app.use(versionResponseMiddleware)
+    app.get('/t', (_req, res) => res.sendStatus(200))
+    const res = await request(app).get('/t')
+    const vary = res.headers.vary ?? ''
+    expect(vary).toMatch(/origin/i)
+    expect(vary).toMatch(/cookie/i)
+    expect(vary.toLowerCase()).toContain('accept')
+    expect(vary.toLowerCase()).toContain('x-api-version')
+  })
+
+  it('uses DEFAULT_API_VERSION when req.apiVersion is not set', async () => {
+    // versionResponseMiddleware without apiVersionMiddleware — req.apiVersion is undefined
+    const app = express()
+    app.use(versionResponseMiddleware)
+    app.get('/t', (_req, res) => res.sendStatus(200))
+    const res = await request(app).get('/t')
+    expect(res.headers['api-version']).toBe(DEFAULT_API_VERSION)
+  })
+
+  it('includes Accept, X-API-Version, Accept-Version in Vary', async () => {
+    const app = express()
+    app.use(apiVersionMiddleware)
+    app.use(versionResponseMiddleware)
+    app.get('/t', (_req, res) => res.sendStatus(200))
+    const res = await request(app).get('/t')
+    const vary = (res.headers.vary ?? '').toLowerCase()
+    expect(vary).toContain('accept')
+    expect(vary).toContain('x-api-version')
+    expect(vary).toContain('accept-version')
+  })
+})

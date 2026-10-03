@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from "express";
-import { logger } from "../utils/logger.js";
+import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
+import { context, propagation } from "@opentelemetry/api";
+import { observeHttpRequestDuration } from "../metrics.js";
+import { startHttpRequestSpan } from "../tracing.js";
 
 /**
  * Extended Express Request with correlation ID for request tracing.
@@ -9,6 +12,58 @@ import { randomUUID } from "crypto";
  */
 export interface CorrelatedRequest extends Request {
   correlationId: string;
+}
+
+const REDACTED = "[REDACTED]";
+const CORRELATION_ID_HEADER = "x-correlation-id";
+const LEGACY_REQUEST_ID_HEADER = "x-request-id";
+const CORRELATION_ID_PATTERN = /^[a-zA-Z0-9._:/=@-]{8,128}$/;
+
+/** Headers whose values must never appear in logs. */
+export const REDACTED_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "x-auth-token",
+]);
+
+/** Query parameter names whose values must never appear in logs. */
+export const REDACTED_QUERY_PARAMS = new Set([
+  "token",
+  "access_token",
+  "refresh_token",
+  "api_key",
+  "apikey",
+  "secret",
+  "password",
+  "reset_token",
+  "code",
+]);
+
+export function sanitizeCorrelationId(value: unknown): string | undefined {
+  const candidate = Array.isArray(value) ? value[0] : value;
+
+  if (typeof candidate !== "string") {
+    return undefined;
+  }
+
+  const trimmed = candidate.trim();
+  if (!CORRELATION_ID_PATTERN.test(trimmed)) {
+    return undefined;
+  }
+
+  return trimmed;
+}
+
+function redactQuery(query: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(query)) {
+    result[key] = REDACTED_QUERY_PARAMS.has(key.toLowerCase())
+      ? REDACTED
+      : value;
+  }
+  return result;
 }
 
 /**
@@ -33,47 +88,64 @@ export interface CorrelatedRequest extends Request {
 export function requestLogger(req: Request, res: Response, next: NextFunction) {
   const start = process.hrtime();
 
-  // Generate or reuse correlation ID from X-Request-ID header
-  // Use existing header if provided (for distributed tracing), otherwise generate new UUID
-  const correlationId = (req.headers["x-request-id"] as string) || randomUUID();
+  const correlationId =
+    sanitizeCorrelationId(req.headers[CORRELATION_ID_HEADER]) ??
+    sanitizeCorrelationId(req.headers[LEGACY_REQUEST_ID_HEADER]) ??
+    randomUUID();
 
-  // Attach correlation ID to request for use in downstream handlers
   (req as CorrelatedRequest).correlationId = correlationId;
+  res.locals.requestId = correlationId;
+  res.locals.correlationId = correlationId;
 
-  // Set correlation ID in response header for client-side tracing
+  res.setHeader("X-Correlation-ID", correlationId);
   res.setHeader("X-Request-ID", correlationId);
 
-  // Log incoming request with correlation ID
-  const requestLog = {
-    type: "request",
-    correlationId,
-    method: req.method,
-    path: req.path,
-    query: req.query,
-    ip: req.ip,
-    userAgent: req.headers["user-agent"],
-    timestamp: new Date().toISOString(),
-  };
-
-  logger.info(JSON.stringify(requestLog));
-
-  // Once the response has finished, compute duration and log
-  res.on("finish", () => {
-    const [sec, nano] = process.hrtime(start);
-    const durationMs = sec * 1e3 + nano / 1e6;
-
-    const responseLog = {
-      type: "response",
+  return runWithLoggerContext({ correlationId }, () => {
+    startHttpRequestSpan(
+      req,
+      res,
       correlationId,
-      method: req.method,
-      path: req.path,
-      statusCode: res.statusCode,
-      durationMs: parseFloat(durationMs.toFixed(3)),
-      timestamp: new Date().toISOString(),
-    };
+      () => {
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
 
-    logger.info(JSON.stringify(responseLog));
+        logger.info({
+          type: "request",
+          correlationId,
+          tenantId,
+          method: req.method,
+          path: req.path,
+          query: redactQuery(req.query as Record<string, unknown>),
+          ip: req.ip,
+          userAgent: req.headers["user-agent"],
+        });
+
+        next();
+      },
+      () => {
+        const [sec, nano] = process.hrtime(start);
+        const durationMs = sec * 1e3 + nano / 1e6;
+        const durationSec = sec + nano / 1e9;
+
+        const route = (req.route?.path as string | undefined) ?? req.path;
+        observeHttpRequestDuration(
+          { method: req.method, route, status_code: String(res.statusCode) },
+          durationSec,
+        );
+
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
+
+        logger.info({
+          type: "response",
+          correlationId,
+          tenantId,
+          method: req.method,
+          path: req.path,
+          statusCode: res.statusCode,
+          durationMs: parseFloat(durationMs.toFixed(3)),
+        });
+      },
+    );
   });
-
-  next();
 }

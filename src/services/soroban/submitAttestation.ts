@@ -1,5 +1,19 @@
+import { createHash } from 'node:crypto';
 import { BASE_FEE, Contract, Keypair, StrKey, TransactionBuilder, nativeToScVal, rpc, scValToNative } from '@stellar/stellar-sdk';
-import { createSorobanRpcServer, getSorobanConfig } from './client.js';
+import { createSorobanRpcServer, getSorobanConfig, isSorobanCircuitBreakerOpen } from './client.js';
+import { getSorobanBatchedSubmissionFlag } from '../features/flags.js';
+import { logger } from '../../utils/logger.js';
+import { AdaptiveBatchSizeController, sampleSorobanFeeStats } from './adaptiveBatchSize.js';
+import { DrrScheduler, type BatchQueueItem, type TenantTier } from './drrScheduler.js';
+import {
+  sorobanAdaptiveBatchSize,
+  sorobanFeeEwma,
+  sorobanCurrentFee,
+  sorobanFeeVolatility,
+  sorobanFeeSpikeProtectionsTotal,
+  sorobanAttestationDedupeHitsTotal,
+  sorobanAttestationDedupeErrorsTotal,
+} from '../../metrics.js';
 
 export class SorobanSubmissionError extends Error {
   constructor(message: string, public code: string, public cause?: unknown) {
@@ -17,11 +31,12 @@ export type SubmitAttestationParams = {
   sourcePublicKey: string;
   signerSecret?: string;
   submit?: boolean;
+  userId?: string;
 };
 
 export type SubmitAttestationResult = {
   txHash: string;
-  status: 'pending' | 'confirmed' | 'unsigned';
+  status: 'pending' | 'confirmed' | 'unsigned' | 'queued';
   unsignedXdr?: string;
   ledger?: number;
   resultMerkleRoot?: string;
@@ -34,6 +49,454 @@ const CONFIRMATION_MAX_ATTEMPTS = 15;
 
 /** Valid hex hash: 64 lowercase hex chars. */
 const TX_HASH_RE = /^[0-9a-f]{64}$/;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cross-batch idempotency deduplication
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Retries can enqueue the same attestation into multiple Soroban submission
+// batches.  This layer computes a deterministic SHA-256 hash of the
+// attestation parameters and stores it in Redis with a TTL that covers the
+// longest realistic retry window.  When the hash is already present the
+// submission is skipped and the caller receives a `deduped` status so the
+// upstream queue processor can move on.
+//
+// Redis unavailability is never fatal: when the dedupe store is unreachable
+// we log a warning, increment the error counter, and proceed with the
+// submission so attestations are never silently dropped.
+
+/**
+ * Redis key prefix for the attestation dedupe set.
+ *
+ * The key is <prefix>:<sha256-hex> so every lookup is O(1).
+ * TTL is set via PEXPIRE at insertion time.
+ */
+const ATTESTATION_DEDUPE_PREFIX = 'attestation:dedupe'
+
+/**
+ * Default dedupe TTL: 5 minutes covers the worst-case retry window
+ * (30 s confirmation polling × multiple batch insert retries).
+ * Tunable via ATTESTATION_DEDUPE_TTL_MS env var.
+ */
+export const DEFAULT_ATTESTATION_DEDUPE_TTL_MS = 5 * 60 * 1000
+
+/** Minimum allowed TTL to prevent accidental zero-TTL (permanent keys). */
+export const MIN_ATTESTATION_DEDUPE_TTL_MS = 30_000
+
+/** Resolve the effective dedupe TTL from env or default. */
+export function resolveAttestationDedupeTtlMs(): number {
+  const raw = process.env.ATTESTATION_DEDUPE_TTL_MS
+  if (raw == null || raw === '') return DEFAULT_ATTESTATION_DEDUPE_TTL_MS
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_ATTESTATION_DEDUPE_TTL_MS
+  }
+  return Math.max(MIN_ATTESTATION_DEDUPE_TTL_MS, parsed)
+}
+
+/**
+ * Compute a deterministic dedupe key from attestation parameters.
+ *
+ * The hash covers business, period, merkleRoot, timestamp, and version —
+ * the same attestation submitted by different signers or with different
+ * nonces will still collide on this key.
+ */
+export function computeAttestationDedupeKey(params: SubmitAttestationParams): string {
+  const canonical = [
+    params.business,
+    params.period,
+    params.merkleRoot,
+    String(params.timestamp),
+    params.version,
+  ].join('|')
+  return createHash('sha256').update(canonical).digest('hex')
+}
+
+/** Minimal redis interface needed for dedupe lookups. */
+export interface DedupeRedisClient {
+  get(key: string): Promise<string | null>
+  set(key: string, value: string, px: 'PX', ms: number): Promise<unknown>
+}
+
+/**
+ * Check whether an attestation with the given params has already been
+ * submitted (or is in-flight) within the dedupe window.
+ *
+ * Returns `true` when the dedupe key exists (hash hit — skip submission),
+ * or `false` when it is absent (hash miss — proceed with submission).
+ *
+ * On Redis errors the function returns `false` (fail-open) so no
+ * attestation is ever blocked by a transient Redis blip.
+ */
+export async function checkAttestationDedupe(
+  params: SubmitAttestationParams,
+  redisClient: Pick<DedupeRedisClient, 'get'>,
+): Promise<boolean> {
+  const key = `${ATTESTATION_DEDUPE_PREFIX}:${computeAttestationDedupeKey(params)}`
+  try {
+    const existing = await redisClient.get(key)
+    if (existing !== null) {
+      sorobanAttestationDedupeHitsTotal.inc({ outcome: 'hit' })
+      logger.info({
+        event: 'attestation_dedupe_hit',
+        business: params.business,
+        period: params.period,
+        merkleRoot: params.merkleRoot,
+      })
+      return true
+    }
+    sorobanAttestationDedupeHitsTotal.inc({ outcome: 'miss' })
+    return false
+  } catch (err) {
+    sorobanAttestationDedupeErrorsTotal.inc()
+    logger.warn({
+      event: 'attestation_dedupe_error',
+      error: err instanceof Error ? err.message : String(err),
+    })
+    // Fail-open: proceed with submission
+    return false
+  }
+}
+
+/**
+ * Mark an attestation as submitted in the dedupe store after a successful
+ * submission (or as soon as the transaction is sent, to cover in-flight).
+ *
+ * Setting the mark before confirmation prevents duplicate submissions
+ * while a transaction is still awaiting finality.
+ */
+export async function markAttestationSubmitted(
+  params: SubmitAttestationParams,
+  txHash: string,
+  redisClient: Pick<DedupeRedisClient, 'set'>,
+  ttlMs: number = resolveAttestationDedupeTtlMs(),
+): Promise<void> {
+  const key = `${ATTESTATION_DEDUPE_PREFIX}:${computeAttestationDedupeKey(params)}`
+  try {
+    await redisClient.set(key, txHash, 'PX', ttlMs)
+  } catch (err) {
+    sorobanAttestationDedupeErrorsTotal.inc()
+    logger.warn({
+      event: 'attestation_dedupe_mark_failed',
+      txHash,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    // Best-effort: mark failure does not invalidate the submission
+  }
+}
+
+/**
+ * Lazy reference to the Redis dedupe client.
+ *
+ * Uses a getter pattern so that the Redis module is only imported when
+ * the dedupe functions are actually called. Null when Redis is not
+ * configured (the dedupe layer silently no-ops).
+ */
+let _dedupeRedisClient: DedupeRedisClient | null | undefined
+
+async function getDedupeRedisClient(): Promise<DedupeRedisClient | null> {
+  if (_dedupeRedisClient !== undefined) return _dedupeRedisClient
+
+  const hasRedis =
+    Boolean(process.env.REDIS_URL) || Boolean(process.env.REDIS_CLUSTER_NODES)
+  if (!hasRedis) {
+    _dedupeRedisClient = null
+    return null
+  }
+
+  try {
+    const mod = await import('../../redis.js')
+    _dedupeRedisClient = mod.getRedisClient() as unknown as DedupeRedisClient
+    return _dedupeRedisClient
+  } catch {
+    _dedupeRedisClient = null
+    return null
+  }
+}
+
+/**
+ * Convenience: check dedupe and, on miss, return false (no-op).
+ * On hit, throws a `SorobanSubmissionError` with code `DEDUPED` so
+ * the caller can distinguish this case from a real submission failure.
+ */
+export async function assertNotDuplicate(
+  params: SubmitAttestationParams,
+): Promise<void> {
+  const redisClient = await getDedupeRedisClient()
+  if (!redisClient) return // No Redis configured — skip dedupe
+
+  const isDuplicate = await checkAttestationDedupe(params, redisClient)
+  if (isDuplicate) {
+    throw new SorobanSubmissionError(
+      `Attestation for business ${params.business} period ${params.period} was already submitted.`,
+      'DEDUPED',
+    )
+  }
+}
+
+/**
+ * Convenience: mark an attestation as submitted in the dedupe store.
+ */
+export async function markAsSubmitted(
+  params: SubmitAttestationParams,
+  txHash: string,
+): Promise<void> {
+  const redisClient = await getDedupeRedisClient()
+  if (!redisClient) return
+
+  await markAttestationSubmitted(params, txHash, redisClient)
+}
+
+export type QueuedAttestationStatus = 'queued' | 'processing' | 'failed';
+
+export type EnqueuedAttestationQueueItem = SubmitAttestationParams & {
+  idempotencyKey: string;
+  queuedAt: number;
+  nextAttemptAt: number;
+  attempts: number;
+  status: QueuedAttestationStatus;
+  txHash?: string;
+};
+
+export type EnqueueQueuedAttestationOptions = {
+  idempotencyKey?: string;
+};
+
+export type QueuedAttestationResult = {
+  queued: boolean;
+  reason?: 'disabled' | 'invalid' | 'duplicate' | 'queue_full';
+  item?: EnqueuedAttestationQueueItem;
+};
+
+const DEFAULT_DEGRADED_QUEUE_MAX_ITEMS = 1000;
+const DEFAULT_DEGRADED_QUEUE_BACKOFF_MS = 5_000;
+const MAX_DEGRADED_QUEUE_BACKOFF_MS = 60_000;
+
+let queuedAttestationStore: EnqueuedAttestationQueueItem[] = [];
+
+export function resetQueuedAttestationStore(): void {
+  queuedAttestationStore = [];
+}
+
+export function isSorobanQueueEnabled(): boolean {
+  return process.env.SOROBAN_DEGRADED_QUEUE_ENABLED === 'true';
+}
+
+export function resolveQueuedAttestationQueueLimit(): number {
+  const raw = process.env.SOROBAN_DEGRADED_QUEUE_MAX_ITEMS;
+  if (raw == null || raw.trim() === '') {
+    return DEFAULT_DEGRADED_QUEUE_MAX_ITEMS;
+  }
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 1) {
+    return DEFAULT_DEGRADED_QUEUE_MAX_ITEMS;
+  }
+  return value;
+}
+
+function getQueuedAttestationBackoffMs(attempts: number): number {
+  const base = DEFAULT_DEGRADED_QUEUE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1);
+  return Math.min(MAX_DEGRADED_QUEUE_BACKOFF_MS, base);
+}
+
+export function enqueueQueuedAttestation(
+  params: SubmitAttestationParams,
+  options: EnqueueQueuedAttestationOptions = {},
+): QueuedAttestationResult {
+  if (!isSorobanQueueEnabled()) {
+    return { queued: false, reason: 'disabled' };
+  }
+
+  const normalized = {
+    ...params,
+    business: params.business?.trim() ?? '',
+    period: params.period?.trim() ?? '',
+    merkleRoot: params.merkleRoot?.trim() ?? '',
+    version: params.version?.trim() ?? '1.0.0',
+  };
+
+  if (!normalized.business || !normalized.period || !normalized.merkleRoot) {
+    return { queued: false, reason: 'invalid' };
+  }
+
+  const idempotencyKey = options.idempotencyKey ?? computeAttestationDedupeKey(normalized);
+  if (queuedAttestationStore.some((item) => item.idempotencyKey === idempotencyKey)) {
+    return { queued: false, reason: 'duplicate' };
+  }
+
+  const maxItems = resolveQueuedAttestationQueueLimit();
+  if (queuedAttestationStore.length >= maxItems) {
+    return { queued: false, reason: 'queue_full' };
+  }
+
+  const item: EnqueuedAttestationQueueItem = {
+    ...normalized,
+    idempotencyKey,
+    queuedAt: Date.now(),
+    nextAttemptAt: Date.now(),
+    attempts: 0,
+    status: 'queued',
+  };
+
+  queuedAttestationStore.push(item);
+
+  logger.info({
+    event: 'soroban_degraded_queue_enqueue',
+    business: normalized.business,
+    period: normalized.period,
+    idempotencyKey,
+    queueDepth: queuedAttestationStore.length,
+  }, 'soroban: queued unsigned attestation while breaker is open');
+
+  return { queued: true, item };
+}
+
+export async function drainQueuedAttestations(
+  limit: number = 10,
+): Promise<Array<{ item: EnqueuedAttestationQueueItem; result?: SubmitAttestationResult; error?: unknown }>> {
+  const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 10;
+
+  const dueItems = queuedAttestationStore
+    .filter((item) => item.nextAttemptAt <= Date.now())
+    .sort((a, b) => a.queuedAt - b.queuedAt)
+    .slice(0, boundedLimit);
+
+  if (dueItems.length === 0) {
+    return [];
+  }
+
+  const results: Array<{ item: EnqueuedAttestationQueueItem; result?: SubmitAttestationResult; error?: unknown }> = [];
+
+  for (const item of dueItems) {
+    const index = queuedAttestationStore.findIndex((candidate) => candidate.idempotencyKey === item.idempotencyKey);
+    if (index === -1) {
+      continue;
+    }
+
+    const current = queuedAttestationStore[index];
+    current.status = 'processing';
+
+    try {
+      const result = await submitAttestation({
+        ...current,
+        submit: true,
+      });
+
+      queuedAttestationStore.splice(index, 1);
+      results.push({ item: current, result });
+    } catch (error) {
+      const attempts = current.attempts + 1;
+      current.attempts = attempts;
+      current.nextAttemptAt = Date.now() + getQueuedAttestationBackoffMs(attempts);
+      current.status = 'failed';
+
+      logger.warn({
+        event: 'soroban_degraded_queue_retry',
+        idempotencyKey: current.idempotencyKey,
+        attempts,
+        nextAttemptAt: current.nextAttemptAt,
+        error: error instanceof Error ? error.message : String(error),
+      }, 'soroban: queued attestation failed to drain');
+
+      if (error instanceof SorobanSubmissionError && ['DEDUPED', 'VALIDATION_ERROR'].includes(error.code)) {
+        queuedAttestationStore.splice(index, 1);
+      }
+
+      results.push({ item: current, error });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Global singleton adaptive batch-size controller.
+ *
+ * Created once at module load and shared across all attestation submission
+ * calls. The controller samples Soroban network fee stats via RPC and
+ * adjusts the batch size within configured bounds using an EWMA-smoothed
+ * fee signal.
+ */
+export const adaptiveBatchController = new AdaptiveBatchSizeController();
+
+// ---------------------------------------------------------------------------
+// DRR fair-batch scheduler singleton
+// ---------------------------------------------------------------------------
+
+/**
+ * Global singleton DRR fair-batch scheduler.
+ *
+ * Tenants enqueue attestation submissions here via
+ * {@link enqueueToBatchScheduler}. The scheduler interleaves items from
+ * competing tenants using Deficit Round-Robin, preventing any single noisy
+ * tenant from monopolising batch slots.
+ *
+ * Weights are resolved from the `DRR_SCHEDULER_TIER_WEIGHTS` env var (JSON)
+ * with built-in fallbacks: free=1, starter=2, growth=4, enterprise=8.
+ */
+export const drrBatchScheduler = new DrrScheduler<SubmitAttestationParams>();
+
+/**
+ * Samples Soroban network fee stats and returns the current tuned batch
+ * size from the global adaptive batch-size controller.
+ *
+ * Updates Prometheus metrics for observability. If fee spike protection
+ * activates, increments the spike protection counter.
+ *
+ * If the sample interval has not elapsed since the last sample, returns
+ * the previously tuned batch size without a new RPC call.
+ *
+ * @param server - A connected Soroban RPC server instance.
+ * @returns The current tuned batch size (clamped between min and max).
+ */
+export async function getAdaptiveBatchSize(server: rpc.Server): Promise<number> {
+  const controller = adaptiveBatchController;
+  const config = controller.getConfig();
+
+  const sampled = await controller.sampleAndTune(server);
+
+  if (sampled) {
+    const ewmaFee = controller.getEwmaFee();
+    sorobanAdaptiveBatchSize.set(controller.getBatchSize());
+    if (ewmaFee !== null) {
+      sorobanFeeEwma.set(ewmaFee);
+    }
+  }
+
+  return controller.getBatchSize();
+}
+
+/**
+ * Samples fee stats explicitly and updates all Prometheus metrics,
+ * including the spike protection counter if spike protection is active.
+ *
+ * This is called internally by `getAdaptiveBatchSize` but is exported
+ * for callers that need to sample fees independently of tuning.
+ */
+export async function sampleAndUpdateMetrics(server: rpc.Server): Promise<void> {
+  const sample = await sampleSorobanFeeStats(server);
+  sorobanCurrentFee.set(sample.fee);
+  sorobanFeeVolatility.set(sample.volatility);
+
+  const controller = adaptiveBatchController;
+  const config = controller.getConfig();
+  const prevBatchSize = controller.getBatchSize();
+
+  controller.tune(sample.fee, sample.volatility);
+
+  sorobanAdaptiveBatchSize.set(controller.getBatchSize());
+  const ewmaFee = controller.getEwmaFee();
+  if (ewmaFee !== null) {
+    sorobanFeeEwma.set(ewmaFee);
+  }
+
+  // Detect spike protection activation
+  const ratio = sample.fee / (ewmaFee ?? sample.fee);
+  if (ratio > config.feeSpikeMultiplier && controller.getBatchSize() < prevBatchSize) {
+    sorobanFeeSpikeProtectionsTotal.inc();
+  }
+}
 
 function normalizeTimestamp(timestamp: number | bigint): bigint {
   if (typeof timestamp === 'bigint') {
@@ -216,6 +679,32 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
   const shouldSubmit = params.submit ?? true;
   const signerSecret = params.signerSecret ?? process.env.SOROBAN_SOURCE_SECRET;
 
+  // Cross-batch dedupe: check whether this attestation has already been
+  // submitted (or is in-flight) within the dedupe window. Throws
+  // SorobanSubmissionError with code 'DEDUPED' when a hit is found.
+  // Fail-open: Redis errors do not block submissions.
+  if (shouldSubmit) {
+    await assertNotDuplicate(params);
+  }
+
+  if (params.userId) {
+    try {
+      const useBatched = await getSorobanBatchedSubmissionFlag({
+        businessId: params.business,
+        userId: params.userId,
+      });
+      if (useBatched) {
+        logger.info({
+          event: 'soroban_batched_submission_enabled',
+          business: params.business,
+          userId: params.userId,
+        });
+      }
+    } catch {
+      // flag evaluation failure is non-fatal; proceed with default behavior
+    }
+  }
+
   try {
     const account = await server.getAccount(params.sourcePublicKey);
     const contract = new Contract(contractId);
@@ -273,6 +762,13 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
       throw new SorobanSubmissionError(mapSendResponseError(response), 'SUBMIT_FAILED', response);
     }
 
+    // Mark the attestation as in-flight in the dedupe store BEFORE
+    // waiting for confirmation so that retries within the TTL window
+    // are caught by the dedupe check above.
+    if (shouldSubmit) {
+      markAsSubmitted(params, response.hash).catch(() => {});
+    }
+
     // Poll for transaction confirmation and validate the on-chain result.
     try {
       const confirmed = await waitForConfirmation(server, response.hash);
@@ -306,10 +802,134 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
       throw error;
     }
 
+    if (isSorobanCircuitBreakerOpen(error)) {
+      throw new SorobanSubmissionError(
+        `Soroban circuit breaker is ${error.state} for ${error.operationName}.`,
+        'SOROBAN_CIRCUIT_BREAKER_OPEN',
+        error,
+      );
+    }
+
     throw new SorobanSubmissionError(
       'Failed to build or submit attestation transaction on Soroban.',
       'SOROBAN_NETWORK_ERROR',
       error,
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// DRR scheduler public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Extended params for enqueueing into the DRR fair-batch scheduler.
+ */
+export type EnqueueParams = SubmitAttestationParams & {
+  /** Tenant identifier used for DRR queue assignment (typically businessId). */
+  tenantId: string;
+  /**
+   * Tenant tier used to determine DRR weight.
+   * @example 'free' | 'starter' | 'growth' | 'enterprise'
+   */
+  tier: TenantTier;
+};
+
+/**
+ * Enqueues a Soroban attestation submission into the global DRR fair-batch
+ * scheduler instead of submitting immediately.
+ *
+ * The item will be drained in a future call to {@link processBatchSchedulerDrain}.
+ * Using the scheduler guarantees that high-volume tenants cannot starve
+ * lower-volume tenants in the batch queue.
+ *
+ * **Security note:** This function is a thin queue wrapper. All input
+ * validation (key format, signer match, contract call) happens inside
+ * {@link submitAttestation} at drain time — inputs are not validated twice
+ * here to avoid inconsistent state if validation rules change.
+ *
+ * @param params - Attestation params plus `tenantId` and `tier`.
+ * @returns The number of items in the tenant's queue after enqueue.
+ */
+export function enqueueToBatchScheduler(params: EnqueueParams): number {
+  const item: BatchQueueItem<SubmitAttestationParams> = {
+    tenantId: params.tenantId,
+    tier: params.tier,
+    payload: params,
+    enqueuedAt: Date.now(),
+  };
+  drrBatchScheduler.enqueue(item);
+
+  const stats = drrBatchScheduler.stats();
+  const tenantDepth = stats.tenants[params.tenantId]?.depth ?? 0;
+
+  logger.info(
+    {
+      event: 'drr_enqueue',
+      tenantId: params.tenantId,
+      tier: params.tier,
+      tenantDepth,
+      totalDepth: stats.totalDepth,
+    },
+    'drr-scheduler: attestation enqueued',
+  );
+
+  return tenantDepth;
+}
+
+/**
+ * Drains up to `batchSize` items from the DRR scheduler and submits each
+ * one via {@link submitAttestation}.
+ *
+ * Results and errors are collected per-item — a single failure does not
+ * abort the rest of the batch, preserving fairness guarantees.
+ *
+ * Callers (e.g. a background job or the batched-submission flag handler)
+ * should size `batchSize` using the adaptive batch-size controller:
+ * ```ts
+ * const server = createSorobanRpcServer(rpcUrl);
+ * const size   = await getAdaptiveBatchSize(server);
+ * const items  = await processBatchSchedulerDrain(size);
+ * ```
+ *
+ * @param batchSize - Maximum number of items to drain and submit.
+ * @returns Array of settled results in DRR-fair order.
+ */
+export async function processBatchSchedulerDrain(
+  batchSize: number,
+): Promise<Array<{ tenantId: string; result?: SubmitAttestationResult; error?: unknown }>> {
+  const items = drrBatchScheduler.dequeueBatch(batchSize);
+
+  if (items.length === 0) {
+    return [];
+  }
+
+  logger.info(
+    {
+      event: 'drr_drain_start',
+      count: items.length,
+      batchSize,
+      schedulerStats: drrBatchScheduler.stats(),
+    },
+    'drr-scheduler: draining batch',
+  );
+
+  const settled = await Promise.allSettled(
+    items.map(async (item) => {
+      try {
+        const result = await submitAttestation(item.payload);
+        return { tenantId: item.tenantId, result };
+      } catch (error) {
+        logger.error(
+          { event: 'drr_item_error', tenantId: item.tenantId, error },
+          'drr-scheduler: item submission failed',
+        );
+        return { tenantId: item.tenantId, error };
+      }
+    }),
+  );
+
+  return settled.map((s) =>
+    s.status === 'fulfilled' ? s.value : { tenantId: 'unknown', error: s.reason },
+  );
 }

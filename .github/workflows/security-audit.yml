@@ -1,0 +1,57 @@
+name: Security audit and SBOM generation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: Dependency audit and SBOM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm via Corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        timeout-minutes: 10
+
+      - name: Run pnpm audit with allowlist validation
+        # Fail the job on any high/critical advisory that is not explicitly allowlisted.
+        run: pnpm audit --prod --json | pnpm exec tsx scripts/check-audit.ts
+        timeout-minutes: 10
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p sbom
+          pnpm exec cyclonedx-npm --output-format XML --output-file sbom/cyclonedx-sbom.xml
+        timeout-minutes: 10
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyclonedx-sbom
+          path: sbom/cyclonedx-sbom.xml

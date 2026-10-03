@@ -30,6 +30,7 @@ import {
   getSignupRateLimitStore,
   type SignupRateLimitConfig,
 } from "../../utils/signupRateLimiter.js";
+import { logger } from "../../utils/logger.js";
 
 /**
  * Request payload for user signup
@@ -149,7 +150,44 @@ function validateSignupRequest(
 
   // Check honeypot field
   if (config.enableHoneypot && request.website) {
-    errors.push(new SignupError("Invalid request", "HONEYPOT_TRIGGERED", 400));
+    errors.push(
+      new SignupError("Invalid request", "HONEYPOT_TRIGGERED", 400, [
+        "Honeypot field must be empty",
+      ]),
+    );
+    return { valid: false, normalizedEmail: "", errors, warnings };
+  }
+
+  // Validate presence and type of required fields before delegating to deeper
+  // validators. This guards against null/undefined/non-string payloads that
+  // would otherwise surface as opaque downstream errors and ensures every
+  // SignupError carries actionable `details` for clients.
+  const missingFields: string[] = [];
+  if (request.email === undefined || request.email === null) {
+    missingFields.push("email is required");
+  } else if (typeof request.email !== "string") {
+    missingFields.push("email must be a string");
+  } else if (request.email.trim().length === 0) {
+    missingFields.push("email must not be empty");
+  }
+
+  if (request.password === undefined || request.password === null) {
+    missingFields.push("password is required");
+  } else if (typeof request.password !== "string") {
+    missingFields.push("password must be a string");
+  } else if (request.password.length === 0) {
+    missingFields.push("password must not be empty");
+  }
+
+  if (missingFields.length > 0) {
+    errors.push(
+      new SignupError(
+        "Missing or invalid required fields",
+        "VALIDATION_ERROR",
+        400,
+        missingFields,
+      ),
+    );
     return { valid: false, normalizedEmail: "", errors, warnings };
   }
 
@@ -271,14 +309,23 @@ export async function signup(
     // Apply timing delay before throwing to prevent timing attacks
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
-    // Record failed attempt
-    rateLimiter.recordFailure(
-      clientIp,
-      validation.normalizedEmail || normalizeEmail(request.email),
+    // Best-effort failure recording: only attempt with a usable email so we
+    // don't poison the rate limiter on payloads that never had a string email.
+    const failureEmail =
+      validation.normalizedEmail ||
+      (typeof request.email === "string" ? normalizeEmail(request.email) : "");
+    rateLimiter.recordFailure(clientIp, failureEmail);
+
+    const firstError = validation.errors[0];
+    logger.warn(
+      JSON.stringify({
+        event: "signup.validation_failed",
+        type: firstError.type,
+        clientIp,
+      }),
     );
 
-    // Return the first error
-    throw validation.errors[0];
+    throw firstError;
   }
 
   const { normalizedEmail } = validation;
@@ -295,6 +342,14 @@ export async function signup(
     }
 
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
+
+    logger.warn(
+      JSON.stringify({
+        event: "signup.rate_limited",
+        clientIp,
+        reason: rateLimitCheck.blockReason || "Rate limit exceeded",
+      }),
+    );
 
     throw new SignupError(
       rateLimitCheck.blockReason ||
@@ -319,17 +374,48 @@ export async function signup(
     // Record failed attempt (for progressive delays)
     rateLimiter.recordFailure(clientIp, normalizedEmail);
 
+    logger.info(
+      JSON.stringify({
+        event: "signup.duplicate_email_attempt",
+        clientIp,
+      }),
+    );
+
     // Don't reveal whether email exists - use same message as invalid credentials
     throw new SignupError(
       "Unable to create account. Please check your information and try again.",
       "EMAIL_EXISTS",
       400, // Use 400 instead of 409 to prevent email enumeration
+      ["Account could not be created with the provided information"],
     );
   }
 
   // Phase 4: Create the user
   try {
     const passwordHash = await hashPassword(request.password);
+
+    // Re-check for an existing user immediately before creation to close the
+    // race window between the existence check and the insert. This makes
+    // concurrent identical signups idempotent: only one succeeds and the
+    // others receive the same generic EMAIL_EXISTS response.
+    const raceCheck = await findUserByEmail(normalizedEmail);
+    if (raceCheck) {
+      await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
+      rateLimiter.recordFailure(clientIp, normalizedEmail);
+      logger.info(
+        JSON.stringify({
+          event: "signup.duplicate_email_race",
+          clientIp,
+        }),
+      );
+      throw new SignupError(
+        "Unable to create account. Please check your information and try again.",
+        "EMAIL_EXISTS",
+        400,
+        ["Account could not be created with the provided information"],
+      );
+    }
+
     const user = await createUser(normalizedEmail, passwordHash);
 
     // Generate tokens
@@ -349,6 +435,14 @@ export async function signup(
     // Apply timing delay to ensure consistent response time
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
+    logger.info(
+      JSON.stringify({
+        event: "signup.success",
+        userId: user.id,
+        clientIp,
+      }),
+    );
+
     return {
       accessToken,
       refreshToken,
@@ -364,15 +458,24 @@ export async function signup(
     // Apply timing delay
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
-    // Re-throw with appropriate error type
+    // Re-throw SignupError instances unchanged so callers can react on .type
     if (error instanceof SignupError) {
       throw error;
     }
+
+    logger.error(
+      JSON.stringify({
+        event: "signup.unexpected_error",
+        clientIp,
+        message: error instanceof Error ? error.message : "unknown",
+      }),
+    );
 
     throw new SignupError(
       "An error occurred during signup. Please try again.",
       "VALIDATION_ERROR",
       500,
+      ["Unexpected internal error"],
     );
   }
 }
