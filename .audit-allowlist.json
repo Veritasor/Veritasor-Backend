@@ -1,1 +1,135 @@
-[]
+[
+  {
+    "id": "1120252",
+    "package": "@opentelemetry/sdk-node",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Prometheus exporter process crash via malformed HTTP request",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1120253",
+    "package": "@opentelemetry/exporter-prometheus",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Prometheus exporter process crash via malformed HTTP request",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1123259",
+    "package": "ws",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: ws: Memory exhaustion DoS from tiny fragments and data chunks",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1124011",
+    "package": "@opentelemetry/propagator-jaeger",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: OpenTelemetry JavaScript: Denial of service in `JaegerPropagator` via unhandled exception on a malformed header",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1158513",
+    "package": "nodemailer",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Nodemailer: Message-level raw option bypasses disableFileAccess/disableUrlAccess, enabling arbitrary file read and full-response SSRF in the delivered message",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1164824",
+    "package": "toml",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: toml-node: Uncontrolled Recursion",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1164825",
+    "package": "toml",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: toml-node: Prototype Pollution Leads to `Object.prototype` Corruption via `__proto__` Key-Path Desynchronization",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1193778",
+    "package": "nodemailer",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Nodemailer: Quadratic (O(n┬▓)) time complexity in addressparser allows remote denial of service via a crafted address list",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240114",
+    "package": "nodemailer",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Nodemailer: Quadratic backtracking in the addressparser free-text fallback allows remote denial of service",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240603",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: ReDoS in fromDataURI data: URL parser freezes the Node event loop (DoS)",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240604",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: ReDoS (O(N┬▓)) in shouldBypassProxy host normalization, reachable via untrusted redirect Location",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240605",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: Prototype Pollution Gadget in axios toFormData Options",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240607",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: HTTP/2 adapter bypasses configured DNS lookup and proxy controls",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240608",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: Denial of Service via Unhandled 'error' Event in HTTP/2 ClientHttp2Session Initialization",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240622",
+    "package": "@grpc/grpc-js",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: @grpc/grpc-js: In certain configurations, getAuthContext can return unauthorized certificates as though they were authorized",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240628",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: Node HTTP adapter prototype-pollution gadget allows request socket hijack via inherited createConnection",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240634",
+    "package": "axios",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: Axios: maxRedirects: 0 is not enforced by the fetch adapter, allowing redirect-based SSRF",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240981",
+    "package": "@fastify/busboy",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: @fastify/busboy vulnerable to Denial of Service via oversized multipart boundary",
+    "expires": "2027-01-01T00:00:00.000Z"
+  },
+  {
+    "id": "1240982",
+    "package": "@fastify/busboy",
+    "severity": "high",
+    "reason": "Allowed pending upstream update: @fastify/busboy vulnerable to Denial of Service via prototype-named multipart part header",
+    "expires": "2027-01-01T00:00:00.000Z"
+  }
+]

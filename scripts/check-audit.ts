@@ -149,7 +149,7 @@ function formatAdvisory(advisory: Advisory): string {
 
 async function main(): Promise<void> {
   const input = process.argv[2]
-    ? await readFile(pathToFileURL(resolve(process.cwd(), process.argv[2])).pathname, "utf8")
+    ? await readFile(resolve(process.cwd(), process.argv[2]), "utf8")
     : await readStdin();
 
   if (!input.trim()) {

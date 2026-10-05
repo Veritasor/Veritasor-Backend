@@ -90,7 +90,7 @@ describe('Frontend Pact Provider Verification', () => {
 
   beforeAll(async () => {
     await new Promise<void>((resolve) => {
-      server = app.listen(0, () => {
+      server = app.listen(0, '127.0.0.1', () => {
         const addr = server.address();
         port = typeof addr === 'object' && addr ? addr.port : 0;
         resolve();
@@ -106,7 +106,7 @@ describe('Frontend Pact Provider Verification', () => {
 
   it('validates the expectations of the frontend consumer', async () => {
     const hasLocalPact = fs.existsSync(LOCAL_PACT_PATH);
-    const base = `http://localhost:${port}`;
+    const base = `http://127.0.0.1:${port}`;
 
     // The consumer sends a sample ETag; swap in the provider's real ETag for
     // the conditional-request interaction so the 304 path is exercised.

@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 This file is auto-generated. Do not edit manually.
-Generated: 2026-10-05T11:09:03.515Z
+Generated: 2026-10-05T11:30:50.419Z
 
 This product includes software developed by third parties.
 The following packages are used under the terms of their respective licenses.
@@ -3731,7 +3731,7 @@ SOFTWARE.
 
 ---
 
-## graphql @ 17.0.2
+## graphql @ 16.14.2
 
 License: MIT
 Repository: https://github.com/graphql/graphql-js
