@@ -4,5 +4,6 @@ allowBuilds:
   libxmljs2: set this to true or false
   protobufjs: set this to true or false
   ssh2: set this to true or false
+  unix-dgram: set this to true or false
   unrs-resolver: set this to true or false
 minimumReleaseAge: 0

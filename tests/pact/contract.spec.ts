@@ -9,11 +9,27 @@ const PACT_FILE = 'Veritasor-Frontend-Veritasor-Backend.json';
 const PACT_PATH = path.join(PACT_DIR, PACT_FILE);
 const PUBLIC_ATTESTATIONS_BASE = '/api/v1/public/attestations';
 
+// Server-computed cache headers: the ETag is an opaque quoted hash and the
+// Cache-Control policy may append `stale-if-error=<seconds>`. Pact matches
+// header regexes against each comma-separated directive individually.
+const SAMPLE_ETAG = '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"';
+const ETAG_MATCHER = MatchersV3.regex(/^"[^"]+"$/, SAMPLE_ETAG);
+const ACTIVE_CACHE_CONTROL = MatchersV3.regex(
+  /^(public|max-age=60|stale-while-revalidate=60|stale-if-error=\d+)$/,
+  'public, max-age=60, stale-while-revalidate=60',
+);
+const REVOKED_CACHE_CONTROL = MatchersV3.regex(
+  /^(public|max-age=15|stale-while-revalidate=60|stale-if-error=\d+)$/,
+  'public, max-age=15, stale-while-revalidate=60',
+);
+
 const mockState = vi.hoisted(() => ({
   attestations: new Map<string, any>(),
 }));
 
 vi.mock('../../src/repositories/attestationRepository.js', () => ({
+  // The public route resolves by Merkle root first, then falls back to id.
+  getByMerkleRoot: vi.fn(async () => null),
   getById: vi.fn(async (_client: any, id: string) => {
     return mockState.attestations.get(id) ?? null;
   }),
@@ -140,9 +156,9 @@ describe('Veritasor-Backend Pact Contract', () => {
               status: 200,
               headers: {
                 'Content-Type': 'application/json; charset=utf-8',
-                'Cache-Control': 'public, max-age=60, stale-while-revalidate=60',
-                'ETag': '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"',
-                'Last-Modified': 'Wed, 29 Jul 2026 10:30:00 GMT',
+                'Cache-Control': ACTIVE_CACHE_CONTROL,
+                'ETag': ETAG_MATCHER,
+                'Last-Modified': MatchersV3.like('Wed, 29 Jul 2026 10:30:00 GMT'),
                 'Age': '0',
               },
               body: {
@@ -174,12 +190,12 @@ describe('Veritasor-Backend Pact Contract', () => {
             .withRequest({
               method: 'GET',
               path: `${PUBLIC_ATTESTATIONS_BASE}/abc123`,
-              headers: { 'If-None-Match': '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"' },
+              headers: { 'If-None-Match': SAMPLE_ETAG },
             })
             .willRespondWith({ status: 304 }),
         test: async (url) => {
           const res = await fetch(`${url}${PUBLIC_ATTESTATIONS_BASE}/abc123`, {
-            headers: { 'If-None-Match': '"eyJpZCI6IjU1MGU4NDAwLWUyOWItNDFk"' },
+            headers: { 'If-None-Match': SAMPLE_ETAG },
           });
           expect(res.status).toBe(304);
         },
@@ -210,7 +226,7 @@ describe('Veritasor-Backend Pact Contract', () => {
               status: 410,
               headers: {
                 'Content-Type': 'application/json; charset=utf-8',
-                'Cache-Control': 'public, max-age=15, stale-while-revalidate=60',
+                'Cache-Control': REVOKED_CACHE_CONTROL,
                 'Age': '0',
               },
               body: { status: 'error', code: 'GONE', message: 'Attestation has been revoked' },
@@ -255,26 +271,42 @@ describe('Veritasor-Backend Pact Contract', () => {
     setupHash('abc123', validAttestation);
     setupHash('revoked123', revokedAttestation);
 
+    // The consumer sends a sample ETag; swap in the provider's real ETag for
+    // the conditional-request interaction so the 304 path is exercised.
+    let etagOverride: string | null = null;
+
     const verifier = new Verifier({
       provider: 'Veritasor-Backend',
       providerBaseUrl: `http://localhost:${PORT}`,
       pactUrls: [PACT_PATH],
+      requestFilter: (req: any, _res: any, next: any) => {
+        if (etagOverride && req.headers['if-none-match']) {
+          req.headers['if-none-match'] = etagOverride;
+        }
+        next();
+      },
       stateHandlers: {
         'server is healthy': async () => {
+          etagOverride = null;
           mockState.attestations.clear();
           setupHash('abc123', validAttestation);
           setupHash('revoked123', revokedAttestation);
         },
         'an attestation exists with hash "abc123"': async () => {
+          etagOverride = null;
           setupHash('abc123', validAttestation);
         },
         'an attestation exists with hash "abc123" and the request has a matching ETag': async () => {
           setupHash('abc123', validAttestation);
+          const res = await fetch(`http://localhost:${PORT}${PUBLIC_ATTESTATIONS_BASE}/abc123`);
+          etagOverride = res.headers.get('etag');
         },
         'no attestation exists with hash "nonexistent"': async () => {
+          etagOverride = null;
           clearHash('nonexistent');
         },
         'an attestation exists with hash "revoked123" and status "revoked"': async () => {
+          etagOverride = null;
           setupHash('revoked123', revokedAttestation);
         },
       },

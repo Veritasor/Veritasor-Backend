@@ -21,6 +21,12 @@
           "Cache-Control": "public, max-age=15, stale-while-revalidate=60",
           "Content-Type": "application/json; charset=utf-8"
         },
+        "matchingRules": {
+          "$.header['Cache-Control']": {
+            "match": "regex",
+            "regex": "^(public|max-age=15|stale-while-revalidate=60|stale-if-error=\\d+)$"
+          }
+        },
         "status": 410
       }
     },
@@ -89,6 +95,17 @@
             "match": "type"
           },
           "$.body.data.txHash": {
+            "match": "type"
+          },
+          "$.header.ETag": {
+            "match": "regex",
+            "regex": "^\"[^\"]+\"$"
+          },
+          "$.header['Cache-Control']": {
+            "match": "regex",
+            "regex": "^(public|max-age=60|stale-while-revalidate=60|stale-if-error=\\d+)$"
+          },
+          "$.header['Last-Modified']": {
             "match": "type"
           }
         },

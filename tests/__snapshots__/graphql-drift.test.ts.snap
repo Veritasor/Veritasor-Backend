@@ -1,0 +1,163 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`GraphQL schema drift > attestation schema SDL matches snapshot 1`] = `
+"schema {
+  query: Query
+}
+
+type Attestation {
+  id: ID!
+  businessId: String!
+  period: String!
+  attestedAt: String!
+  status: String
+  revokedAt: String
+  revokeReason: String
+}
+
+type Query {
+  _attestationDummy: String
+}"
+`;
+
+exports[`GraphQL schema drift > business schema SDL matches snapshot 1`] = `
+"schema {
+  query: Query
+}
+
+type Business {
+  id: ID!
+  userId: String!
+  name: String!
+  email: String!
+  industry: String
+  description: String
+  website: String
+  reportingPeriod: String!
+  reportingTimezone: String!
+  lastReminderSentAt: String
+  createdAt: String!
+  updatedAt: String!
+}
+
+type Query {
+  businesses: [Business!]!
+  business(id: ID!): Business
+}"
+`;
+
+exports[`GraphQL schema drift > gateway schema SDL matches snapshot 1`] = `
+"schema {
+  query: Query
+}
+
+type Query {
+  users: [User!]!
+  user(id: ID!): User
+  auditLogs: [AuditLog!]!
+  auditLog(id: ID!): AuditLog
+  businesses: [Business!]!
+  business(id: ID!): Business
+  _attestationDummy: String
+}
+
+scalar DateTime
+
+scalar JSON
+
+enum UserRole {
+  user
+  admin
+  business_admin
+}
+
+type User {
+  id: ID!
+  email: String!
+  role: UserRole!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  auditLogs: [AuditLog!]
+}
+
+type AuditLog {
+  id: ID!
+  userId: String!
+  action: String!
+  resource: String!
+  resourceId: String
+  metadata: JSON
+  timestamp: DateTime!
+  actor: User
+}
+
+type Business {
+  id: ID!
+  userId: String!
+  name: String!
+  email: String!
+  industry: String
+  description: String
+  website: String
+  reportingPeriod: String!
+  reportingTimezone: String!
+  lastReminderSentAt: String
+  createdAt: String!
+  updatedAt: String!
+  user: User
+  attestations: [Attestation!]
+}
+
+type Attestation {
+  id: ID!
+  businessId: String!
+  period: String!
+  attestedAt: String!
+  status: String
+  revokedAt: String
+  revokeReason: String
+}"
+`;
+
+exports[`GraphQL schema drift > user schema SDL matches snapshot 1`] = `
+"schema {
+  query: Query
+}
+
+scalar DateTime
+
+scalar JSON
+
+enum UserRole {
+  user
+  admin
+  business_admin
+}
+
+type User {
+  id: ID!
+  email: String!
+  role: UserRole!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  auditLogs: [AuditLog!]
+}
+
+type AuditLog {
+  id: ID!
+  userId: String!
+  action: String!
+  resource: String!
+  resourceId: String
+  metadata: JSON
+  timestamp: DateTime!
+  actor: User
+}
+
+type Query {
+  users: [User!]!
+  user(id: ID!): User
+  auditLogs: [AuditLog!]!
+  auditLog(id: ID!): AuditLog
+}"
+`;
