@@ -49,7 +49,11 @@ export class AppError extends Error {
     this.status = status;
     this.vrtCode = vrtCode;
     this.context = context;
-    Object.setPrototypeOf(this, AppError.prototype);
+    // Restore the concrete prototype (`new.target`), not the base one: setting
+    // it to `AppError.prototype` here made every subclass (UnauthorizedError,
+    // NotFoundError, ConflictError, …) fail `instanceof` checks, so callers
+    // could not branch on the error taxonomy.
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 

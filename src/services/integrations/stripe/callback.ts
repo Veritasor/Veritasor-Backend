@@ -7,6 +7,7 @@
 import { consumeOAuthState } from './store.js'
 import { executeWithRetry } from '../clientWrapper.js'
 import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
+import { IntegrationRepository } from '../../../repositories/IntegrationRepository.js'
 
 export interface CallbackParams {
   code: string

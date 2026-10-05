@@ -1,6 +1,21 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import zlib from "node:zlib";
-import { compress as zstdCompressSync } from "fzstd";
+
+/**
+ * Native zstd compression, available on Node.js >= 22.15.
+ *
+ * The middleware used to pull `compress` from `fzstd@0.1.x`, but that package
+ * never exported a compressor — the call threw on every zstd-negotiated
+ * response and the `catch` around `compressSync` below silently downgraded the
+ * payload to an identity body while `Vary: Accept-Encoding` still advertised
+ * `zstd` as an option. Reading the runtime capability once keeps the documented
+ * "zstd over brotli over gzip" preference honest, and leaves the existing
+ * fallback path in charge on runtimes that cannot produce zstd.
+ */
+const zstdCompress: ((data: Buffer) => Buffer) | undefined =
+  typeof zlib.zstdCompressSync === "function"
+    ? (data: Buffer) => Buffer.from(zlib.zstdCompressSync(data))
+    : undefined;
 
 /**
  * Response compression middleware (brotli preferred, gzip fallback) with a
@@ -155,7 +170,10 @@ function bodyContainsCsrfToken(body: Buffer, contentType: string, csrfFieldNames
 
 function compressSync(encoding: "zstd" | "br" | "gzip", data: Buffer): Buffer {
   if (encoding === "zstd") {
-    return Buffer.from(zstdCompressSync(data));
+    if (!zstdCompress) {
+      throw new Error("zstd is not supported by this Node.js runtime");
+    }
+    return zstdCompress(data);
   }
   if (encoding === "br") {
     return zlib.brotliCompressSync(data, {

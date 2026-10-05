@@ -70,9 +70,10 @@ describe('startStatsdDualWrite', () => {
   /** Advance time and run pending timers, then advance again to catch the next cycle if needed */
   async function runCycles(count: number, intervalMs: number): Promise<void> {
     for (let i = 0; i < count; i++) {
-      vi.advanceTimersByTime(intervalMs);
-      // flush promises so async logging can resolve
-      await vi.runAllTimersAsync();
+      // Advance exactly one interval and flush microtasks. (Run
+      // `vi.runAllTimersAsync` here instead and it chases the never-ending
+      // `setInterval` until vitest aborts the test.)
+      await vi.advanceTimersByTimeAsync(intervalMs);
     }
   }
 
@@ -489,3 +490,180 @@ describe('startStatsdDualWrite', () => {
     expect(statsdDualWriteMetricsCount.set).toHaveBeenCalledWith(0);
   });
 });
+// ════════════════════════════════════════════════════════════════════
+//  StatsdDualWriteConfig / StatsdDualWriteHandle lifecycle
+//
+//  Focused coverage for the config contract and handle semantics:
+//  the documented 1000ms minimum interval, stop() idempotency, the
+//  final best-effort flush, close() error propagation, per-label delta
+//  tracking, and the histogram/summary delta rules that are easy to
+//  regress when the push loop is touched.
+//
+//  Uses its own timer helper: `vi.advanceTimersByTimeAsync` advances the
+//  fake clock exactly one interval, whereas `vi.runAllTimersAsync` would
+//  chase the never-ending `setInterval` until vitest aborts.
+// ════════════════════════════════════════════════════════════════════
+describe('StatsdDualWriteConfig / StatsdDualWriteHandle', () => {
+  let registry: Registry
+  let handle: StatsdDualWriteHandle | null
+  let client: ReturnType<typeof createMockStatsdClient>
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    registry = new Registry()
+    handle = null
+    client = createMockStatsdClient()
+    vi.clearAllMocks()
+  })
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    if (handle) {
+      await handle.stop()
+    }
+    registry.clear()
+  })
+
+  async function advanceCycles(count: number, intervalMs: number): Promise<void> {
+    for (let i = 0; i < count; i++) {
+      await vi.advanceTimersByTimeAsync(intervalMs)
+    }
+  }
+
+  it('accepts the documented minimum interval (1000ms) and pushes a gauge', async () => {
+    const g = new Gauge({ name: 'cfg_min_gauge', help: 'test', registers: [registry] })
+    g.set(7)
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 1_000 })
+    await advanceCycles(1, 1_000)
+
+    expect(client.gauge).toHaveBeenCalledWith('cfg_min_gauge', 7, {})
+  })
+
+  it('rejects nothing at construction for a sub-second interval but never pushes before it elapses', async () => {
+    // The config type documents `>= 1000` but does not enforce it, so the
+    // loop must simply honour whatever interval it was given.
+    const g = new Gauge({ name: 'cfg_fast_gauge', help: 'test', registers: [registry] })
+    g.set(3)
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 250 })
+    expect(client.gauge).not.toHaveBeenCalled()
+
+    await advanceCycles(1, 250)
+    expect(client.gauge).toHaveBeenCalledWith('cfg_fast_gauge', 3, {})
+  })
+
+  it('stop() is idempotent — the underlying client is closed exactly once', async () => {
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 1_000 })
+
+    await handle.stop()
+    await handle.stop()
+    await handle.stop()
+
+    expect(client.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('stop() flushes pending deltas exactly once and silences the interval', async () => {
+    const c = new Counter({ name: 'cfg_final_flush', help: 'test', registers: [registry] })
+    c.inc(4)
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 10_000 })
+    // No cycle has run, so nothing has been pushed yet.
+    expect(client.increment).not.toHaveBeenCalled()
+
+    await handle.stop()
+
+    const flushed = (client.increment as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call: [string]) => call[0] === 'cfg_final_flush',
+    )
+    expect(flushed).toHaveLength(1)
+    expect(flushed[0][1]).toBe(4)
+
+    // The interval must be dead: advancing time produces no further pushes.
+    vi.clearAllMocks()
+    await advanceCycles(1, 10_000)
+    expect(client.increment).not.toHaveBeenCalled()
+  })
+
+  it('stop() before any interval elapses flushes once and closes the client', async () => {
+    const g = new Gauge({ name: 'cfg_never_interval', help: 'test', registers: [registry] })
+    g.set(1)
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 10_000 })
+    await handle.stop()
+
+    // 1 == the stop-time flush only; the 10s interval never fired.
+    expect(client.gauge).toHaveBeenCalledTimes(1)
+    expect(client.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('stop() surfaces a client close() failure to the caller', async () => {
+    client.close.mockRejectedValueOnce(new Error('socket gone'))
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 10_000 })
+    await expect(handle.stop()).rejects.toThrow('socket gone')
+  })
+
+  it('tracks counter deltas independently per label set', async () => {
+    const c = new Counter({
+      name: 'cfg_labelled_counter',
+      help: 'test',
+      labelNames: ['route'] as const,
+      registers: [registry],
+    })
+    c.inc({ route: 'a' }, 2)
+    c.inc({ route: 'b' }, 5)
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 10_000 })
+    await advanceCycles(1, 10_000)
+
+    expect(client.increment).toHaveBeenCalledWith('cfg_labelled_counter', 2, { route: 'a' })
+    expect(client.increment).toHaveBeenCalledWith('cfg_labelled_counter', 5, { route: 'b' })
+  })
+
+  it('does not repeat a histogram timing when the observed sum is unchanged', async () => {
+    const h = new Histogram({ name: 'cfg_hist', help: 'test', buckets: [1, 5], registers: [registry] })
+    h.observe(2)
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 10_000 })
+    await advanceCycles(1, 10_000)
+    expect(client.timing).toHaveBeenCalledWith('cfg_hist', 2_000, {})
+
+    vi.clearAllMocks()
+    await advanceCycles(1, 10_000)
+
+    // Bucket counts are cumulative and re-sent, but the delta-sum timing
+    // must not be duplicated when no new observation landed.
+    expect(client.timing).not.toHaveBeenCalled()
+    expect(client.histogram).toHaveBeenCalled()
+  })
+
+  it('omits the summary count until observations exist, then emits it with quantiles', async () => {
+    const s = new Summary({
+      name: 'cfg_summary',
+      help: 'test',
+      percentiles: [0.5, 0.99],
+      registers: [registry],
+    })
+
+    handle = startStatsdDualWrite({ statsdClient: client as any, registry, intervalMs: 10_000 })
+    await advanceCycles(1, 10_000)
+    expect(client.histogram).not.toHaveBeenCalledWith(
+      'cfg_summary_count',
+      expect.anything(),
+      expect.anything(),
+    )
+
+    vi.clearAllMocks()
+    s.observe(10)
+    s.observe(30)
+    await advanceCycles(1, 10_000)
+
+    expect(client.histogram).toHaveBeenCalledWith('cfg_summary_count', 2, {})
+    expect(client.gauge).toHaveBeenCalledWith(
+      'cfg_summary_quantile',
+      expect.any(Number),
+      expect.objectContaining({ quantile: '0.5' }),
+    )
+  })
+})

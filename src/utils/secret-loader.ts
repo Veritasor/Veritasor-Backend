@@ -71,6 +71,14 @@ abstract class BaseSecretAdapter implements SecretLoader {
     this.secrets = new Map(secrets)
   }
 
+  get allSecrets(): Map<string, string> {
+    return new Map(this.secrets)
+  }
+
+  set allSecrets(secrets: Map<string, string>) {
+    this.secrets = new Map(secrets)
+  }
+
   protected ensureLoaded(): void {
     if (!this.loaded) {
       throw new SecretNotLoadedError()

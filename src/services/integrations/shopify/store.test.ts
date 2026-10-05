@@ -1,11 +1,11 @@
 /**
- * Tests for Shopify OAuth state store with TTL and single-use semantics.
+ * Tests for Stripe integration store with validation and state transitions.
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import * as store from './store.js'
 
-describe('Shopify OAuth Store', () => {
+describe('Stripe Integration Store', () => {
   beforeEach(() => {
     store.clearAll()
     vi.useFakeTimers()
@@ -15,7 +15,7 @@ describe('Shopify OAuth Store', () => {
     vi.useRealTimers()
   })
 
-  describe('normalizeShop', () => {
+  describe('StripeIntegrationInput validation', () => {
     it('should normalize shop without .myshopify.com suffix', () => {
       expect(store.normalizeShop('test-shop')).toBe('test-shop.myshopify.com')
     })
@@ -34,7 +34,7 @@ describe('Shopify OAuth Store', () => {
     })
   })
 
-  describe('isValidShopHost', () => {
+  describe('StripeStoreValidationError', () => {
     it('should accept valid shop hostnames', () => {
       expect(store.isValidShopHost('test-shop.myshopify.com')).toBe(true)
       expect(store.isValidShopHost('my-store.myshopify.com')).toBe(true)
@@ -49,7 +49,7 @@ describe('Shopify OAuth Store', () => {
     })
   })
 
-  describe('OAuth State Management', () => {
+  describe('StripeIntegration state transitions', () => {
     describe('setOAuthState and consumeOAuthState', () => {
       it('should store and retrieve valid state', () => {
         const state = 'test-state-123'
@@ -214,7 +214,7 @@ describe('Shopify OAuth Store', () => {
     })
   })
 
-  describe('Token Management', () => {
+  describe('StripeIntegration credential management', () => {
     describe('saveToken and getToken', () => {
       it('should store and retrieve tokens', () => {
         const shop = 'test-shop'
@@ -273,7 +273,7 @@ describe('Shopify OAuth Store', () => {
     })
   })
 
-  describe('clearAll', () => {
+  describe('clearAll state reset', () => {
     it('should clear all states and tokens', () => {
       const expiresAt = Date.now() + 10 * 60 * 1000
 

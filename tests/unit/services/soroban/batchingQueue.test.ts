@@ -858,3 +858,121 @@ describe('BatchingQueue – concurrent flush prevention', () => {
     queue.reset();
   });
 });
+
+// ---------------------------------------------------------------------------
+// BatchingQueue – uncovered trigger boundaries
+// ---------------------------------------------------------------------------
+//
+// These cover the remaining branches of the adaptive-flush-window logic:
+//   * `scheduleLatencyFlush` when the oldest item is already overdue
+//     (`maxLatencyMs` <= 0 → the `remaining <= 0` fast path),
+//   * the explicit `'manual'` cooldown bypass in `doFlush`,
+//   * `oldestWaitMs()` for a non-empty queue, and
+//   * `drain()` cancelling the pending latency timer.
+
+describe('BatchingQueue – trigger boundaries', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('flushes on the next tick when the latency window is already overdue', async () => {
+    const flushFn = vi.fn().mockImplementation(async (items: any[]) => {
+      for (const item of items) item.resolve(undefined);
+    });
+    const queue = new BatchingQueue<string>(
+      { maxBatchSize: 100, maxLatencyMs: 0, flushCooldownMs: 0, backpressureThreshold: 200 },
+      flushFn,
+    );
+
+    queue.enqueue('a');
+
+    // `remaining = maxLatencyMs - oldestAge <= 0` → deferred to setTimeout(0),
+    // not to a full latency window.
+    expect(flushFn).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await queue.waitForPendingFlush();
+
+    expect(flushFn).toHaveBeenCalledTimes(1);
+    expect(flushFn.mock.calls[0][0]).toHaveLength(1);
+    expect(mockFlushInc).toHaveBeenCalledWith({ trigger: 'latency' });
+
+    queue.reset();
+  });
+
+  it('manual flushNow bypasses an active flush cooldown', async () => {
+    const flushFn = vi.fn().mockImplementation(async (items: any[]) => {
+      for (const item of items) item.resolve(undefined);
+    });
+    const queue = new BatchingQueue<string>(
+      { maxBatchSize: 2, maxLatencyMs: 60_000, flushCooldownMs: 60_000, backpressureThreshold: 100 },
+      flushFn,
+    );
+
+    // First (size) flush starts the cooldown window.
+    queue.enqueue('a');
+    queue.enqueue('b');
+    await queue.waitForPendingFlush();
+    expect(flushFn).toHaveBeenCalledTimes(1);
+
+    // Still well inside the cooldown: a size trigger would be deferred, but an
+    // explicit manual flush must go through immediately.
+    queue.enqueue('c');
+    const flushed = await queue.flushNow();
+
+    expect(flushed).toBe(1);
+    expect(flushFn).toHaveBeenCalledTimes(2);
+    expect(mockFlushInc).toHaveBeenCalledWith({ trigger: 'manual' });
+
+    queue.reset();
+  });
+
+  it('oldestWaitMs grows with elapsed time for a non-empty queue', async () => {
+    const flushFn = vi.fn().mockImplementation(async (items: any[]) => {
+      for (const item of items) item.resolve(undefined);
+    });
+    const queue = new BatchingQueue<string>(
+      { maxBatchSize: 100, maxLatencyMs: 60_000, flushCooldownMs: 0, backpressureThreshold: 200 },
+      flushFn,
+    );
+
+    queue.enqueue('a');
+    expect(queue.oldestWaitMs()).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(queue.oldestWaitMs()).toBeGreaterThanOrEqual(250);
+    expect(queue.depth).toBe(1);
+
+    queue.reset();
+    expect(queue.oldestWaitMs()).toBe(0);
+  });
+
+  it('drain cancels the pending latency flush so no batch is processed', async () => {
+    const flushFn = vi.fn().mockImplementation(async (items: any[]) => {
+      for (const item of items) item.resolve(undefined);
+    });
+    const queue = new BatchingQueue<string>(
+      { maxBatchSize: 100, maxLatencyMs: 60_000, flushCooldownMs: 0, backpressureThreshold: 200 },
+      flushFn,
+    );
+
+    const first = queue.enqueue('a');
+    const second = queue.enqueue('b');
+    queue.drain(new Error('shutdown'));
+
+    await expect(first).rejects.toThrow('shutdown');
+    await expect(second).rejects.toThrow('shutdown');
+
+    // Past the original latency deadline: the timer was cleared, so nothing runs.
+    await vi.advanceTimersByTimeAsync(120_000);
+    await queue.waitForPendingFlush();
+
+    expect(flushFn).not.toHaveBeenCalled();
+    expect(queue.depth).toBe(0);
+  });
+});

@@ -361,3 +361,114 @@ describe("cleanupSlidingStore & helper edge cases", () => {
     await expect(store.increment("test:zcardErr", 1000)).rejects.toThrow("zcard failure");
   });
 });
+
+// ════════════════════════════════════════════════════════════════════
+//  RateLimitRecord failure handling (regression)
+//
+//  These pin the error contract of the three explicit `throw new Error(`
+//  sites in `rateLimiter.ts`: the RedisStore redirection-loop guard, the
+//  SlidingWindowRedisStore redirection-loop guard, and the sliding-store
+//  retry-exhaustion guard. None of these may silently return a
+//  `RateLimitRecord`; each must reject with a message that names the key
+//  and the offending target so operators can diagnose a cluster slot
+//  migration gone wrong.
+// ════════════════════════════════════════════════════════════════════
+describe("RateLimitRecord failure handling (regression)", () => {
+  it("RedisStore throws the loop error and never returns a record when a target repeats", async () => {
+    // Alternate between two live nodes so the same (type, target) pair is
+    // revisited on the third redirection — that is exactly the cycle the
+    // visited-targets guard exists to break.
+    const nodeA = {
+      options: { host: "127.0.0.1", port: 7001 },
+      eval: vi.fn().mockRejectedValue(new Error("MOVED 1 127.0.0.1:7002")),
+    };
+    const nodeB = {
+      options: { host: "127.0.0.1", port: 7002 },
+      eval: vi.fn().mockRejectedValue(new Error("MOVED 1 127.0.0.1:7001")),
+    };
+
+    const primaryClient = {
+      eval: vi.fn().mockRejectedValueOnce(new Error("MOVED 1 127.0.0.1:7001")),
+      options: { host: "127.0.0.1", port: 7000 },
+      nodes: vi.fn().mockReturnValue([nodeA, nodeB]),
+    };
+
+    const store = new RedisStore(primaryClient as any, 5);
+    await expect(store.increment("user:pingpong", 10000)).rejects.toThrow(
+      /RedisStore: infinite redirection loop detected for key "user:pingpong" to 127\.0\.0\.1:7001/,
+    );
+  });
+
+  it("RedisStore rethrows the original redirection error when maxRedirections is 0", async () => {
+    const primaryClient = {
+      eval: vi.fn().mockRejectedValue(new Error("MOVED 1 127.0.0.1:7001")),
+      options: { host: "127.0.0.1", port: 7000 },
+      nodes: vi.fn().mockReturnValue([]),
+    };
+
+    const store = new RedisStore(primaryClient as any, 0);
+    // No redirection budget: the raw cluster error must surface untouched,
+    // not be converted into a success or a generic internal error.
+    await expect(store.increment("user:zero-budget", 10000)).rejects.toThrow(
+      /MOVED 1 127\.0\.0\.1:7001/,
+    );
+  });
+
+  it("SlidingWindowRedisStore throws the loop error for a repeated redirection target", async () => {
+    const nodeA = {
+      options: { host: "127.0.0.1", port: 7001 },
+      watch: vi.fn().mockRejectedValue(new Error("MOVED 1 127.0.0.1:7002")),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+    };
+    const nodeB = {
+      options: { host: "127.0.0.1", port: 7002 },
+      watch: vi.fn().mockRejectedValue(new Error("MOVED 1 127.0.0.1:7001")),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+    };
+
+    const primaryClient = {
+      watch: vi.fn().mockRejectedValueOnce(new Error("MOVED 1 127.0.0.1:7001")),
+      unwatch: vi.fn().mockResolvedValue("OK"),
+      nodes: vi.fn().mockReturnValue([nodeA, nodeB]),
+    };
+
+    const store = new SlidingWindowRedisStore(primaryClient as any, 5, 5);
+    await expect(store.increment("slide:pingpong", 10000)).rejects.toThrow(
+      /SlidingWindowRedisStore: infinite redirection loop detected for key "slide:pingpong" to 127\.0\.0\.1:7001/,
+    );
+  });
+
+  it("SlidingWindowRedisStore names the retry budget and key when WATCH keeps aborting", async () => {
+    const client = makeFakeRedisClient({ abortExecTimes: 999 });
+    const store = new SlidingWindowRedisStore(client as any, 2);
+
+    await expect(store.increment("slide:exhausted", 1000)).rejects.toThrow(
+      /SlidingWindowRedisStore: exceeded 2 retries due to repeated WATCH aborts for key "slide:exhausted"/,
+    );
+    // initial + 2 retries
+    expect(client.watch).toHaveBeenCalledTimes(3);
+  });
+
+  it("SlidingWindowRedisStore survives an unwatch failure without masking the redirection error", async () => {
+    const primaryClient = {
+      watch: vi.fn().mockResolvedValue("OK"),
+      unwatch: vi.fn().mockRejectedValue(new Error("unwatch exploded")),
+      multi: vi.fn().mockReturnValue({
+        zremrangebyscore: vi.fn().mockReturnThis(),
+        zadd: vi.fn().mockReturnThis(),
+        zcard: vi.fn().mockReturnThis(),
+        pexpire: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockRejectedValue(new Error("MOVED 1 127.0.0.1:7001")),
+      }),
+      options: { host: "127.0.0.1", port: 7000 },
+      nodes: vi.fn().mockReturnValue([]),
+    };
+
+    // maxRetries = 0 and maxRedirections = 0: the redirection cannot be
+    // followed, so the retry cap is hit and the original cluster error is
+    // rethrown. The unwatch cleanup must not replace it.
+    const store = new SlidingWindowRedisStore(primaryClient as any, 0, 0);
+    await expect(store.increment("slide:unwatch", 1000)).rejects.toThrow(/MOVED 1 127\.0\.0\.1:7001/);
+    expect(primaryClient.unwatch).toHaveBeenCalled();
+  });
+});

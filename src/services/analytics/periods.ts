@@ -28,7 +28,7 @@ import { attestationRepository } from '../../repositories/attestation.js'
 
 // ---------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
++// ---------------------------------------------------------------------------
 
 /** Strict YYYY-MM regex. Rejects partial matches and arbitrary separators. */
 const PERIOD_REGEX = /^\d{4}-(?:0[1-9]|1[0-2])$/

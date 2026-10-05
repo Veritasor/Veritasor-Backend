@@ -428,6 +428,132 @@ describe("Soroban retry budget tracker", () => {
   });
 });
 
+describe("SorobanRetryBudgetExceededError — error contract and properties", () => {
+  it("creates an error with correct name and code", () => {
+    const err = new SorobanRetryBudgetExceededError(5, 10);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("SorobanRetryBudgetExceededError");
+    expect(err.code).toBe("SOROBAN_RETRY_BUDGET_EXCEEDED");
+  });
+
+  it("exposes currentRetryCount and budgetLimit properties", () => {
+    const err = new SorobanRetryBudgetExceededError(3, 7);
+    expect(err.currentRetryCount).toBe(3);
+    expect(err.budgetLimit).toBe(7);
+  });
+
+  it("includes retry counts in message", () => {
+    const err = new SorobanRetryBudgetExceededError(3, 7);
+    expect(err.message).toContain("3/7");
+    expect(err.message).toContain("retries in the last 60 seconds");
+  });
+
+  it("handles zero currentRetryCount", () => {
+    const err = new SorobanRetryBudgetExceededError(0, 1);
+    expect(err.currentRetryCount).toBe(0);
+    expect(err.budgetLimit).toBe(1);
+    expect(err.message).toContain("0/1");
+  });
+
+  it("handles large retry counts", () => {
+    const err = new SorobanRetryBudgetExceededError(9999, 10000);
+    expect(err.currentRetryCount).toBe(9999);
+    expect(err.budgetLimit).toBe(10000);
+    expect(err.message).toContain("9999/10000");
+  });
+});
+
+describe("getBackoffConfig — regression coverage for error branches", () => {
+  it("returns valid config when env vars are unset (normal path)", () => {
+    delete process.env.SOROBAN_BACKOFF_BASE_MS;
+    delete process.env.SOROBAN_BACKOFF_MAX_MS;
+    const config = getBackoffConfig();
+    expect(config.baseMs).toBe(200);
+    expect(config.maxMs).toBe(30000);
+  });
+
+  it("returns valid config when env vars are set to valid values", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "100";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "20000";
+    const config = getBackoffConfig();
+    expect(config.baseMs).toBe(100);
+    expect(config.maxMs).toBe(20000);
+  });
+
+  it("returns config when baseMs equals maxMs (boundary)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "5000";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "5000";
+    const config = getBackoffConfig();
+    expect(config.baseMs).toBe(5000);
+    expect(config.maxMs).toBe(5000);
+  });
+
+  it("throws on baseMs = 0 (line 45 branch)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "0";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "30000";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_BASE_MS must be a positive number");
+  });
+
+  it("throws on baseMs = -1 (line 45 branch)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "-1";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "30000";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_BASE_MS must be a positive number");
+  });
+
+  it("throws on maxMs = 0 (line 48 branch)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "200";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "0";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_MAX_MS must be a positive number");
+  });
+
+  it("throws on maxMs = -100 (line 48 branch)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "200";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "-100";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_MAX_MS must be a positive number");
+  });
+
+  it("throws when baseMs > maxMs (line 51 branch)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "50000";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "30000";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_BASE_MS must not exceed SOROBAN_BACKOFF_MAX_MS");
+  });
+
+  it("throws when baseMs is NaN (line 45 branch — parseInt of non-numeric)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "abc";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "30000";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_BASE_MS must be a positive number");
+  });
+
+  it("throws when maxMs is NaN (line 48 branch — parseInt of non-numeric)", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "200";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "xyz";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_MAX_MS must be a positive number");
+  });
+
+  it("throws when baseMs is Infinity after parseInt", () => {
+    // parseInt("Infinity", 10) returns NaN which triggers the positive number check
+    process.env.SOROBAN_BACKOFF_BASE_MS = "Infinity";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "30000";
+    expect(() => getBackoffConfig()).toThrow("SOROBAN_BACKOFF_BASE_MS must be a positive number");
+  });
+
+  it("accepts very small positive baseMs as valid boundary", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "1";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "30000";
+    const config = getBackoffConfig();
+    expect(config.baseMs).toBe(1);
+    expect(config.maxMs).toBe(30000);
+  });
+
+  it("accepts very small positive maxMs as valid boundary", () => {
+    process.env.SOROBAN_BACKOFF_BASE_MS = "1";
+    process.env.SOROBAN_BACKOFF_MAX_MS = "1";
+    const config = getBackoffConfig();
+    expect(config.baseMs).toBe(1);
+    expect(config.maxMs).toBe(1);
+  });
+});
+
 describe("exponential backoff in executeSorobanRequest", () => {
   it("uses fullJitter for calculating retry delays", async () => {
     vi.useFakeTimers();

@@ -21,6 +21,7 @@ import {
   FALLBACK_WEIGHT,
   type BatchQueueItem,
   type TenantTier,
+  type DrrSchedulerStats,
 } from '../../../../src/services/soroban/drrScheduler.js';
 
 // ---------------------------------------------------------------------------
@@ -526,5 +527,289 @@ describe('enqueueToBatchScheduler', () => {
     enqueueToBatchScheduler(params);
     expect(drrBatchScheduler.totalDepth()).toBe(1);
     expect(drrBatchScheduler.stats().tenants['tenant-b']?.depth).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Focused behavior coverage for TenantTier, BatchQueueItem, DrrSchedulerStats
+// ---------------------------------------------------------------------------
+
+describe("TenantTier — type and behavior coverage", () => {
+  it("accepts all built-in tier values", () => {
+    const validTiers: TenantTier[] = ["free", "starter", "growth", "enterprise"];
+    const scheduler = new DrrScheduler<string>();
+
+    for (const tier of validTiers) {
+      scheduler.enqueue(makeItem(`tenant-${tier}`, tier, "payload"));
+      const stats = scheduler.stats();
+      expect(stats.tenants[`tenant-${tier}`]).toBeDefined();
+    }
+  });
+
+  it("assigns correct weights to each built-in tier", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("free-t", "free", "x"));
+    scheduler.enqueue(makeItem("starter-t", "starter", "x"));
+    scheduler.enqueue(makeItem("growth-t", "growth", "x"));
+    scheduler.enqueue(makeItem("enterprise-t", "enterprise", "x"));
+
+    const stats = scheduler.stats();
+    expect(stats.tenants["free-t"].weight).toBe(1);
+    expect(stats.tenants["starter-t"].weight).toBe(2);
+    expect(stats.tenants["growth-t"].weight).toBe(4);
+    expect(stats.tenants["enterprise-t"].weight).toBe(8);
+  });
+
+  it("falls back to FALLBACK_WEIGHT for unknown tier", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("unknown-t", "vip" as TenantTier, "x"));
+    const stats = scheduler.stats();
+    expect(stats.tenants["unknown-t"].weight).toBe(FALLBACK_WEIGHT);
+  });
+
+  it("assigns weight=1 for empty string tier (unknown)", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("empty-t", "" as TenantTier, "x"));
+    const stats = scheduler.stats();
+    expect(stats.tenants["empty-t"].weight).toBe(FALLBACK_WEIGHT);
+  });
+
+  it("assigns FALLBACK_WEIGHT for numeric-string tier", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("num-t", "123" as TenantTier, "x"));
+    const stats = scheduler.stats();
+    expect(stats.tenants["num-t"].weight).toBe(FALLBACK_WEIGHT);
+  });
+});
+
+describe("BatchQueueItem — structure and behavior coverage", () => {
+  it("creates a valid BatchQueueItem with all required fields", () => {
+    const item: BatchQueueItem<string> = {
+      tenantId: "tenant-1",
+      tier: "free",
+      payload: "test-payload",
+      enqueuedAt: 1_700_000_000_000,
+    };
+
+    expect(item.tenantId).toBe("tenant-1");
+    expect(item.tier).toBe("free");
+    expect(item.payload).toBe("test-payload");
+    expect(item.enqueuedAt).toBe(1_700_000_000_000);
+  });
+
+  it("BatchQueueItem with generic payload type", () => {
+    const item: BatchQueueItem<{ id: number }> = {
+      tenantId: "tenant-2",
+      tier: "enterprise",
+      payload: { id: 42 },
+      enqueuedAt: Date.now(),
+    };
+
+    expect(item.payload.id).toBe(42);
+    expect(item.tenantId).toBe("tenant-2");
+  });
+
+  it("BatchQueueItem with unknown payload type", () => {
+    const item: BatchQueueItem<unknown> = {
+      tenantId: "tenant-3",
+      tier: "starter",
+      payload: null,
+      enqueuedAt: Date.now(),
+    };
+
+    expect(item.tenantId).toBe("tenant-3");
+    expect(item.tier).toBe("starter");
+  });
+
+  it("preserves enqueuedAt for wait-time calculation", () => {
+    const ts = Date.now() - 5_000;
+    const item: BatchQueueItem<string> = {
+      tenantId: "t1",
+      tier: "free",
+      payload: "x",
+      enqueuedAt: ts,
+    };
+
+    expect(item.enqueuedAt).toBe(ts);
+    expect(Date.now() - item.enqueuedAt).toBeGreaterThanOrEqual(4990);
+  });
+
+  it("multiple BatchQueueItems maintain their properties independently", () => {
+    const item1: BatchQueueItem<string> = {
+      tenantId: "t1", tier: "free", payload: "a", enqueuedAt: 1000,
+    };
+    const item2: BatchQueueItem<string> = {
+      tenantId: "t2", tier: "enterprise", payload: "b", enqueuedAt: 2000,
+    };
+
+    expect(item1.tenantId).not.toBe(item2.tenantId);
+    expect(item1.tier).not.toBe(item2.tier);
+    expect(item1.payload).not.toBe(item2.payload);
+  });
+});
+
+describe("DrrSchedulerStats — type and shape coverage", () => {
+  it("returns stats with correct totalDepth", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("t1", "free", "a"));
+    scheduler.enqueue(makeItem("t1", "free", "b"));
+
+    const stats = scheduler.stats();
+    expect(stats.totalDepth).toBe(2);
+  });
+
+  it("returns stats with correct tenants record", () => {
+    const scheduler = new DrrScheduler<string>({ free: 1, enterprise: 8 });
+    scheduler.enqueue(makeItem("t1", "free", "a"));
+    scheduler.enqueue(makeItem("t2", "enterprise", "b"));
+
+    const stats = scheduler.stats();
+    expect(stats.tenants["t1"].depth).toBe(1);
+    expect(stats.tenants["t1"].deficit).toBe(0);
+    expect(stats.tenants["t1"].weight).toBe(1);
+    expect(stats.tenants["t2"].depth).toBe(1);
+    expect(stats.tenants["t2"].deficit).toBe(0);
+    expect(stats.tenants["t2"].weight).toBe(8);
+  });
+
+  it("returns stats with correct rounds count", () => {
+    const scheduler = new DrrScheduler<string>({ a: 1, b: 1 }, 1);
+    for (let i = 0; i < 4; i++) scheduler.enqueue(makeItem("a", "a", `a${i}`));
+    for (let i = 0; i < 4; i++) scheduler.enqueue(makeItem("b", "b", `b${i}`));
+
+    scheduler.dequeueBatch(4);
+    const stats = scheduler.stats();
+    expect(stats.rounds).toBeGreaterThanOrEqual(1);
+    expect(typeof stats.rounds).toBe("number");
+  });
+
+  it("stats.tenants is a Record with expected shape", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("t1", "free", "x"));
+    const stats = scheduler.stats();
+
+    const tenantEntry = stats.tenants["t1"];
+    expect(tenantEntry).toBeDefined();
+    expect(tenantEntry).toHaveProperty("depth");
+    expect(tenantEntry).toHaveProperty("deficit");
+    expect(tenantEntry).toHaveProperty("weight");
+    expect(typeof tenantEntry.depth).toBe("number");
+    expect(typeof tenantEntry.deficit).toBe("number");
+    expect(typeof tenantEntry.weight).toBe("number");
+  });
+
+  it("stats.tenants is empty when scheduler has no items", () => {
+    const scheduler = new DrrScheduler<string>();
+    const stats = scheduler.stats();
+    expect(stats.totalDepth).toBe(0);
+    expect(Object.keys(stats.tenants)).toHaveLength(0);
+    expect(stats.rounds).toBe(0);
+  });
+
+  it("DrrSchedulerStats type is correctly shaped", () => {
+    const scheduler = new DrrScheduler<string>({ free: 1 }, 1);
+    scheduler.enqueue(makeItem("t1", "free", "x"));
+    const stats: DrrSchedulerStats = scheduler.stats();
+
+    expect(stats).toHaveProperty("totalDepth");
+    expect(stats).toHaveProperty("tenants");
+    expect(stats).toHaveProperty("rounds");
+    expect(typeof stats.totalDepth).toBe("number");
+    expect(typeof stats.rounds).toBe("number");
+  });
+
+  it("stats accurately reflects state after partial drain", () => {
+    const scheduler = new DrrScheduler<string>({ a: 1, b: 1 }, 1);
+    for (let i = 0; i < 3; i++) scheduler.enqueue(makeItem("a", "a", `a${i}`));
+    for (let i = 0; i < 3; i++) scheduler.enqueue(makeItem("b", "b", `b${i}`));
+
+    scheduler.dequeueBatch(2);
+    const stats = scheduler.stats();
+    expect(stats.totalDepth).toBe(4);
+    expect(stats.rounds).toBeGreaterThanOrEqual(1);
+  });
+
+  it("stats accurately reflects state after full drain and reset", () => {
+    const scheduler = new DrrScheduler<string>({ a: 1 }, 1);
+    scheduler.enqueue(makeItem("a", "a", "x"));
+    scheduler.dequeueBatch(1);
+    scheduler.reset();
+
+    const stats = scheduler.stats();
+    expect(stats.totalDepth).toBe(0);
+    expect(stats.rounds).toBe(0);
+    expect(Object.keys(stats.tenants)).toHaveLength(0);
+  });
+});
+
+describe("DrrScheduler — representative invalid inputs and state transitions", () => {
+  it("handles enqueue with very long tenantId", () => {
+    const scheduler = new DrrScheduler<string>();
+    const longId = "x".repeat(1000);
+    scheduler.enqueue(makeItem(longId, "free", "x"));
+    expect(scheduler.totalDepth()).toBe(1);
+    expect(scheduler.stats().tenants[longId]).toBeDefined();
+  });
+
+  it("handles batchSize larger than total queue depth", () => {
+    const scheduler = new DrrScheduler<string>();
+    scheduler.enqueue(makeItem("t1", "free", "a"));
+    const batch = scheduler.dequeueBatch(100);
+    expect(batch).toHaveLength(1);
+    expect(scheduler.totalDepth()).toBe(0);
+  });
+
+  it("state transition: enqueue → dequeue → enqueue → dequeue", () => {
+    const scheduler = new DrrScheduler<string>({ a: 1 }, 1);
+
+    scheduler.enqueue(makeItem("a", "a", "1"));
+    expect(scheduler.totalDepth()).toBe(1);
+
+    const batch1 = scheduler.dequeueBatch(1);
+    expect(batch1).toHaveLength(1);
+    expect(scheduler.totalDepth()).toBe(0);
+
+    scheduler.enqueue(makeItem("a", "a", "2"));
+    expect(scheduler.totalDepth()).toBe(1);
+
+    const batch2 = scheduler.dequeueBatch(1);
+    expect(batch2).toHaveLength(1);
+    expect(batch2[0].payload).toBe("2");
+    expect(scheduler.totalDepth()).toBe(0);
+  });
+
+  it("state transition: multiple enqueues, multiple dequeue cycles", () => {
+    const scheduler = new DrrScheduler<string>({ a: 1, b: 1 }, 1);
+
+    scheduler.enqueue(makeItem("a", "a", "a1"));
+    scheduler.enqueue(makeItem("b", "b", "b1"));
+    // Drains a1 only, leaving b1 queued.
+    expect(scheduler.dequeueBatch(1)).toHaveLength(1);
+    expect(scheduler.totalDepth()).toBe(1);
+
+    scheduler.enqueue(makeItem("a", "a", "a2"));
+    scheduler.enqueue(makeItem("b", "b", "b2"));
+    // a=[a2], b=[b1,b2] -> 3 items remain, fewer than the requested 4.
+    const batch = scheduler.dequeueBatch(4);
+
+    expect(batch).toHaveLength(3);
+    expect(scheduler.totalDepth()).toBe(0);
+  });
+
+  it("reset restores scheduler to initial state after operations", () => {
+    const scheduler = new DrrScheduler<string>({ free: 1, enterprise: 8 }, 1);
+
+    for (let i = 0; i < 10; i++) scheduler.enqueue(makeItem("t1", "free", `x${i}`));
+    for (let i = 0; i < 5; i++) scheduler.enqueue(makeItem("t2", "enterprise", `y${i}`));
+
+    scheduler.dequeueBatch(5);
+    expect(scheduler.totalDepth()).toBe(10);
+    expect(scheduler.stats().rounds).toBeGreaterThan(0);
+
+    scheduler.reset();
+    expect(scheduler.totalDepth()).toBe(0);
+    expect(scheduler.stats().rounds).toBe(0);
+    expect(Object.keys(scheduler.stats().tenants)).toHaveLength(0);
+    expect(scheduler.dequeueBatch(10)).toEqual([]);
   });
 });

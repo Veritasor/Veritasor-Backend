@@ -210,6 +210,11 @@ export async function create(
     const t0 = Date.now();
     const result = await client.query<AttestationRow>(sql, params);
     warnIfSlow('create', Date.now() - t0, result.rows.length, { businessId: data.businessId });
+    
+    if (result.rows.length === 0) {
+      throw new Error('Failed to create attestation: no rows returned');
+    }
+    
     return mapRowToAttestation(result.rows[0]);
   } catch (error: any) {
     if (error.code === '23505') {

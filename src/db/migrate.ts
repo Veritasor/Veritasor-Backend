@@ -348,6 +348,52 @@ export async function getUpSql(version: string, dir: string = MIGRATIONS_DIR): P
   }
 }
 
+/** Reads the DOWN sql for a version. Returns null when no companion exists. */
+export async function getDownSql(version: string, dir: string = MIGRATIONS_DIR): Promise<string | null> {
+  const downPath = join(dir, `${version}.down.sql`)
+  try {
+    await access(downPath)
+    return readFile(downPath, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Parse a duration string (e.g. "5s", "500ms", "2m") into milliseconds.
+ *
+ * Throws when the input is empty or does not match the supported format.
+ */
+export function parseDurationMs(input: string): number {
+  if (!input || input.trim() === '') {
+    throw new Error('Duration must not be empty')
+  }
+  const match = /^(\d+)(ms|s|m)?$/.exec(input.trim())
+  if (!match) {
+    throw new Error(`Invalid duration: ${input}`)
+  }
+  const value = Number(match[1])
+  const unit = match[2] ?? 'ms'
+  switch (unit) {
+    case 'ms':
+      return value
+    case 's':
+      return value * 1000
+    case 'm':
+      return value * 60 * 1000
+    default:
+      throw new Error(`Invalid duration unit: ${unit}`)
+  }
+}
+    try {
+      await access(legacyPath)
+      return readFile(legacyPath, 'utf-8')
+    } catch {
+      throw new Error(`No up-migration file found for version: ${version}`)
+    }
+  }
+}
+
 /**
  * Reads the DOWN sql for a version.
  * Throws a clear error if the .down.sql file is missing — rollback is refused.

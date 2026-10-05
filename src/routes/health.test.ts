@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import express from "express";
-import { healthRouter } from "./health.js";
+import { healthRouter, HealthResponseSchema } from "./health.js";
 
 // ---------------------------------------------------------------------------
 // Test app setup
@@ -218,12 +218,60 @@ describe("GET /api/health", () => {
     expect(res.body.status).toBe("unhealthy");
   });
 
+  it("omits redis from the response when REDIS_URL is empty and keeps the schema valid", async () => {
+    const original = process.env.REDIS_URL;
+    process.env.REDIS_URL = "";
+
+    const res = await request(buildApp()).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(res.body.redis).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.REDIS_URL;
+    } else {
+      process.env.REDIS_URL = original;
+    }
+  });
+
+  it("returns redis:ok when REDIS_URL is configured and redis responds", async () => {
+    const original = process.env.REDIS_URL;
+    process.env.REDIS_URL = "redis://localhost:6379";
+    vi.doMock(
+      "redis",
+      () => ({
+        createClient: vi.fn(() => ({
+          connect: vi.fn().mockResolvedValue(undefined),
+          ping: vi.fn().mockResolvedValue("PONG"),
+          quit: vi.fn().mockResolvedValue(undefined),
+        })),
+      }),
+      { virtual: true },
+    );
+
+    const { healthRouter: freshRouter } = await import("./health.js");
+    const app = express();
+    app.use("/api/health", freshRouter);
+
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(res.body.redis).toBe("ok");
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.REDIS_URL;
+    } else {
+      process.env.REDIS_URL = original;
+    }
+  });
+
   it("does not include redis field when REDIS_URL is not set", async () => {
     const original = process.env.REDIS_URL;
     delete process.env.REDIS_URL;
 
     const res = await request(buildApp()).get("/api/health");
     expect(res.body.redis).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
 
     if (original !== undefined) process.env.REDIS_URL = original;
   });
@@ -235,8 +283,60 @@ describe("GET /api/health", () => {
     const res = await request(buildApp()).get("/api/health");
     expect(res.body.soroban).toBeUndefined();
     expect(res.body.email).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
 
     process.env.DATABASE_URL = original;
+  });
+
+  it("omits soroban from deep mode when SOROBAN_RPC_URL is empty and keeps the schema valid", async () => {
+    const original = process.env.SOROBAN_RPC_URL;
+    process.env.SOROBAN_RPC_URL = "";
+
+    const res = await request(buildApp()).get("/api/health?mode=deep");
+    expect(res.status).toBe(200);
+    expect(res.body.soroban).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.SOROBAN_RPC_URL;
+    } else {
+      process.env.SOROBAN_RPC_URL = original;
+    }
+  });
+
+  it("returns soroban:ok in deep mode when SOROBAN_RPC_URL is configured and the RPC responds", async () => {
+    const original = process.env.SOROBAN_RPC_URL;
+    process.env.SOROBAN_RPC_URL = "https://rpc.example.com";
+    vi.doMock(
+      "soroban-client",
+      () => ({
+        default: {
+          Server: class MockServer {
+            constructor(public url: string, public opts: unknown) {}
+            async getHealth() {
+              return { status: "healthy" };
+            }
+          },
+        },
+      }),
+      { virtual: true },
+    );
+
+    const { healthRouter: freshRouter } = await import("./health.js");
+    const app = express();
+    app.use("/api/health", freshRouter);
+
+    const res = await request(app).get("/api/health?mode=deep");
+    expect(res.status).toBe(200);
+    expect(res.body.soroban).toBe("ok");
+    expect(res.body.status).toBe("ok");
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.SOROBAN_RPC_URL;
+    } else {
+      process.env.SOROBAN_RPC_URL = original;
+    }
   });
 
   it("returns a valid ISO 8601 timestamp", async () => {
