@@ -17,7 +17,7 @@ import { compressionMiddleware } from "./middleware/compression.js";
 import { mtlsMiddleware, registerMtlsServer } from "./middleware/mtls.js";
 import { createGrpcWorkloadApiClient } from "./spiffe/workloadApiClient.js";
 import { createSvidProvider, type SvidProvider } from "./spiffe/svidProvider.js";
-import { metricsRegistry } from "./metrics.js";
+import { createMetricsRouter } from "./routes/metrics.js";
 import { startStatsdDualWriteIfEnabled } from "./services/metrics/statsdBootstrap.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { attestationsRouter } from "./routes/attestations.js";
@@ -110,11 +110,8 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   // that refuses to compress responses carrying CSRF tokens or session cookies.
   app.use(compressionMiddleware());
 
-  if (process.env.METRICS_ENABLED === "true") {
-    app.get("/metrics", async (_req: Request, res: Response) => {
-      res.set("Content-Type", metricsRegistry.contentType);
-      res.end(await metricsRegistry.metrics());
-    });
+  if (config.metrics.enabled) {
+    app.use("/metrics", createMetricsRouter(config.metrics.bearerToken));
   }
 
   app.use("/api/analytics", analyticsRouter);

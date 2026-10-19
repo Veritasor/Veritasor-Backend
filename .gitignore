@@ -1,7 +1,5 @@
 node_modules/
 dist/
-.env
-.env.*
 *.local
 .DS_Store
 
@@ -21,3 +19,4 @@ reports/mutation
 .jest-cache
 node_modules
 dist
+config.bat
