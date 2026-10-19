@@ -203,8 +203,17 @@ async function resolveBusinessIdForUser(userId: string): Promise<string | null> 
   return null;
 }
 
-async function listByBusinessId(businessId: string, page: number, limit: number): Promise<{ items: RouteAttestation[], total: number }> {
-  const result = await attestationRepository.list(db, { businessId }, { limit, offset: (page - 1) * limit });
+async function listByBusinessId(
+  businessId: string,
+  page: number,
+  limit: number,
+  filters: { period?: string; status?: 'submitted' | 'revoked' } = {},
+): Promise<{ items: RouteAttestation[], total: number }> {
+  const result = await attestationRepository.list(
+    db,
+    { businessId, period: filters.period, status: filters.status },
+    { limit, offset: (page - 1) * limit },
+  );
 
   const items = result.items.map((item: Attestation) => ({
     id: item.id,
@@ -401,19 +410,12 @@ attestationsRouter.get(
     }
 
     const { page, limit } = getPagination({ page: query.page, limit: query.limit });
-    const { items, total } = await listByBusinessId(businessId, page, limit);
+    const { items, total } = await listByBusinessId(businessId, page, limit, {
+      period: query.period,
+      status: query.status,
+    });
 
-    // Filter server-side if query params present (repository list handles businessId but not period/status yet)
-    let filteredItems = items;
-    if (query.period || query.status) {
-      filteredItems = items.filter(item => {
-        if (query.period && item.period !== query.period) return false;
-        if (query.status && (item.status ?? 'submitted') !== query.status) return false;
-        return true;
-      });
-    }
-
-    const paginated = formatPaginatedResponse(filteredItems, total, page, limit);
+    const paginated = formatPaginatedResponse(items, total, page, limit);
 
     res.status(200).json({
       status: 'success',
