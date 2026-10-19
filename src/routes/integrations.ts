@@ -8,6 +8,11 @@ import { z } from 'zod';
 
 const router = Router();
 
+// Integration records are keyed by UUID (see repositories/integration.ts).
+// Constraining the dynamic segment keeps provider paths such as `/razorpay`
+// and `/shopify` from being captured by the generic handlers below.
+const INTEGRATION_ID_PATTERN = '[0-9a-fA-F-]{36}';
+
 interface IntegrationType {
   name: string;
   slug: 'stripe' | 'razorpay' | 'shopify';
@@ -222,7 +227,7 @@ router.post('/connect',
  * @desc Disconnect a specific integration
  * @access Private - requires business authentication and disconnect permissions with ownership check
  */
-router.delete('/:integrationId',
+router.delete(`/:integrationId(${INTEGRATION_ID_PATTERN})`,
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.DISCONNECT_OWN, { checkOwnership: true }),
   requirePolicy('delete', 'integration', {
@@ -282,7 +287,7 @@ router.delete('/:integrationId',
  * @desc Get details of a specific integration
  * @access Private - requires business authentication and read permissions with ownership check
  */
-router.get('/:integrationId',
+router.get(`/:integrationId(${INTEGRATION_ID_PATTERN})`,
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.READ_OWN, { checkOwnership: true }),
   requirePolicy('read', 'integration', {

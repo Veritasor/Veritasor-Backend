@@ -123,10 +123,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/auth", authRouter);
   app.use("/api/businesses", businessRoutes);
   app.use("/api/health", healthRouter);
-  app.use("/api/integrations", integrationsRouter);
+  // Provider routers must be mounted before the generic integrations router.
+  // The generic router declares `/:integrationId`, which would otherwise
+  // shadow single-segment provider paths such as DELETE /api/integrations/razorpay.
   app.use("/api/integrations/razorpay", integrationsRazorpayRouter);
   app.use("/api/integrations/shopify", integrationsShopifyRouter);
   app.use("/api/integrations/stripe", integrationsStripeRouter);
+  app.use("/api/integrations", integrationsRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
