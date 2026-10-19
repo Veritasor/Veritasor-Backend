@@ -4,6 +4,7 @@ import tls from "node:tls";
 import type { Server as HttpsServer } from "node:https";
 import { config } from "../config/index.js";
 import { mtlsRevocationChecker } from "./mtlsRevocation.js";
+import { extractSpiffeIdFromCert, isSpiffeIdInTrustDomain } from "../spiffe/spiffeId.js";
 import { logger } from "../utils/logger.js";
 import { mtlsHandshakeFailuresTotal, mtlsReloadsTotal } from "../metrics.js";
 
@@ -64,6 +65,14 @@ export interface MtlsAuthenticatedRequest extends Request {
  *
  * When SPIFFE is enabled, client identity is derived from the SPIFFE ID URI SAN
  * and validated against the configured trust domain and optional allowlist.
+ * The legacy CN allowlist is not consulted in SPIFFE mode: a CN is not a
+ * workload identity, so it must not grant or deny access there. On success the
+ * SPIFFE ID is exposed as `req.clientSpiffeId` for downstream authorization.
+ * A certificate without a well-formed SPIFFE ID in the configured trust domain
+ * (or outside a non-empty allowlist) is rejected with 403
+ * MTLS_SPIFFE_ID_NOT_ALLOWED — identity checks fail closed and never fall back
+ * to the CN allowlist.
+ *
  * Otherwise, the legacy CN allowlist path is used.
  *
  * Only active when config.mtls.enabled is true.
@@ -88,7 +97,7 @@ export function mtlsMiddleware(
 }
 
 async function handleMtls(
-  req: Request,
+  req: MtlsAuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> {
@@ -138,6 +147,35 @@ async function handleMtls(
     });
   }
 
+  // SPIFFE mode: the workload identity is the SPIFFE ID from the certificate's
+  // URI SAN. The legacy CN allowlist below is intentionally skipped (see the
+  // middleware docstring).
+  if (config.mtls.spiffe.enabled) {
+    const trustDomain = config.mtls.spiffe.trustDomain;
+    const spiffeId = extractSpiffeIdFromCert(cert, trustDomain);
+
+    // extractSpiffeIdFromCert already filters on the trust domain and rejects
+    // malformed IDs; re-check here so a future change to the helper cannot
+    // silently widen what this middleware accepts.
+    if (!spiffeId || !isSpiffeIdInTrustDomain(spiffeId, trustDomain)) {
+      rejectSpiffeId(res, spiffeId, "missing_or_outside_trust_domain");
+      return;
+    }
+
+    if (
+      config.mtls.spiffeIdAllowlist.length > 0 &&
+      !config.mtls.spiffeIdAllowlist.includes(spiffeId)
+    ) {
+      rejectSpiffeId(res, spiffeId, "not_in_allowlist");
+      return;
+    }
+
+    req.clientSpiffeId = spiffeId;
+    req.clientCN = cert.subject?.CN;
+    next();
+    return;
+  }
+
   // Check if CN is in allowlist (if allowlist is not empty)
   const cn = cert.subject?.CN;
   if (config.mtls.cnAllowlist.length > 0) {
@@ -158,4 +196,30 @@ async function handleMtls(
 
   authenticated.clientCN = cn;
   next();
+}
+
+/**
+ * Reject a certificate whose SPIFFE identity is missing, malformed, outside
+ * the configured trust domain, or not on a non-empty allowlist. Fails closed:
+ * every failure reason maps to the same 403 and the same metric reason, and
+ * the CN allowlist is never used as a fallback.
+ */
+function rejectSpiffeId(
+  res: Response,
+  spiffeId: string | undefined,
+  detail: "missing_or_outside_trust_domain" | "not_in_allowlist",
+): void {
+  mtlsHandshakeFailuresTotal.inc({ reason: "spiffe_id_not_allowed" });
+  logger.warn({
+    event: "mtls_spiffe_id_not_allowed",
+    detail,
+    client_spiffe_id: spiffeId,
+    trust_domain: config.mtls.spiffe.trustDomain,
+    allowlist: config.mtls.spiffeIdAllowlist,
+  });
+  res.status(403).json({
+    status: "error",
+    code: "MTLS_SPIFFE_ID_NOT_ALLOWED",
+    message: "Client certificate SPIFFE ID not allowed",
+  });
 }

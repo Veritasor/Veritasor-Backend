@@ -109,6 +109,37 @@ describe('extractSpiffeIdFromCert', () => {
       extractSpiffeIdFromCert(certWithSan(`URI:${WORKLOAD_ID}`), ` ${TRUST_DOMAIN} `),
     ).toBe(WORKLOAD_ID);
   });
+
+  it('parses entries without relying on the exact ", " separator', () => {
+    expect(
+      extractSpiffeIdFromCert(
+        certWithSan(`DNS:api.veritasor.example,URI:${WORKLOAD_ID}`),
+        TRUST_DOMAIN,
+      ),
+    ).toBe(WORKLOAD_ID);
+    expect(
+      extractSpiffeIdFromCert(
+        certWithSan(`DNS:api.veritasor.example,   URI:${WORKLOAD_ID}`),
+        TRUST_DOMAIN,
+      ),
+    ).toBe(WORKLOAD_ID);
+  });
+
+  it('rejects ids carrying traversal, query or fragment components', () => {
+    const malformed = [
+      `spiffe://${TRUST_DOMAIN}/ns/../hacked`,
+      `spiffe://${TRUST_DOMAIN}/ns/default?admin=1`,
+      `spiffe://${TRUST_DOMAIN}/ns/default#fragment`,
+    ];
+    for (const id of malformed) {
+      expect(extractSpiffeIdFromCert(certWithSan(`URI:${id}`), TRUST_DOMAIN)).toBeUndefined();
+    }
+  });
+
+  it('still extracts a valid id when a malformed entry precedes it', () => {
+    const san = `URI:spiffe://${TRUST_DOMAIN}/ns/../hacked, URI:${WORKLOAD_ID}`;
+    expect(extractSpiffeIdFromCert(certWithSan(san), TRUST_DOMAIN)).toBe(WORKLOAD_ID);
+  });
 });
 
 describe('parseSpiffeIdAllowlist', () => {
