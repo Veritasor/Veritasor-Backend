@@ -57,10 +57,9 @@ export async function revokeAttestation(
     logger.info(`CDN purge successful for attestation ${attestationId}`);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    recordCdnPurgeStatus(attestationId, 'failed', { error });
+    recordCdnPurgeStatus(attestationId, 'failed', { error: error });
     logger.error(`CDN purge failed for attestation ${attestationId}: ${error}`);
   }
-
 
   // TODO: Optionally call Soroban revoke if the contract supports it.
   // This will be implemented when the Soroban integration is ready.
