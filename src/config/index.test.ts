@@ -102,6 +102,110 @@ describe("src/config/index.ts", () => {
            ]));
         }
       });
+
+      const validProdEnv = {
+        NODE_ENV: "production",
+        DATABASE_URL: "postgres://user:pass@localhost:5432/db",
+        ALLOWED_ORIGINS: "https://app.example.com",
+        SECRET_LOADER: "env",
+        JWT_SECRET: "a-sufficiently-long-jwt-secret-value-1234567890",
+        PERSISTED_QUERY_SECRET: "a-sufficiently-long-persisted-query-secret-1234567890",
+        SOROBAN_CONTRACT_ID: "C" + "A".repeat(55),
+        STELLAR_NETWORK: "testnet",
+        SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
+      };
+
+      it("should accept a fully valid production environment", () => {
+        const result = envSchema.safeParse(validProdEnv);
+        expect(result.success).toBe(true);
+      });
+
+      it("should throw if PERSISTED_QUERY_SECRET is missing in production", () => {
+        const { PERSISTED_QUERY_SECRET, ...env } = validProdEnv;
+        const result = envSchema.safeParse(env);
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: ["PERSISTED_QUERY_SECRET"] })
+          ]));
+        }
+      });
+
+      it("should throw if PERSISTED_QUERY_SECRET equals the dev default in production", () => {
+        const result = envSchema.safeParse({
+          ...validProdEnv,
+          PERSISTED_QUERY_SECRET: "default-dev-secret-do-not-use-in-prod",
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: ["PERSISTED_QUERY_SECRET"] })
+          ]));
+        }
+      });
+
+      it("should throw if PERSISTED_QUERY_SECRET is shorter than 32 characters in production", () => {
+        const result = envSchema.safeParse({
+          ...validProdEnv,
+          PERSISTED_QUERY_SECRET: "too-short",
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: ["PERSISTED_QUERY_SECRET"] })
+          ]));
+        }
+      });
+
+      it("should throw if SOROBAN_CONTRACT_ID is empty in production", () => {
+        const result = envSchema.safeParse({
+          ...validProdEnv,
+          SOROBAN_CONTRACT_ID: "",
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: ["SOROBAN_CONTRACT_ID"] })
+          ]));
+        }
+      });
+
+      it("should throw if SOROBAN_CONTRACT_ID is invalid in production", () => {
+        const result = envSchema.safeParse({
+          ...validProdEnv,
+          SOROBAN_CONTRACT_ID: "not-a-valid-contract-id",
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: ["SOROBAN_CONTRACT_ID"] })
+          ]));
+        }
+      });
+
+      it("should throw if STELLAR_NETWORK=public uses the testnet passphrase in production", () => {
+        const result = envSchema.safeParse({
+          ...validProdEnv,
+          STELLAR_NETWORK: "public",
+          SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({ path: ["SOROBAN_NETWORK_PASSPHRASE"] })
+          ]));
+        }
+      });
+    });
+
+    describe("development defaults", () => {
+      it("should boot with default PERSISTED_QUERY_SECRET and empty SOROBAN_CONTRACT_ID", () => {
+        const parsed = envSchema.parse({
+          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
+        });
+        expect(parsed.PERSISTED_QUERY_SECRET).toBeUndefined();
+        expect(parsed.SOROBAN_CONTRACT_ID).toBe("");
+      });
     });
   });
 
