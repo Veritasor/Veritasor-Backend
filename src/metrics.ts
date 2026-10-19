@@ -51,6 +51,12 @@ export const rateLimitRejections = new Counter({
   registers: [metricsRegistry],
 });
 
+export const egressManifestUnsignedTotal = new Counter({
+  name: "egress_manifest_unsigned_total",
+  help: "Total number of egress IP manifest signing attempts refused due to a missing key",
+  registers: [metricsRegistry],
+});
+
 export const redisClusterRedirectionsTotal = new Counter({
   name: "redis_cluster_redirections_total",
   help: "Total number of Redis Cluster MOVED/ASK redirections handled in rateLimiter",

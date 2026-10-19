@@ -33,6 +33,7 @@
 
 import { Router, Request, Response } from "express";
 import {
+  EgressManifestSigningKeyError,
   getSignedManifest,
 } from "../services/webhooks/egressIpAllowList.js";
 import { logger } from "../utils/logger.js";
@@ -61,6 +62,14 @@ webhookEgressIpsRouter.get(
       res.json(signed);
     } catch (err) {
       logger.error("Failed to generate webhook egress IP manifest", err);
+      if (err instanceof EgressManifestSigningKeyError) {
+        res.status(503).json({
+          status: "error",
+          code: "EGRESS_MANIFEST_SIGNING_KEY_UNAVAILABLE",
+          message: "Egress IP manifest signing is temporarily unavailable",
+        });
+        return;
+      }
       res.status(500).json({
         status: "error",
         code: "MANIFEST_GENERATION_FAILED",
