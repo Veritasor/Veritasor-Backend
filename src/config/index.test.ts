@@ -128,6 +128,21 @@ describe("src/config/index.ts", () => {
       await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
     });
 
+    it("should refuse to enable unprotected metrics in production", async () => {
+      process.env.NODE_ENV = "production";
+      process.env.DATABASE_URL = "postgres://localhost/db";
+      process.env.ALLOWED_ORIGINS = "https://app.example.com";
+      process.env.JWT_SECRET = "a-production-secret-that-is-at-least-32-characters";
+      process.env.METRICS_ENABLED = "true";
+      delete process.env.METRICS_BEARER_TOKEN;
+      delete process.env.METRICS_PUBLIC;
+
+      await expect(import("./index.js")).rejects.toMatchObject({
+        name: "ConfigValidationError",
+        message: expect.stringContaining("METRICS_BEARER_TOKEN or METRICS_PUBLIC=true"),
+      });
+    });
+
     it("should set a default JWT_SECRET in development if missing", async () => {
       process.env.NODE_ENV = "development";
       process.env.DATABASE_URL = "postgres://localhost/db";

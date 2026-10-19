@@ -10,6 +10,9 @@ export class ConfigValidationError extends Error {
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  METRICS_ENABLED: z.string().optional(),
+  METRICS_BEARER_TOKEN: z.string().min(1, "METRICS_BEARER_TOKEN must not be empty").optional(),
+  METRICS_PUBLIC: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
   DATABASE_URL: z.string({
@@ -69,6 +72,19 @@ export const envSchema = z.object({
   OTEL_MTLS_CERT_PATH: z.string().optional(),
   OTEL_MTLS_KEY_PATH: z.string().optional(),
 }).superRefine((data, ctx) => {
+  if (
+    data.NODE_ENV === "production"
+    && data.METRICS_ENABLED === "true"
+    && !data.METRICS_BEARER_TOKEN
+    && data.METRICS_PUBLIC !== "true"
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "METRICS_BEARER_TOKEN or METRICS_PUBLIC=true is required when METRICS_ENABLED=true in production",
+      path: ["METRICS_BEARER_TOKEN"],
+    });
+  }
+
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
         ctx.addIssue({
@@ -255,6 +271,10 @@ const mtlsConfig = parseMtlsConfig(parsedEnv);
 
 export const config = {
   env: parsedEnv.NODE_ENV,
+  metrics: {
+    enabled: parsedEnv.METRICS_ENABLED === "true",
+    bearerToken: parsedEnv.METRICS_BEARER_TOKEN,
+  },
   jwtSecret: parsedEnv.JWT_SECRET as string,
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {
