@@ -408,9 +408,7 @@ export async function saveDeadLetter(
   error: unknown,
   attempts = 1,
 ): Promise<void> {
-  const payloadHash = createHash('sha256')
-    .update(JSON.stringify(payload ?? {}))
-    .digest('hex');
+  const payloadHash = computePayloadHash(payload);
 
   const errorCode =
     typeof error === 'object' &&
@@ -440,4 +438,200 @@ export async function saveDeadLetter(
       integration: provider,
       updated_at: new Date(),
     });
+}
+
+export interface DeadLetterRecord {
+  id: number;
+  provider: string;
+  event_id: string;
+  payload_hash: string;
+  error_code: string;
+  attempt_count: number;
+  integration: string;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface QuarantinedLetterRecord {
+  id: number;
+  provider: string;
+  event_id: string;
+  payload_hash: string;
+  error_code: string;
+  fingerprint: string;
+  attempt_count: number;
+  quarantine_reason: string;
+  integration: string;
+  quarantined_at: Date;
+  released_at: Date | null;
+  released_by: string | null;
+}
+
+function canonicalizePayload(value: unknown, ancestors = new Set<object>()): unknown {
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) {
+      throw new TypeError('Cannot hash circular payload');
+    }
+    ancestors.add(value);
+    const canonical = value.map((item) => canonicalizePayload(item, ancestors));
+    ancestors.delete(value);
+    return canonical;
+  }
+
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  if (ancestors.has(value)) {
+    throw new TypeError('Cannot hash circular payload');
+  }
+  ancestors.add(value);
+
+  const toJSON = (value as { toJSON?: () => unknown }).toJSON;
+  const canonical = typeof toJSON === 'function'
+    ? canonicalizePayload(toJSON.call(value), ancestors)
+    : Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [
+          key,
+          canonicalizePayload((value as Record<string, unknown>)[key], ancestors),
+        ]),
+    );
+
+  ancestors.delete(value);
+  return canonical;
+}
+
+/**
+ * Hash JSON-compatible webhook payloads using stable, recursively sorted keys.
+ */
+export function computePayloadHash(payload: unknown): string {
+  const serialized = JSON.stringify(canonicalizePayload(payload));
+  if (serialized === undefined) {
+    throw new TypeError('Payload is not JSON serializable');
+  }
+  return createHash('sha256').update(serialized).digest('hex');
+}
+
+/**
+ * Find a dead-letter entry by provider and event ID.
+ */
+export async function getDeadLetter(
+  provider: string,
+  eventId: string,
+): Promise<DeadLetterRecord | null> {
+  const result = await db.query<DeadLetterRecord>(
+    `SELECT id, provider, event_id, payload_hash, error_code, attempt_count,
+            integration, created_at, updated_at
+       FROM webhook_dead_letters
+      WHERE provider = $1 AND event_id = $2
+      LIMIT 1`,
+    [provider, eventId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Delete a dead-letter entry by provider and event ID.
+ */
+export async function deleteDeadLetter(provider: string, eventId: string): Promise<void> {
+  await db.query(
+    `DELETE FROM webhook_dead_letters
+      WHERE provider = $1 AND event_id = $2`,
+    [provider, eventId],
+  );
+}
+
+/**
+ * Check whether an event has an active (unreleased) quarantine entry.
+ */
+export async function isQuarantined(provider: string, eventId: string): Promise<boolean> {
+  const result = await db.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM webhook_quarantine
+        WHERE provider = $1 AND event_id = $2 AND released_at IS NULL
+     ) AS exists`,
+    [provider, eventId],
+  );
+  return result.rows[0]?.exists ?? false;
+}
+
+/**
+ * List active quarantine entries, optionally filtered by provider or integration.
+ */
+export async function listQuarantinedLetters(
+  provider?: string,
+  integration?: string,
+): Promise<QuarantinedLetterRecord[]> {
+  const conditions = ['released_at IS NULL'];
+  const params: string[] = [];
+
+  if (provider !== undefined) {
+    params.push(provider);
+    conditions.push(`provider = $${params.length}`);
+  }
+  if (integration !== undefined) {
+    params.push(integration);
+    conditions.push(`integration = $${params.length}`);
+  }
+
+  const result = await db.query<QuarantinedLetterRecord>(
+    `SELECT id, provider, event_id, payload_hash, error_code, fingerprint,
+            attempt_count, quarantine_reason, integration, quarantined_at,
+            released_at, released_by
+       FROM webhook_quarantine
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY quarantined_at DESC`,
+    params,
+  );
+  return result.rows;
+}
+
+/**
+ * Release an active quarantine entry once; returns false when none is active.
+ */
+export async function releaseQuarantinedLetter(
+  provider: string,
+  eventId: string,
+  releasedBy: string,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `UPDATE webhook_quarantine
+        SET released_at = NOW(), released_by = $3
+      WHERE provider = $1 AND event_id = $2 AND released_at IS NULL
+      RETURNING id`,
+    [provider, eventId, releasedBy],
+  );
+  return result.rows.length > 0;
+}
+
+/**
+ * Permanently remove a quarantine record by provider and event ID.
+ */
+export async function purgeQuarantinedLetter(
+  provider: string,
+  eventId: string,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `DELETE FROM webhook_quarantine
+      WHERE provider = $1 AND event_id = $2
+      RETURNING id`,
+    [provider, eventId],
+  );
+  return result.rows.length > 0;
+}
+
+/**
+ * Count dead-letter entries in each integration shard.
+ */
+export async function listDeadLetterShards(): Promise<Array<{ integration: string; count: number }>> {
+  const result = await db.query<{ integration: string; count: number }>(
+    `SELECT integration, COUNT(*)::int AS count
+       FROM webhook_dead_letters
+      GROUP BY integration
+      ORDER BY integration`,
+  );
+  return result.rows;
 }
