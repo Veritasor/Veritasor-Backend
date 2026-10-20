@@ -46,6 +46,12 @@ type PostgresError = Error & {
   schema?: string;
 };
 
+type BodyParserError = {
+  status?: unknown;
+  statusCode?: unknown;
+  type?: unknown;
+};
+
 const CLIENT_SAFE_POSTGRES_CONFLICT_CODES = new Set([
   "23503", // foreign_key_violation
   "23505", // unique_violation
@@ -57,6 +63,14 @@ function isPostgresError(error: unknown): error is PostgresError {
     typeof (error as PostgresError).code === "string" &&
     /^[0-9A-Z]{5}$/.test((error as PostgresError).code ?? "")
   );
+}
+
+function getBodyParserErrorType(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("type" in error)) {
+    return undefined;
+  }
+  const type = (error as BodyParserError).type;
+  return typeof type === "string" ? type : undefined;
 }
 
 function normalizeZodIssues(
@@ -89,6 +103,22 @@ function createErrorEnvelope(
 
   if (requestId) {
     baseEnvelope.requestId = requestId;
+  }
+
+  const bodyParserErrorType = getBodyParserErrorType(error);
+  if (bodyParserErrorType === "entity.parse.failed") {
+    return {
+      ...baseEnvelope,
+      vrtCode: "INVALID_JSON",
+      message: "Invalid JSON payload",
+    };
+  }
+  if (bodyParserErrorType === "entity.too.large") {
+    return {
+      ...baseEnvelope,
+      vrtCode: "PAYLOAD_TOO_LARGE",
+      message: "Payload too large",
+    };
   }
 
   // Handle ValidationError
@@ -173,6 +203,18 @@ function createErrorEnvelope(
  * @returns HTTP status code
  */
 function getStatusCode(error: unknown): number {
+  if (typeof error === "object" && error !== null) {
+    const httpError = error as BodyParserError;
+    const clientStatus = [httpError.status, httpError.statusCode].find(
+      (status): status is number =>
+        typeof status === "number" &&
+        Number.isInteger(status) &&
+        status >= 400 &&
+        status <= 499,
+    );
+    if (clientStatus !== undefined) return clientStatus;
+  }
+
   if (isValidationError(error)) {
     return 400;
   }
@@ -218,6 +260,10 @@ export const errorHandler = (
   res: Response,
   next: NextFunction
 ): void => {
+  if (res.headersSent) {
+    return next(err);
+  }
+
   const requestId = res.locals.requestId;
   const statusCode = getStatusCode(err);
 
