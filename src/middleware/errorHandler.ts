@@ -31,6 +31,7 @@ import { logger } from "../utils/logger.js";
 type ErrorEnvelope = {
   status: "error";
   vrtCode: string;
+  code?: string;
   message: string;
   timestamp: string;
   requestId?: string;
@@ -46,10 +47,40 @@ type PostgresError = Error & {
   schema?: string;
 };
 
+type BodyParserError = {
+  type?: unknown;
+  status?: unknown;
+  statusCode?: unknown;
+};
+
 const CLIENT_SAFE_POSTGRES_CONFLICT_CODES = new Set([
   "23503", // foreign_key_violation
   "23505", // unique_violation
 ]);
+
+function getBodyParserErrorType(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const type = (error as BodyParserError).type;
+  return typeof type === "string" ? type : undefined;
+}
+
+function getClientErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const candidate = error as BodyParserError;
+  for (const status of [candidate.status, candidate.statusCode]) {
+    if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 500) {
+      return status;
+    }
+  }
+
+  return undefined;
+}
 
 function isPostgresError(error: unknown): error is PostgresError {
   return (
@@ -89,6 +120,25 @@ function createErrorEnvelope(
 
   if (requestId) {
     baseEnvelope.requestId = requestId;
+  }
+
+  const bodyParserErrorType = getBodyParserErrorType(error);
+  if (bodyParserErrorType === "entity.parse.failed") {
+    return {
+      ...baseEnvelope,
+      vrtCode: VRTErrorCodes.VRT_0002,
+      code: "INVALID_JSON",
+      message: "Invalid JSON payload",
+    };
+  }
+
+  if (bodyParserErrorType === "entity.too.large") {
+    return {
+      ...baseEnvelope,
+      vrtCode: VRTErrorCodes.VRT_0002,
+      code: "PAYLOAD_TOO_LARGE",
+      message: "Request payload too large",
+    };
   }
 
   // Handle ValidationError
@@ -198,6 +248,11 @@ function getStatusCode(error: unknown): number {
     }
   }
 
+  const clientErrorStatus = getClientErrorStatus(error);
+  if (clientErrorStatus !== undefined) {
+    return clientErrorStatus;
+  }
+
   return 500;
 }
 
@@ -218,6 +273,11 @@ export const errorHandler = (
   res: Response,
   next: NextFunction
 ): void => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+
   const requestId = res.locals.requestId;
   const statusCode = getStatusCode(err);
 
