@@ -4,6 +4,38 @@ import { KMSClient, EncryptCommand, DecryptCommand } from '@aws-sdk/client-kms';
 import { randomUUID, createHash } from 'crypto';
 import { Logger } from '../../utils/logger';
 
+export interface DeadLetter {
+  id: number;
+  provider: string;
+  event_id: string;
+  payload_hash: string;
+  error_code: string;
+  attempt_count: number;
+  created_at: Date;
+  updated_at: Date;
+  integration: string;
+}
+
+export interface QuarantinedLetter {
+  id: number;
+  provider: string;
+  event_id: string;
+  payload_hash: string;
+  error_code: string;
+  fingerprint: string;
+  attempt_count: number;
+  quarantine_reason: string;
+  quarantined_at: Date;
+  released_at: Date | null;
+  released_by: string | null;
+  integration: string;
+}
+
+export interface DeadLetterShard {
+  integration: string;
+  count: number;
+}
+
 interface DLQEntry {
   id: string;
   type: string;
@@ -394,6 +426,141 @@ export class DeadLetterQueue {
 }
 
 /**
+ * Hash a JSON payload using a stable serialization independent of object key order.
+ */
+export function computePayloadHash(payload: unknown): string {
+  const serialized = JSON.stringify(payload ?? {});
+  if (serialized === undefined) {
+    throw new TypeError('Payload cannot be serialized as JSON');
+  }
+
+  const parsed = JSON.parse(serialized) as unknown;
+  const sortObjectKeys = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(sortObjectKeys);
+    }
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+          .map(([key, nestedValue]) => [key, sortObjectKeys(nestedValue)]),
+      );
+    }
+    return value;
+  };
+  const canonicalPayload = JSON.stringify(sortObjectKeys(parsed));
+  if (canonicalPayload === undefined) {
+    throw new TypeError('Payload cannot be serialized as JSON');
+  }
+
+  return createHash('sha256')
+    .update(canonicalPayload)
+    .digest('hex');
+}
+
+export async function getDeadLetter(
+  provider: string,
+  eventId: string,
+): Promise<DeadLetter | null> {
+  const result = await db.query<DeadLetter>(
+    `SELECT id, provider, event_id, payload_hash, error_code, attempt_count,
+            created_at, updated_at, integration
+     FROM webhook_dead_letters
+     WHERE provider = $1 AND event_id = $2`,
+    [provider, eventId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function deleteDeadLetter(provider: string, eventId: string): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `DELETE FROM webhook_dead_letters
+     WHERE provider = $1 AND event_id = $2
+     RETURNING id`,
+    [provider, eventId],
+  );
+  return result.rows.length > 0;
+}
+
+export async function isQuarantined(provider: string, eventId: string): Promise<boolean> {
+  const result = await db.query<{ is_quarantined: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM webhook_quarantine
+       WHERE provider = $1 AND event_id = $2 AND released_at IS NULL
+     ) AS is_quarantined`,
+    [provider, eventId],
+  );
+  return result.rows[0]?.is_quarantined ?? false;
+}
+
+export async function listQuarantinedLetters(
+  provider?: string,
+  integration?: string,
+): Promise<QuarantinedLetter[]> {
+  const conditions = ['released_at IS NULL'];
+  const params: string[] = [];
+
+  if (provider !== undefined) {
+    params.push(provider);
+    conditions.push(`provider = $${params.length}`);
+  }
+  if (integration !== undefined) {
+    params.push(integration);
+    conditions.push(`integration = $${params.length}`);
+  }
+
+  const result = await db.query<QuarantinedLetter>(
+    `SELECT id, provider, event_id, payload_hash, error_code, fingerprint,
+            attempt_count, quarantine_reason, quarantined_at, released_at,
+            released_by, integration
+     FROM webhook_quarantine
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY quarantined_at DESC`,
+    params,
+  );
+  return result.rows;
+}
+
+export async function releaseQuarantinedLetter(
+  provider: string,
+  eventId: string,
+  releasedBy: string,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `UPDATE webhook_quarantine
+     SET released_at = NOW(), released_by = $3
+     WHERE provider = $1 AND event_id = $2 AND released_at IS NULL
+     RETURNING id`,
+    [provider, eventId, releasedBy],
+  );
+  return result.rows.length > 0;
+}
+
+export async function purgeQuarantinedLetter(
+  provider: string,
+  eventId: string,
+): Promise<boolean> {
+  const result = await db.query<{ id: number }>(
+    `DELETE FROM webhook_quarantine
+     WHERE provider = $1 AND event_id = $2
+     RETURNING id`,
+    [provider, eventId],
+  );
+  return result.rows.length > 0;
+}
+
+export async function listDeadLetterShards(): Promise<DeadLetterShard[]> {
+  const result = await db.query<DeadLetterShard>(
+    `SELECT integration, COUNT(*)::int AS count
+     FROM webhook_dead_letters
+     GROUP BY integration
+     ORDER BY integration`,
+  );
+  return result.rows;
+}
+
+/**
  * Persist a failed webhook event to the dead-letter table.
  *
  * Captures the raw event id, a SHA-256 hash of the payload body, the error code
@@ -408,9 +575,7 @@ export async function saveDeadLetter(
   error: unknown,
   attempts = 1,
 ): Promise<void> {
-  const payloadHash = createHash('sha256')
-    .update(JSON.stringify(payload ?? {}))
-    .digest('hex');
+  const payloadHash = computePayloadHash(payload);
 
   const errorCode =
     typeof error === 'object' &&
