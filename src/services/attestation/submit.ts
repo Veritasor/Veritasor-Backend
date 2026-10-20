@@ -329,7 +329,7 @@ async function doSubmitAttestation(
     // In a real scenario, this would loop over connected integrations from `integrationRepository`.
     let rawRevenue: RevenueEntry[];
     try {
-      rawRevenue = await fetchRazorpayRevenue(startDate, endDate);
+      rawRevenue = await fetchRazorpayRevenue(businessId, startDate, endDate);
     } catch (err: any) {
       throw new Error(`Failed to fetch revenue: ${err.message}`);
     }
