@@ -117,6 +117,14 @@ export interface PolicyMiddlewareOptions {
   resourceTenantId?: (req: Request) => string | undefined | Promise<string | undefined>;
 }
 
+/** Resolve roles only from authenticated middleware state, failing closed. */
+function getAuthenticatedRole(req: Request): UserRole {
+  const role = req.user?.role;
+  return role && Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, role)
+    ? role
+    : 'user';
+}
+
 /**
  * Require an explicit action-on-resource policy decision. Tenant IDs are read
  * only from the business context attached by requireBusinessAuth, never from a
@@ -235,14 +243,13 @@ export function requirePermissions(
         return;
       }
 
-      // Extract user role from authenticated user or headers (fallback)
-      const role = (req.user as any)?.role || (req.headers['x-user-role'] as UserRole) || 'user';
+      const role = getAuthenticatedRole(req);
 
       // Create permission context
       const context = PermissionService.createContext(
         req.user.userId,
         role,
-        req.headers['x-business-id'] as string
+        req.business?.id
       );
 
       // Attach context to request
@@ -368,11 +375,11 @@ async function checkIntegrationOwnership(
 export function addPermissionContext() {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (req.user && req.user.userId) {
-      const role = (req.headers['x-user-role'] as UserRole) || 'user';
+      const role = getAuthenticatedRole(req);
       req.permissionContext = PermissionService.createContext(
         req.user.userId,
         role,
-        req.headers['x-business-id'] as string
+        req.business?.id
       );
     }
     next();
