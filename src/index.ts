@@ -14,6 +14,7 @@
  */
 
 import 'dotenv/config';
+import { config } from './config/index.js';
 import { startServer, stopIdempotencySweeper } from './app.js';
 import { stopPgBouncerScraperIfNeeded } from './services/pgbouncerScraper.js';
 import { pool } from './db/client.js';
@@ -30,9 +31,22 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-async function bootstrap(): Promise<void> {
+export async function bootstrap(): Promise<void> {
   // Load secrets before the server starts accepting traffic
   await secretLoader.reload();
+
+  if (process.env.NODE_ENV === 'production' && config.secretLoader.source !== 'env') {
+    let jwtSecret: string | undefined;
+    try {
+      jwtSecret = await secretLoader.get('JWT_SECRET');
+    } catch {
+      jwtSecret = undefined;
+    }
+    if (!jwtSecret || jwtSecret.length < 32) {
+      throw new Error('JWT_SECRET resolved from secret loader must be at least 32 characters in production');
+    }
+  }
+
   await jwksManager.reload();
 
   // Start the HTTP server; `startServer` returns the `http.Server` instance
@@ -134,7 +148,7 @@ process.on('SIGHUP', async () => {
 // Start (skipped in test environments to avoid side-effects)
 // ---------------------------------------------------------------------------
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   bootstrap().catch((error) => {
     const message = error instanceof Error ? error.message : 'Unknown startup error';
     console.error(`[Startup] ${message}`);

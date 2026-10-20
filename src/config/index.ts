@@ -45,7 +45,8 @@ export const envSchema = z.object({
   SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
   DRR_SCHEDULER_TIER_WEIGHTS: z.string().optional(),
   DRR_SCHEDULER_QUANTUM: z.string().optional(),
-  SECRET_LOADER: z.enum(["env", "file", "vault", "aws", "gsm"]).default("env"),
+  SECRET_LOADER: z.enum(["env", "file", "vault", "aws", "gsm"]).optional(),
+  SECRET_PROVIDER: z.enum(["env", "file", "vault", "aws", "gsm"]).optional(),
   SECRET_FILE_PATH: z.string().optional(),
   SECRET_CACHE_KMS_KEY_ID: z.string().optional(),
   SECRET_CACHE_PATH: z.string().optional(),
@@ -69,6 +70,16 @@ export const envSchema = z.object({
   OTEL_MTLS_CERT_PATH: z.string().optional(),
   OTEL_MTLS_KEY_PATH: z.string().optional(),
 }).superRefine((data, ctx) => {
+  if (data.SECRET_LOADER && data.SECRET_PROVIDER && data.SECRET_LOADER !== data.SECRET_PROVIDER) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `SECRET_LOADER (${data.SECRET_LOADER}) and SECRET_PROVIDER (${data.SECRET_PROVIDER}) conflict: both are set and disagree`,
+      path: ["SECRET_LOADER"],
+    });
+  }
+
+  const effectiveLoader = data.SECRET_LOADER ?? data.SECRET_PROVIDER ?? "env";
+
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
         ctx.addIssue({
@@ -78,7 +89,7 @@ export const envSchema = z.object({
         });
       }
 
-      if (data.SECRET_LOADER === 'env') {
+      if (effectiveLoader === 'env') {
         if (!data.JWT_SECRET || data.JWT_SECRET.length < 32) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -88,7 +99,7 @@ export const envSchema = z.object({
         }
       }
 
-      if (data.SECRET_LOADER === 'file' && !data.SECRET_FILE_PATH) {
+      if (effectiveLoader === 'file' && !data.SECRET_FILE_PATH) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "SECRET_FILE_PATH is required when SECRET_LOADER=file",
@@ -96,7 +107,7 @@ export const envSchema = z.object({
         });
       }
 
-      if (data.SECRET_LOADER === 'vault') {
+      if (effectiveLoader === 'vault') {
         if (!data.VAULT_BASE_URL) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -160,6 +171,17 @@ function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValu
   }
 
   return value;
+}
+
+function parseCsvList(rawValue: string | undefined): string[] {
+  if (!rawValue?.trim()) {
+    return [];
+  }
+
+  return rawValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 let parsedEnv: z.infer<typeof envSchema>;
@@ -419,7 +441,7 @@ export const config = {
     },
   },
   secretLoader: {
-    source: parsedEnv.SECRET_LOADER,
+    source: (parsedEnv.SECRET_LOADER ?? parsedEnv.SECRET_PROVIDER ?? "env") as "env" | "file" | "vault" | "aws" | "gsm",
     filePath: parsedEnv.SECRET_FILE_PATH,
     /**
      * When `source` is `"vault"`, `VaultAdapter` (src/utils/secret-loader.ts)

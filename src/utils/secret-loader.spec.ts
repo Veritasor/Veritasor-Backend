@@ -11,13 +11,6 @@ import {
 import { logger } from './logger.js'
 
 let mockSend: ReturnType<typeof vi.fn>
-
-vi.mock('@aws-sdk/client-secrets-manager', () => ({
-  SecretsManagerClient: vi.fn(function () { return { send: mockSend } }),
-  GetSecretValueCommand: vi.fn(),
-}))
-
-let mockSend: ReturnType<typeof vi.fn>
 let mockAccessSecretVersion: ReturnType<typeof vi.fn>
 
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
@@ -375,6 +368,17 @@ describe('SecretLoader', () => {
 
     it('throws for unsupported provider', () => {
       expect(() => createSecretLoader({ provider: 'invalid' as any })).toThrow(SecretLoadError)
+    })
+
+    it('creates Vault adapter when SECRET_LOADER=vault and VAULT_* env variables are set', () => {
+      process.env.SECRET_LOADER = 'vault'
+      process.env.VAULT_BASE_URL = 'https://vault.example.com'
+      process.env.VAULT_SECRET_PATH = 'secret/data/veritasor'
+      process.env.VAULT_TOKEN = 's.mocktoken'
+
+      const loader = createSecretLoader()
+      expect(loader).toBeDefined()
+      expect((loader as any).primaryAdapter).toBeInstanceOf(VaultAdapter)
     })
   })
 })
