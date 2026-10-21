@@ -1,11 +1,31 @@
-export { hash, buildTree, getRoot, MERKLE_MAX_LEAVES, MERKLE_WARN_LEAVES } from './buildTree.js';
+export {
+  hash,
+  hashV1,
+  hashV2,
+  hashNode,
+  hashNodeV1,
+  hashNodeV2,
+  buildTree,
+  buildTreeV1,
+  buildTreeV2,
+  getRoot,
+  MERKLE_MAX_LEAVES,
+  MERKLE_WARN_LEAVES,
+  MERKLE_VERSION_1,
+  MERKLE_VERSION_2,
+} from './buildTree.js';
 export {
   generateProof,
+  generateProofV1,
+  generateProofV2,
   verifyProof,
+  verifyProofV1,
+  verifyProofV2,
   normalizeHashHex,
   isHashHex,
   isProofStep,
   isProof,
   MERKLE_PROOF_MAX_STEPS,
+  hashLegacy,
 } from './generateProof.js';
 export type { ProofStep, Proof } from './generateProof.js';
