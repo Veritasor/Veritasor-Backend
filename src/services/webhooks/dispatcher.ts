@@ -4,6 +4,7 @@ import { secretLoader } from "../../utils/secret-loader.js";
 import { staleWebhookDeliveries } from "../../metrics.js";
 import { createAuditLog } from "../../repositories/auditLogRepository.js";
 import { createDeliveryReceipt } from "../../repositories/deliveryReceiptRepository.js";
+import { evaluateEventFilter } from "../../schemas/webhookSubscription.js";
 
 export class WebhookPayloadTooLargeError extends Error {
   public readonly code = 'PAYLOAD_TOO_LARGE';
@@ -195,66 +196,19 @@ export interface SendWebhookDeliveryResult {
  * based on its event-filters DSL.
  *
  * When no filters are configured, all events are delivered.
- * Otherwise the first matching rule (exact → segment wildcard → recursive)
- * determines delivery.
+ * Otherwise the first matching rule (exact → most-specific single-segment
+ * wildcard → recursive) determines delivery.
  */
 export function shouldDeliverEvent(
   eventType: string,
   eventPayload: Record<string, unknown>,
   subscription: WebhookSubscription,
 ): boolean {
-  const filters = subscription.eventFilters;
-  if (!filters || Object.keys(filters).length === 0) return true;
-
-  // 1. Exact match
-  const exact = filters[eventType];
-  if (typeof exact === "boolean") return exact;
-  if (typeof exact === "object" && exact !== null) {
-    return objectFilterMatches(exact, eventPayload);
-  }
-
-  // 2. Segment-level wildcard
-  const segments = eventType.split(".");
-  for (let i = 0; i < segments.length; i++) {
-    const pattern = [...segments.slice(0, i), "*"].join(".");
-    const match = filters[pattern];
-    if (typeof match === "boolean") return match;
-    if (typeof match === "object" && match !== null) {
-      return objectFilterMatches(match, eventPayload);
-    }
-  }
-
-  // 3. Recursive wildcard
-  const recursive = filters["**"];
-  if (typeof recursive === "boolean") return recursive;
-  if (typeof recursive === "object" && recursive !== null) {
-    return objectFilterMatches(recursive, eventPayload);
-  }
-
-  return true;
-}
-
-function objectFilterMatches(
-  filter: Record<string, string>,
-  payload: Record<string, unknown>,
-): boolean {
-  for (const [key, expectedValue] of Object.entries(filter)) {
-    const actualValue = resolveDotPath(payload, key);
-    if (actualValue === undefined) return false;
-    if (String(actualValue) !== expectedValue) return false;
-  }
-  return true;
-}
-
-function resolveDotPath(obj: Record<string, unknown>, path: string): unknown {
-  const parts = path.split(".");
-  let current: unknown = obj;
-  for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
-    if (typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
+  return evaluateEventFilter(
+    eventType,
+    eventPayload,
+    subscription.eventFilters ?? {},
+  );
 }
 
 export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): Promise<SendWebhookDeliveryResult> {

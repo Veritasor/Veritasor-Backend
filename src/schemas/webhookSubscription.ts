@@ -40,7 +40,20 @@ function isValidEventType(value: string): boolean {
   if (value.length === 0 || value.length > MAX_EVENT_TYPE_LENGTH) return false;
   if (value.startsWith(".") || value.endsWith(".")) return false;
   // Allow: letters, numbers, ., -, _, *, **
-  return /^[a-zA-Z0-9._*-]+$/.test(value);
+  if (!/^[a-zA-Z0-9._*-]+$/.test(value)) return false;
+
+  const segments = value.split(".");
+  if (segments.some((segment) => segment.length === 0)) return false;
+  if (
+    segments.some(
+      (segment) =>
+        segment.includes("*") && segment !== "*" && segment !== "**",
+    )
+  ) {
+    return false;
+  }
+
+  return value === "**" || !segments.includes("**");
 }
 
 /**
@@ -87,7 +100,7 @@ export const eventFiltersSchema = z
   .record(
     z.string().refine(isValidEventType, {
       message:
-        "Event type must contain only alphanumeric, dots, hyphens, underscores, and wildcards",
+        "Event type must use complete alphanumeric, hyphen, underscore, or wildcard segments; ** is only allowed as a standalone pattern",
     }),
     filterValueSchema,
   )
@@ -212,7 +225,7 @@ export type ListWebhookSubscriptionsQuery = z.infer<
  *
  * Resolution order (first match wins):
  * 1. Exact match on event type (e.g. "attestation.created")
- * 2. Segment-level wildcard (e.g. "attestation.*")
+ * 2. Most-specific single-segment wildcard with the same segment count
  * 3. Recursive wildcard (e.g. "**" matches everything)
  *
  * When a filter object is matched, every key in the filter must exist as a
@@ -241,10 +254,14 @@ export function evaluateEventFilter(
     return matchesFilterObject(exact, eventPayload);
   }
 
-  // 2. Segment-level wildcard (e.g. "attestation.*")
+  // 2. Single-segment wildcard, preferring a wildcard in a later segment.
   const segments = eventType.split(".");
-  for (let i = 0; i < segments.length; i++) {
-    const wildcardPattern = [...segments.slice(0, i), "*"].join(".");
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const wildcardPattern = [
+      ...segments.slice(0, i),
+      "*",
+      ...segments.slice(i + 1),
+    ].join(".");
     const match = filters[wildcardPattern];
     if (typeof match === "boolean") return match;
     if (typeof match === "object" && match !== null) {
