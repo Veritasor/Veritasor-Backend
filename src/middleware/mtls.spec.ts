@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import tls from "node:tls";
 import type { Server as HttpsServer } from "node:https";
 import { config } from "../config/index.js";
-import { registerMtlsServer, reloadMtlsCertificates } from "./mtls.js";
+import {
+  applyRotatedTlsMaterial,
+  registerMtlsServer,
+  reloadMtlsCertificates,
+} from "./mtls.js";
 import { mtlsReloadsTotal } from "../metrics.js";
 
 vi.mock("node:fs/promises");
@@ -61,10 +65,21 @@ describe("mTLS Reload SIGHUP Handler", () => {
       ca: "valid ca",
       cert: "valid cert",
       key: "valid key",
-      requestCert: true,
-      rejectUnauthorized: false,
     });
     expect(mtlsReloadsTotal.inc).toHaveBeenCalledWith({ outcome: "success" });
+  });
+
+  it("applies rotated TLS material without server-level options", () => {
+    const material = {
+      ca: Buffer.from("rotated ca"),
+      cert: Buffer.from("rotated cert"),
+      key: Buffer.from("rotated key"),
+    };
+
+    applyRotatedTlsMaterial(mockServer, material);
+
+    expect(mockServer.setSecureContext).toHaveBeenCalledOnce();
+    expect(mockServer.setSecureContext).toHaveBeenCalledWith(material);
   });
 
   it("should not reload if mTLS is disabled", async () => {

@@ -299,7 +299,7 @@ describe("rateLimiter — Redis store (ioredis)", () => {
     );
   });
 
-  it("falls back to memoryStore when Redis connection fails", async () => {
+  it("rejects when Redis connection fails so middleware can apply its failure policy", async () => {
     process.env.REDIS_URL = "redis://127.0.0.1:6379";
     mockRedisClient.once.mockImplementation((event: string, _cb: any, reject: any) => {
       // simulate error immediately
@@ -310,8 +310,7 @@ describe("rateLimiter — Redis store (ioredis)", () => {
       throw new Error("Connection refused");
     });
 
-    const store = await getStore();
-    expect(store).toBe(memoryStore);
+    await expect(getStore()).rejects.toThrow("Connection refused");
   });
 
   it("falls back to memoryStore at middleware level when eval throws", async () => {

@@ -15,7 +15,7 @@
  */
 
 import { Router } from "express";
-import { requireAuth } from "../middleware/requireAuth.js";
+import { requireBusinessAuth } from "../middleware/requireBusinessAuth.js";
 import { validateBody, validateQuery } from "../middleware/validate.js";
 import { asyncErrorHandler } from "../middleware/errorHandler.js";
 import { NotFoundError, ConflictError } from "../types/errors.js";
@@ -25,7 +25,6 @@ import {
   listWebhookSubscriptionsQuerySchema,
 } from "../schemas/webhookSubscription.js";
 import * as repo from "../repositories/webhookSubscriptionRepository.js";
-import { resolveBusinessIdForUser } from "../services/business/resolveBusiness.js";
 
 const MAX_SUBSCRIPTIONS_PER_BUSINESS = 10;
 
@@ -39,22 +38,20 @@ export const webhookSubscriptionsRouter = Router();
  */
 webhookSubscriptionsRouter.get(
   "/",
-  requireAuth,
+  requireBusinessAuth,
   validateQuery(listWebhookSubscriptionsQuerySchema),
   asyncErrorHandler(async (req, res) => {
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-    if (!businessId) {
-      throw new NotFoundError("Business not found for the authenticated user");
-    }
+    const businessId = req.business!.id;
 
     const query = listWebhookSubscriptionsQuerySchema.parse(req.query);
     query.businessId = businessId;
 
     const result = await repo.list(query);
+    const publicSubscriptions = result.data.map(repo.toPublicSubscription);
 
     res.status(200).json({
       status: "success",
-      data: result.data,
+      data: publicSubscriptions,
       ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
     });
   }),
@@ -67,19 +64,16 @@ webhookSubscriptionsRouter.get(
  */
 webhookSubscriptionsRouter.get(
   "/:id",
-  requireAuth,
+  requireBusinessAuth,
   asyncErrorHandler(async (req, res) => {
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-    if (!businessId) {
-      throw new NotFoundError("Business not found for the authenticated user");
-    }
+    const businessId = req.business!.id;
 
     const subscription = await repo.getById(req.params.id, businessId);
     if (!subscription) {
       throw new NotFoundError("Webhook subscription not found");
     }
 
-    res.status(200).json({ status: "success", data: subscription });
+    res.status(200).json({ status: "success", data: repo.toPublicSubscription(subscription) });
   }),
 );
 
@@ -93,13 +87,10 @@ webhookSubscriptionsRouter.get(
  */
 webhookSubscriptionsRouter.post(
   "/",
-  requireAuth,
+  requireBusinessAuth,
   validateBody(createWebhookSubscriptionSchema),
   asyncErrorHandler(async (req, res) => {
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-    if (!businessId) {
-      throw new NotFoundError("Business not found for the authenticated user");
-    }
+    const businessId = req.business!.id;
 
     // Enforce per-business subscription capacity
     const existingCount = await repo.countByBusiness(businessId);
@@ -110,8 +101,12 @@ webhookSubscriptionsRouter.post(
     }
 
     const subscription = await repo.create(businessId, req.body);
+    const publicSubscription = repo.toPublicSubscription(subscription);
 
-    res.status(201).json({ status: "success", data: subscription });
+    res.status(201).json({
+      status: "success",
+      data: { ...publicSubscription, secret: subscription.secret },
+    });
   }),
 );
 
@@ -124,13 +119,10 @@ webhookSubscriptionsRouter.post(
  */
 webhookSubscriptionsRouter.patch(
   "/:id",
-  requireAuth,
+  requireBusinessAuth,
   validateBody(updateWebhookSubscriptionSchema),
   asyncErrorHandler(async (req, res) => {
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-    if (!businessId) {
-      throw new NotFoundError("Business not found for the authenticated user");
-    }
+    const businessId = req.business!.id;
 
     const input = req.body;
 
@@ -139,7 +131,7 @@ webhookSubscriptionsRouter.patch(
       throw new NotFoundError("Webhook subscription not found");
     }
 
-    res.status(200).json({ status: "success", data: updated });
+    res.status(200).json({ status: "success", data: repo.toPublicSubscription(updated) });
   }),
 );
 
@@ -150,12 +142,9 @@ webhookSubscriptionsRouter.patch(
  */
 webhookSubscriptionsRouter.delete(
   "/:id",
-  requireAuth,
+  requireBusinessAuth,
   asyncErrorHandler(async (req, res) => {
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-    if (!businessId) {
-      throw new NotFoundError("Business not found for the authenticated user");
-    }
+    const businessId = req.business!.id;
 
     const deleted = await repo.remove(req.params.id, businessId);
     if (!deleted) {

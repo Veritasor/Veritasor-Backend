@@ -1,7 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { EnvAdapter, FileAdapter, VaultAdapter, createSecretLoader, SecretLoadError, SecretNotFoundError } from './secret-loader.js'
+import {
+  EnvAdapter,
+  VaultAdapter,
+  AwsSecretsAdapter,
+  GsmSecretAdapter,
+  createSecretLoader,
+  SecretNotFoundError,
+  SecretLoadError,
+} from './secret-loader.js'
+import { logger } from './logger.js'
+
+let mockSend: ReturnType<typeof vi.fn>
+let mockAccessSecretVersion: ReturnType<typeof vi.fn>
+
+vi.mock('@aws-sdk/client-secrets-manager', () => ({
+  SecretsManagerClient: vi.fn(function () { return { send: mockSend } }),
+  GetSecretValueCommand: vi.fn(),
+}))
+
+vi.mock('@google-cloud/secret-manager', () => ({
+  SecretManagerServiceClient: vi.fn(function () {
+    return { accessSecretVersion: mockAccessSecretVersion }
+  }),
+}))
 
 let mockKmsSend: ReturnType<typeof vi.fn>
 vi.mock('@aws-sdk/client-kms', () => {
@@ -230,6 +251,17 @@ describe('SecretLoader', () => {
       expect(() => createSecretLoader({ provider: 'vault' })).toThrow(SecretLoadError)
       expect(() => createSecretLoader({ provider: 'gsm' })).toThrow(SecretLoadError)
       expect(() => createSecretLoader({ provider: 'invalid' as any })).toThrow(SecretLoadError)
+    })
+
+    it('creates Vault adapter when SECRET_LOADER=vault and VAULT_* env variables are set', () => {
+      process.env.SECRET_LOADER = 'vault'
+      process.env.VAULT_BASE_URL = 'https://vault.example.com'
+      process.env.VAULT_SECRET_PATH = 'secret/data/veritasor'
+      process.env.VAULT_TOKEN = 's.mocktoken'
+
+      const loader = createSecretLoader()
+      expect(loader).toBeDefined()
+      expect((loader as any).primaryAdapter).toBeInstanceOf(VaultAdapter)
     })
   })
 

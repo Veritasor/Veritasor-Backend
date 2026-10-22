@@ -23,8 +23,16 @@
  */
 
 import crypto from "node:crypto";
-import { createSecretLoader } from "../../utils/secret-loader.js";
+import { egressManifestUnsignedTotal } from "../../metrics.js";
+import { secretLoader } from "../../utils/secret-loader.js";
 import { logger } from "../../utils/logger.js";
+
+export class EgressManifestSigningKeyError extends Error {
+  constructor() {
+    super("WEBHOOK_EGRESS_SIGNING_KEY is not configured");
+    this.name = "EgressManifestSigningKeyError";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -149,23 +157,25 @@ export function verifyManifestSignature(
 export async function getSignedManifest(
   now: Date = new Date()
 ): Promise<SignedEgressIpManifest> {
-  const loader = createSecretLoader();
-  let signingKey: string;
+  let signingKey = "";
 
   try {
-    signingKey = await loader.get("WEBHOOK_EGRESS_SIGNING_KEY");
+    signingKey = secretLoader.get("WEBHOOK_EGRESS_SIGNING_KEY");
   } catch {
-    // Fall back to a dev-only placeholder so local development still works;
-    // production deployments must supply the secret.
-    const fallback = process.env["WEBHOOK_EGRESS_SIGNING_KEY"];
-    if (fallback) {
-      signingKey = fallback;
-    } else {
+    signingKey = "";
+  }
+
+  signingKey ||= process.env["WEBHOOK_EGRESS_SIGNING_KEY"] ?? "";
+  if (!signingKey) {
+    if (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test") {
       logger.warn(
-        "WEBHOOK_EGRESS_SIGNING_KEY not configured – using insecure fallback. " +
-          "Set this secret in production."
+        "WEBHOOK_EGRESS_SIGNING_KEY not configured – using insecure fallback."
       );
       signingKey = "dev-insecure-signing-key-do-not-use-in-production";
+    } else {
+      egressManifestUnsignedTotal.inc();
+      logger.error("egress_manifest_unsigned: WEBHOOK_EGRESS_SIGNING_KEY is not configured");
+      throw new EgressManifestSigningKeyError();
     }
   }
 

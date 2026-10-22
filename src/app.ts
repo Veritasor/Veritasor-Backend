@@ -1,5 +1,5 @@
 import express, { type Express } from "express";
-import type { Server } from "node:http";
+import http, { type Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
 import type { Request, Response, NextFunction } from "express";
 import fs from "node:fs/promises";
@@ -14,7 +14,11 @@ import {
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { compressionMiddleware } from "./middleware/compression.js";
-import { mtlsMiddleware, registerMtlsServer } from "./middleware/mtls.js";
+import {
+  applyRotatedTlsMaterial,
+  mtlsMiddleware,
+  registerMtlsServer,
+} from "./middleware/mtls.js";
 import { createGrpcWorkloadApiClient } from "./spiffe/workloadApiClient.js";
 import { createSvidProvider, type SvidProvider } from "./spiffe/svidProvider.js";
 import { metricsRegistry } from "./metrics.js";
@@ -43,14 +47,14 @@ import {
 import { replayFailedSubmissions } from "./startup/replayFailedSubmissions.js";
 import { initializeOpenTelemetry } from "./tracing.js";
 import {
-  startIdempotencySweeper,
-  type IdempotencySweeperHandle,
   startIdempotencySweeperIfNeeded,
   stopIdempotencySweeper,
 } from "./middleware/idempotency.js";
 import {
   startPgBouncerScraperIfNeeded,
 } from "./services/pgbouncerScraper.js";
+
+export { stopIdempotencySweeper };
 
 /** Active SPIFFE SVID provider when mTLS uses the Workload API. */
 let activeSvidProvider: SvidProvider | undefined;
@@ -62,34 +66,19 @@ export function stopSpiffeSvidProviderIfNeeded(): void {
 
 export const telemetryReady = initializeOpenTelemetry();
 
+import {
+  prototypePollutionGuard,
+  hasForbiddenKeys,
+  hasForbiddenQuery,
+} from "./middleware/prototypePollution.js";
+
 // Security middleware to reject prototype pollution attempts
-const securityHeadersMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  if (req.query && Object.keys(req.query).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
-    res.status(400).json({
-      status: 'error',
-      code: 'VALIDATION_ERROR',
-      message: 'Invalid query parameters'
-    });
-    return;
-  }
-
-  if (req.body && typeof req.body === 'object') {
-    if (Object.keys(req.body).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
-      res.status(400).json({
-        status: 'error',
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid body fields'
-      });
-      return;
-    }
-  }
-
-  next();
-};
+export const securityHeadersMiddleware = prototypePollutionGuard;
 
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
 
+  app.set("trust proxy", config.trustProxy);
   app.use(requestLogger);
   app.use(securityHeaders);
   app.use(securityHeadersMiddleware);
@@ -101,6 +90,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
 
   // 3. Body Parsing
   app.use(express.json());
+  app.use(securityHeadersMiddleware);
   app.use(createCorsMiddleware());
 
   // Webhook subscription CRUD API (after body parsing)
@@ -123,10 +113,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/auth", authRouter);
   app.use("/api/businesses", businessRoutes);
   app.use("/api/health", healthRouter);
-  app.use("/api/integrations", integrationsRouter);
+  // Provider routers must be mounted before the generic integrations router.
+  // The generic router declares `/:integrationId`, which would otherwise
+  // shadow single-segment provider paths such as DELETE /api/integrations/razorpay.
   app.use("/api/integrations/razorpay", integrationsRazorpayRouter);
   app.use("/api/integrations/shopify", integrationsShopifyRouter);
   app.use("/api/integrations/stripe", integrationsStripeRouter);
+  app.use("/api/integrations", integrationsRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
@@ -209,67 +202,78 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
   const application = createApp(readinessReport);
   const { attachAttestationStream } = await import("./ws/attestationStream.js");
 
-  return new Promise(async (resolve) => {
-    let server: Server | HttpsServer;
-    const httpsServerRef: { current?: HttpsServer } = {};
+  let server: Server | HttpsServer;
+  const httpsServerRef: { current?: HttpsServer } = {};
 
-    if (config.mtls.enabled) {
-      const https = await import("node:https");
-      let ca: Buffer;
-      let cert: Buffer;
-      let key: Buffer;
+  if (config.mtls.enabled) {
+    const https = await import("node:https");
+    let ca: Buffer;
+    let cert: Buffer;
+    let key: Buffer;
 
-      if (config.mtls.spiffe.enabled) {
-        const svidProvider = createSvidProvider({
-          trustDomain: config.mtls.spiffe.trustDomain,
-          client: createGrpcWorkloadApiClient({
-            socketAddress: config.mtls.spiffe.workloadApiSocket,
-          }),
-          refreshRatio: config.mtls.spiffe.refreshRatio,
-          onRotate: (material) => {
-            httpsServerRef.current?.setSecureContext({
-              ca: material.ca,
-              cert: material.cert,
-              key: material.key,
-              requestCert: true,
-              rejectUnauthorized: false,
-            });
-          },
-        });
-        await svidProvider.start();
-        activeSvidProvider = svidProvider;
-        ({ ca, cert, key } = svidProvider.getTlsMaterial());
-      } else {
-        [ca, cert, key] = await Promise.all([
-          fs.readFile(config.mtls.caPath!),
-          fs.readFile(config.mtls.certPath!),
-          fs.readFile(config.mtls.keyPath!),
-        ]);
-      }
-
-      server = https.createServer(
-        {
-          ca,
-          cert,
-          key,
-          requestCert: true,
-          rejectUnauthorized: false, // We handle rejection in middleware
+    if (config.mtls.spiffe.enabled) {
+      const svidProvider = createSvidProvider({
+        trustDomain: config.mtls.spiffe.trustDomain,
+        client: createGrpcWorkloadApiClient({
+          socketAddress: config.mtls.spiffe.workloadApiSocket,
+        }),
+        refreshRatio: config.mtls.spiffe.refreshRatio,
+        onRotate: (material) => {
+          httpsServerRef.current?.setSecureContext({
+            ca: material.ca,
+            cert: material.cert,
+            key: material.key,
+            requestCert: true,
+            rejectUnauthorized: false,
+          });
         },
-        application
-      );
-      httpsServerRef.current = server as HttpsServer;
-      if (!config.mtls.spiffe.enabled) {
-        registerMtlsServer(httpsServerRef.current);
-      }
+      });
+      await svidProvider.start();
+      activeSvidProvider = svidProvider;
+      ({ ca, cert, key } = svidProvider.getTlsMaterial());
     } else {
-      // Create regular HTTP server
-      server = application.listen(port);
+      [ca, cert, key] = await Promise.all([
+        fs.readFile(config.mtls.caPath!),
+        fs.readFile(config.mtls.certPath!),
+        fs.readFile(config.mtls.keyPath!),
+      ]);
     }
 
-    server.listen(port, () => {
+    server = https.createServer(
+      {
+        ca,
+        cert,
+        key,
+        requestCert: true,
+        rejectUnauthorized: false, // We handle rejection in middleware
+      },
+      application
+    );
+    httpsServerRef.current = server as HttpsServer;
+    if (!config.mtls.spiffe.enabled) {
+      registerMtlsServer(httpsServerRef.current);
+    }
+  } else {
+    // Create regular HTTP server
+    server = http.createServer(application);
+  }
+
+  attachAttestationStream(server);
+
+  return new Promise<Server | HttpsServer>((resolve, reject) => {
+    const onError = (err: Error) => {
+      server.removeListener("listening", onListening);
+      reject(err);
+    };
+
+    const onListening = () => {
+      server.removeListener("error", onError);
       console.log(`[Server] Veritasor Backend listening on port ${port} (mTLS: ${config.mtls.enabled})`);
       resolve(server);
-    });
-    attachAttestationStream(server);
+    };
+
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port);
   });
 }
