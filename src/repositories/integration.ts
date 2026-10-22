@@ -89,6 +89,35 @@ export async function getById(id: string): Promise<Integration | null> {
   return integration ? cloneIntegration(integration) : null
 }
 
+/** Retrieve an integration for a provider within a business. */
+export async function getByBusinessIdAndProvider(
+  businessId: string,
+  provider: string,
+): Promise<Integration | null> {
+  for (const integration of integrations.values()) {
+    if (integration.businessId === businessId && integration.provider === provider) {
+      return cloneIntegration(integration)
+    }
+  }
+
+  return null
+}
+
+/** Load credentials for server-side Razorpay operations only. */
+export async function getRazorpayCredentials(
+  businessId: string,
+): Promise<{ apiKeyId: string; apiKeySecret: string } | null> {
+  const integration = await getByBusinessIdAndProvider(businessId, 'razorpay')
+  const apiKeyId = integration?.token.apiKeyId
+  const apiKeySecret = integration?.token.apiKeySecret
+
+  if (typeof apiKeyId !== 'string' || typeof apiKeySecret !== 'string') {
+    return null
+  }
+
+  return { apiKeyId, apiKeySecret }
+}
+
 /**
  * Create a new integration record
  * 

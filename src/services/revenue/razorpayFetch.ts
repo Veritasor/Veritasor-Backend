@@ -1,3 +1,5 @@
+import { getRazorpayCredentials } from '../../repositories/integration.js';
+
 export type RevenueEntry = {
   id: string;
   amount: number; // major units (e.g. INR -> rupees)
@@ -9,14 +11,23 @@ export type RevenueEntry = {
 
 /**
  * Fetch revenue entries from Razorpay between two ISO dates (inclusive).
- * Expects `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` in env.
+ * When a business ID is supplied, credentials are loaded from its connected
+ * Razorpay integration. Environment credentials remain available to legacy callers.
  */
 export async function fetchRazorpayRevenue(
   startDate: string,
-  endDate: string
+  endDate: string,
+  businessId?: string,
 ): Promise<RevenueEntry[]> {
-  const key = process.env.RAZORPAY_KEY_ID;
-  const secret = process.env.RAZORPAY_KEY_SECRET;
+  const businessCredentials = businessId
+    ? await getRazorpayCredentials(businessId)
+    : null;
+  if (businessId && !businessCredentials) {
+    throw new Error(`No Razorpay integration credentials found for business ${businessId}`);
+  }
+
+  const key = businessCredentials?.apiKeyId ?? process.env.RAZORPAY_KEY_ID;
+  const secret = businessCredentials?.apiKeySecret ?? process.env.RAZORPAY_KEY_SECRET;
   if (!key || !secret) {
     throw new Error('Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET environment variables');
   }

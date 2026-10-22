@@ -1,5 +1,5 @@
 import { Request, Response } from 'express'
-import { integrationRepository } from '../../../repositories/integrations.js'
+import * as integrationRepository from '../../../repositories/integration.js'
 
 /**
  * Disconnect a previously connected Razorpay integration.
@@ -13,12 +13,12 @@ export async function disconnectRazorpay(req: Request, res: Response) {
   const { id } = req.body ?? {}
   if (!id) return res.status(400).json({ error: 'id is required' })
 
-  const rec = integrationRepository.findById(id)
+  const rec = await integrationRepository.getById(id)
   if (!rec || rec.provider !== 'razorpay' || rec.businessId !== businessId) {
     return res.status(404).json({ error: 'Integration not found' })
   }
 
-  const ok = integrationRepository.deleteById(id)
+  const ok = await integrationRepository.deleteById(businessId, id)
   if (!ok) return res.status(500).json({ error: 'Failed to delete integration' })
 
   return res.json({ message: 'ok' })
@@ -37,7 +37,7 @@ export { disconnectRazorpay as disconnectRazorpayHandler }
 // - default export identity matches named export
 // - id boundary: empty string, null, undefined, 0 treated as missing
 // - body undefined handled via req.body ?? {}
-// - integrationRepository.findById/deleteById called with exact id
+// - integrationRepository.getById/deleteById called with exact id and business scope
 // - no deleteById call when record lookup fails
 // - no deleteById call when unauthorized
 // - response shape deterministic across repeated invocations

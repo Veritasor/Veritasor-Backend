@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { Request, Response } from 'express'
 import { z } from 'zod'
-import { integrationRepository } from '../../../repositories/integrations.js'
+import * as integrationRepository from '../../../repositories/integration.js'
 import { executeWithRetry } from '../clientWrapper.js'
 import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
 import { disconnectRazorpay } from './disconnect.js'
@@ -325,7 +325,10 @@ export async function connectRazorpay(req: Request, res: Response) {
     })
   }
 
-  const existingIntegration = integrationRepository.findByBusinessAndProvider(businessId, 'razorpay')
+  const existingIntegration = await integrationRepository.getByBusinessIdAndProvider(
+    businessId,
+    'razorpay',
+  )
   if (existingIntegration) {
     return res.status(409).json({ error: 'Razorpay integration already connected' })
   }
@@ -366,26 +369,32 @@ export async function connectRazorpay(req: Request, res: Response) {
     return res.status(502).json({ error: 'Failed to reach Razorpay API' })
   }
 
-  const record = integrationRepository.create({
+  const record = await integrationRepository.create({
     provider: 'razorpay',
     userId,
     businessId,
-    meta: {
+    externalId: apiKeyId,
+    token: { apiKeyId, apiKeySecret },
+    metadata: {
       apiKeyId,
-      apiKeySecret,
       credentialFingerprint: fingerprintCredentials(apiKeyId, apiKeySecret),
       verifiedAt: new Date().toISOString(),
     },
   })
 
   const safe = {
-    ...record,
+    id: record.id,
+    provider: record.provider,
+    userId: record.userId,
+    businessId: record.businessId,
+    externalId: record.externalId,
     meta: {
-      apiKeyId: record.meta.apiKeyId,
+      apiKeyId: record.metadata.apiKeyId,
       apiKeySecret: '*****',
-      credentialFingerprint: record.meta.credentialFingerprint,
-      verifiedAt: record.meta.verifiedAt,
+      credentialFingerprint: record.metadata.credentialFingerprint,
+      verifiedAt: record.metadata.verifiedAt,
     },
+    createdAt: record.createdAt,
   }
 
   return res.status(201).json(safe)

@@ -332,10 +332,10 @@ async function doSubmitAttestation(
 
     // 1. Fetch Revenue
     // Using Razorpay for now, as it's the only implemented fetch service.
-    // In a real scenario, this would loop over connected integrations from `integrationRepository`.
+    // Use the credentials belonging to the business submitting the attestation.
     let rawRevenue: RevenueEntry[];
     try {
-      rawRevenue = await fetchRazorpayRevenue(startDate, endDate);
+      rawRevenue = await fetchRazorpayRevenue(startDate, endDate, businessId);
     } catch (err: any) {
       throw new Error(`Failed to fetch revenue: ${err.message}`);
     }
@@ -529,4 +529,3 @@ export async function submitAttestation(userId: string, businessId: string, peri
     enqueueTime: Date.now(),
   }).then((inner) => inner);
 }
-
