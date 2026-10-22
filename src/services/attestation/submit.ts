@@ -3,7 +3,7 @@ import {
   fetchRazorpayRevenue,
   RevenueEntry,
 } from "../revenue/razorpayFetch.js";
-import { MerkleTree } from "../merkle.js";
+import { buildTree, getRoot } from "../merkle/index.js";
 import { attestationRepository } from "../../repositories/attestation.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
 import {
@@ -355,8 +355,8 @@ async function doSubmitAttestation(
       .sort(([m1], [m2]) => m1.localeCompare(m2))
       .map(([month, amount]) => `${month}:${amount.toFixed(2)}`);
 
-    const tree = new MerkleTree(leaves);
-    const root = tree.getRoot();
+    const tree = buildTree(leaves);
+    const root = getRoot(tree);
 
     if (!root) {
       throw new Error("Failed to generate Merkle root from aggregated data.");

@@ -8,7 +8,7 @@ import {
   getExportStatus,
   getExportArchive,
 } from '../services/user/dataExportService.js'
-import { consumeDownloadToken } from '../repositories/dataExportRepository.js'
+import { consumeDownloadToken, peekDownloadToken } from '../repositories/dataExportRepository.js'
 import { logger } from '../utils/logger.js'
 import { CachePolicies, setCacheControl } from '../utils/cacheControl.js'
 
@@ -61,15 +61,14 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
       return res.status(400).json({ message: 'Invalid export token' })
     }
 
-    // Verify and consume the token (one-time use)
-    const exportId = await consumeDownloadToken(token)
+    // Resolve readiness before consuming the one-time download token.
+    const exportId = await peekDownloadToken(token)
 
     if (!exportId) {
       // Token doesn't exist, already used, or expired
       return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
     }
 
-    // Get the export status
     const exportStatus = await getExportStatus(exportId)
 
     if (!exportStatus) {
@@ -84,6 +83,10 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
         status: exportStatus.status,
         message: 'Export is still being processed',
       })
+    }
+
+    if (await consumeDownloadToken(token) !== exportId) {
+      return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
     }
 
     // Get the encrypted archive

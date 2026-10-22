@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
 import { requirePermissions, requirePolicy } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';

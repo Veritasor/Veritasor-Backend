@@ -7,9 +7,9 @@
  *
  *   1. Signal received (SIGTERM or SIGINT)
  *   2. Mark `isShuttingDown = true` so repeated signals force-exit immediately
- *   3. Stop accepting new HTTP connections: `server.close()`
- *   4. Wait for all in-flight requests to finish draining
- *   5. Close the PostgreSQL pool: `pool.end()`
+ *   3. Stop background workers while the database remains available
+ *   4. Close WebSockets and HTTP connections, including idle keep-alive sockets
+ *   5. Drain and close the PostgreSQL pool
  *   6. Exit cleanly with code 0
  *
  * Bounded timeout:
@@ -38,11 +38,9 @@ export interface ShutdownOptions {
    * tests can pass a plain stub without importing pg.
    */
   pool: Pick<Pool, 'end'>;
-  /**
-   * Optional hook called after the DB pool has closed successfully.
-   * Useful for flushing telemetry exporters or closing other resources.
-   */
+  /** Stop background workers before closing the server and database pool. */
   onCleanup?: () => Promise<void>;
+  closeWebSockets?: () => Promise<void> | void;
 }
 
 export interface ShutdownOrchestrator {
@@ -144,28 +142,34 @@ export function createShutdownOrchestrator(opts: ShutdownOptions): ShutdownOrche
 /**
  * The async shutdown sequence.
  *
- * Step 1 — `server.close()`: Node stops accepting new connections.  Active
+ * Step 1 — stop workers and WebSockets.
+ * Step 2 — `server.close()`: Node stops accepting new connections.  Active
  *   keep-alive connections are tracked by the server; this call waits for all
  *   in-flight requests to complete before invoking the callback.
  *
- * Step 2 — `pool.end()`: pg drains idle clients, waits for any active queries
+ * Step 3 — `pool.end()`: pg drains idle clients, waits for any active queries
  *   to finish, then closes all sockets.
  *
- * Step 3 — optional cleanup hook (OpenTelemetry flush, etc.)
  */
 async function performShutdown(
   server: Server,
   opts: ShutdownOptions,
   timeoutMs: number,
 ): Promise<void> {
-  // ── Step 1: stop accepting new HTTP connections ──────────────────────────
+  // ── Step 1: stop background workers while database access is available ──
+  if (opts.onCleanup) {
+    try { await opts.onCleanup(); } catch (err) { console.error('[Shutdown] Error in onCleanup hook:', err); }
+  }
+  try { await opts.closeWebSockets?.(); } catch (err) { console.error('[Shutdown] Error closing WebSockets:', err); }
+
+  // ── Step 2: stop accepting new HTTP connections ─────────────────────────
   logger.info({ event: 'shutdown_server_closing' });
 
   await closeServer(server, timeoutMs);
 
   logger.info({ event: 'shutdown_server_closed' });
 
-  // ── Step 2: drain the PostgreSQL pool ───────────────────────────────────
+  // ── Step 3: drain the PostgreSQL pool ───────────────────────────────────
   logger.info({ event: 'shutdown_pool_draining' });
 
   try {
@@ -175,25 +179,14 @@ async function performShutdown(
     // Log but do not rethrow — a pool-close error should not block exit
     console.error('[Shutdown] Error while closing DB pool:', err);
   }
-
-  // ── Step 3: optional user-supplied cleanup hook ──────────────────────────
-  if (opts.onCleanup) {
-    try {
-      await opts.onCleanup();
-    } catch (err: unknown) {
-      console.error('[Shutdown] Error in onCleanup hook:', err);
-    }
-  }
 }
 
 /**
  * Wrap `server.close()` in a Promise.
  *
  * `server.close()` stops accepting connections but Node's built-in behaviour
- * keeps keep-alive sockets open until they idle out. We do NOT forcibly destroy
- * them here because the bounded deadline timer in the signal handler will
- * force-exit the process if the drain takes too long, providing the necessary
- * back-stop without prematurely terminating legitimate in-flight requests.
+ * closes idle keep-alive sockets immediately after initiating close, while
+ * allowing active requests to finish draining.
  */
 function closeServer(server: Server, _timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -204,6 +197,7 @@ function closeServer(server: Server, _timeoutMs: number): Promise<void> {
         resolve();
       }
     });
+    server.closeIdleConnections?.();
   });
 }
 

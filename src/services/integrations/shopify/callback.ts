@@ -9,8 +9,6 @@ import * as store from "./store.js";
 import { logger } from "../../../utils/logger.js";
 import { computeShopifyHmac } from "./utils.js";
 import { timingSafeEqual } from "crypto";
-import { executeWithRetry } from "../clientWrapper.js";
-import { GlobalRetryBudgetExceededError } from "../retryBudget.js";
 
 export interface CallbackParams {
   code: string;
@@ -127,22 +125,14 @@ export async function handleCallback(
 
   let res: Response;
   try {
-    res = await executeWithRetry(
-      () =>
-        fetch(tokenUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            Accept: "application/json",
-          },
-          body: body.toString(),
-        }),
-      {
-        provider: "shopify",
-        operation: "oauth_token",
-        maxRetries: 2,
+    res = await fetch(tokenUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
       },
-    );
+      body: body.toString(),
+    });
   } catch (err) {
     logger.error(
       {
@@ -155,10 +145,7 @@ export async function handleCallback(
     );
     return {
       success: false,
-      error:
-        err instanceof GlobalRetryBudgetExceededError
-          ? "Global outbound retry budget exhausted"
-          : "Token exchange request failed",
+      error: "Token exchange request failed",
     };
   }
 

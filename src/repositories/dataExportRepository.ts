@@ -119,21 +119,18 @@ export async function consumeDownloadToken(token: string): Promise<string | null
   const client = getRedisClient()
   const tokenKey = `${TOKEN_KEY_PREFIX}${token}`
 
-  const data = await redisCircuitBreaker.execute(() => client.get(tokenKey))
+  const script = `local value = redis.call('GET', KEYS[1]); if not value then return nil end; local data = cjson.decode(value); if data.downloaded then return nil end; data.downloaded = true; redis.call('SET', KEYS[1], cjson.encode(data), 'KEEPTTL'); return data.exportId`
+  const result = await redisCircuitBreaker.execute(() => client.eval(script, 1, tokenKey))
+  return typeof result === 'string' ? result : null
+}
+
+/** Read the export ID without consuming the one-time token. */
+export async function peekDownloadToken(token: string): Promise<string | null> {
+  const client = getRedisClient()
+  const data = await redisCircuitBreaker.execute(() => client.get(`${TOKEN_KEY_PREFIX}${token}`))
   if (!data) return null
-
-  const tokenData = JSON.parse(data)
-
-  // Check if already downloaded
-  if (tokenData.downloaded) {
-    return null
-  }
-
-  // Mark as downloaded
-  tokenData.downloaded = true
-  await redisCircuitBreaker.execute(() => client.set(tokenKey, JSON.stringify(tokenData)))
-
-  return tokenData.exportId
+  const parsed = JSON.parse(data)
+  return parsed.downloaded ? null : parsed.exportId
 }
 
 /**

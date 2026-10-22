@@ -112,6 +112,48 @@ export const envSchema = z.object({
           });
         }
       }
+
+      const DEV_PERSISTED_QUERY_SECRET = 'default-dev-secret-do-not-use-in-prod';
+      if (!data.PERSISTED_QUERY_SECRET || data.PERSISTED_QUERY_SECRET.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PERSISTED_QUERY_SECRET must be at least 32 characters in production",
+          path: ["PERSISTED_QUERY_SECRET"]
+        });
+      } else if (data.PERSISTED_QUERY_SECRET === DEV_PERSISTED_QUERY_SECRET) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PERSISTED_QUERY_SECRET must not use the development default in production",
+          path: ["PERSISTED_QUERY_SECRET"]
+        });
+      }
+
+      if (!data.SOROBAN_CONTRACT_ID || data.SOROBAN_CONTRACT_ID.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SOROBAN_CONTRACT_ID is required in production",
+          path: ["SOROBAN_CONTRACT_ID"]
+        });
+      } else if (!/^C[A-Z2-7]{55}$/.test(data.SOROBAN_CONTRACT_ID)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SOROBAN_CONTRACT_ID must be a valid Soroban contract strkey (C + 55 base32 chars)",
+          path: ["SOROBAN_CONTRACT_ID"]
+        });
+      }
+
+      const expectedPassphrase = data.STELLAR_NETWORK === "public"
+        ? "Public Global Stellar Network ; September 2015"
+        : data.STELLAR_NETWORK === "testnet"
+          ? "Test SDF Network ; September 2015"
+          : "Test SDF Future Network ; October 2022";
+      if (data.SOROBAN_NETWORK_PASSPHRASE !== expectedPassphrase) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `SOROBAN_NETWORK_PASSPHRASE must match STELLAR_NETWORK=${data.STELLAR_NETWORK} in production`,
+          path: ["SOROBAN_NETWORK_PASSPHRASE"]
+        });
+      }
     }
 });
 

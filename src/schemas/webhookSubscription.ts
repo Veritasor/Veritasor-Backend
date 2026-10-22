@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isIP } from "node:net";
 
 // ---------------------------------------------------------------------------
 // Event Filter DSL
@@ -116,22 +117,45 @@ function hasBlockedScheme(url: string): boolean {
   );
 }
 
-function isValidUrl(value: string): boolean {
+export function isValidWebhookUrl(value: string): boolean {
   if (value.length > URL_MAX_LENGTH) return false;
   if (hasBlockedScheme(value)) return false;
   try {
     const u = new URL(value);
-    return u.protocol === "http:" || u.protocol === "https:";
+    if (u.username || u.password) return false;
+    if (u.protocol !== "https:") {
+      return process.env.NODE_ENV !== 'production' && u.protocol === 'http:' &&
+        (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]');
+    }
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) return false;
+    if (isIP(host)) return !isBlockedAddress(host);
+    return true;
   } catch {
     return false;
   }
+}
+
+export function isBlockedAddress(address: string): boolean {
+  if (isIP(address) === 4) {
+    const n = address.split('.').map(Number);
+    return n[0] === 0 || n[0] === 10 || n[0] === 127 || n[0] >= 224 ||
+      (n[0] === 169 && n[1] === 254) || (n[0] === 172 && n[1] >= 16 && n[1] <= 31) ||
+      (n[0] === 192 && (n[1] === 168 || (n[1] === 0 && n[2] === 0) || (n[1] === 88 && n[2] === 99))) ||
+      (n[0] === 198 && (n[1] === 18 || n[1] === 19)) ||
+      (n[0] === 100 && n[1] >= 64 && n[1] <= 127);
+  }
+  const v = address.toLowerCase();
+  if (v.startsWith('::ffff:')) return isBlockedAddress(v.slice(7));
+  return v === '::' || v === '::1' || v.startsWith('fc') || v.startsWith('fd') ||
+    /^fe[89ab]/.test(v) || v.startsWith('ff');
 }
 
 const urlField = z
   .string()
   .min(1, "URL is required")
   .max(URL_MAX_LENGTH, `URL must not exceed ${URL_MAX_LENGTH} characters`)
-  .refine(isValidUrl, "URL must be a valid HTTPS endpoint");
+  .refine(isValidWebhookUrl, "URL must be a valid public HTTPS endpoint");
 
 const secretField = z
   .string()

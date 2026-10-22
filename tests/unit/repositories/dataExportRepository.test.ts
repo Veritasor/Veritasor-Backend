@@ -19,6 +19,7 @@ function createRedisStub() {
     set: [] as Array<{ key: string; value: string }>,
     get: [] as string[],
     del: [] as string[],
+    eval: [] as string[],
   };
 
   const client = {
@@ -45,6 +46,16 @@ function createRedisStub() {
     del: vi.fn(async (key: string) => {
       calls.del.push(key);
       return store.delete(key) ? 1 : 0;
+    }),
+    eval: vi.fn(async (_script: string, _numKeys: number, key: string) => {
+      calls.eval.push(key);
+      const entry = store.get(key);
+      if (!entry) return null;
+      const value = JSON.parse(entry.value);
+      if (value.downloaded) return null;
+      value.downloaded = true;
+      store.set(key, { ...entry, value: JSON.stringify(value) });
+      return value.exportId;
     }),
   };
 
@@ -311,7 +322,7 @@ describe('DataExportRepository', () => {
       const exportId = await consumeDownloadToken('tok-1');
 
       expect(exportId).toBe('export-1');
-      expect(redis.calls.set).toHaveLength(1);
+      expect(redis.calls.eval).toHaveLength(1);
       expect(JSON.parse(redis.store.get('data-export-token:tok-1')!.value)).toEqual({
         exportId: 'export-1',
         downloaded: true,
@@ -335,6 +346,16 @@ describe('DataExportRepository', () => {
       expect(await consumeDownloadToken('tok-3')).toBeNull();
       // Rejected tokens are not re-marked via set.
       expect(redis.calls.set).toHaveLength(0);
+    });
+
+    it('allows exactly one concurrent consumer and preserves the original TTL', async () => {
+      const token = await createDownloadToken('concurrent-export');
+      const key = `data-export-token:${token}`;
+      const before = redis.store.get(key)!.expiresAt;
+      const results = await Promise.all(Array.from({ length: 5 }, () => consumeDownloadToken(token)));
+      expect(results.filter(Boolean)).toEqual(['concurrent-export']);
+      expect(redis.store.get(key)!.expiresAt).toBe(before);
+      expect(redis.store.get(key)!.expiresAt).toBeGreaterThan(Date.now());
     });
 
     it('surfaces Redis failures instead of swallowing them', async () => {
