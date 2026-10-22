@@ -1,9 +1,13 @@
 import crypto from "crypto";
 import * as https from "https";
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
+import { isBlockedAddress, isValidWebhookUrl } from '../../schemas/webhookSubscription.js';
 import { secretLoader } from "../../utils/secret-loader.js";
 import { staleWebhookDeliveries } from "../../metrics.js";
 import { createAuditLog } from "../../repositories/auditLogRepository.js";
 import { createDeliveryReceipt } from "../../repositories/deliveryReceiptRepository.js";
+import { evaluateEventFilter } from "../../schemas/webhookSubscription.js";
 
 export class WebhookPayloadTooLargeError extends Error {
   public readonly code = 'PAYLOAD_TOO_LARGE';
@@ -195,66 +199,19 @@ export interface SendWebhookDeliveryResult {
  * based on its event-filters DSL.
  *
  * When no filters are configured, all events are delivered.
- * Otherwise the first matching rule (exact → segment wildcard → recursive)
- * determines delivery.
+ * Otherwise the first matching rule (exact → most-specific single-segment
+ * wildcard → recursive) determines delivery.
  */
 export function shouldDeliverEvent(
   eventType: string,
   eventPayload: Record<string, unknown>,
   subscription: WebhookSubscription,
 ): boolean {
-  const filters = subscription.eventFilters;
-  if (!filters || Object.keys(filters).length === 0) return true;
-
-  // 1. Exact match
-  const exact = filters[eventType];
-  if (typeof exact === "boolean") return exact;
-  if (typeof exact === "object" && exact !== null) {
-    return objectFilterMatches(exact, eventPayload);
-  }
-
-  // 2. Segment-level wildcard
-  const segments = eventType.split(".");
-  for (let i = 0; i < segments.length; i++) {
-    const pattern = [...segments.slice(0, i), "*"].join(".");
-    const match = filters[pattern];
-    if (typeof match === "boolean") return match;
-    if (typeof match === "object" && match !== null) {
-      return objectFilterMatches(match, eventPayload);
-    }
-  }
-
-  // 3. Recursive wildcard
-  const recursive = filters["**"];
-  if (typeof recursive === "boolean") return recursive;
-  if (typeof recursive === "object" && recursive !== null) {
-    return objectFilterMatches(recursive, eventPayload);
-  }
-
-  return true;
-}
-
-function objectFilterMatches(
-  filter: Record<string, string>,
-  payload: Record<string, unknown>,
-): boolean {
-  for (const [key, expectedValue] of Object.entries(filter)) {
-    const actualValue = resolveDotPath(payload, key);
-    if (actualValue === undefined) return false;
-    if (String(actualValue) !== expectedValue) return false;
-  }
-  return true;
-}
-
-function resolveDotPath(obj: Record<string, unknown>, path: string): unknown {
-  const parts = path.split(".");
-  let current: unknown = obj;
-  for (const part of parts) {
-    if (current === null || current === undefined) return undefined;
-    if (typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
+  return evaluateEventFilter(
+    eventType,
+    eventPayload,
+    subscription.eventFilters ?? {},
+  );
 }
 
 export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): Promise<SendWebhookDeliveryResult> {
@@ -308,20 +265,33 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
   let responseBody: string | undefined;
 
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        ...headers,
-        "Content-Type": "application/json",
-      },
-      body: serializedPayload,
-      agent,
+    if (!isValidWebhookUrl(url) || !url.startsWith('https://')) throw new Error('Webhook URL is not allowed');
+    const parsed = new URL(url);
+    const records = isIP(parsed.hostname.replace(/^\[|\]$/g, ''))
+      ? [{ address: parsed.hostname.replace(/^\[|\]$/g, ''), family: isIP(parsed.hostname.replace(/^\[|\]$/g, '')) }]
+      : await lookup(parsed.hostname, { all: true, verbatim: true });
+    if (!records.length || records.some((record) => isBlockedAddress(record.address))) throw new Error('Webhook host resolves to a restricted address');
+    const vetted = records[0];
+    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const request = https.request(parsed, {
+        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        agent, timeout: 10_000,
+        lookup: ((_hostname: string, options: any, callback: any) => {
+          if (options?.all) callback(null, records);
+          else callback(null, vetted.address, vetted.family);
+        }) as any,
+      }, (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => { if (body.length < 2048) body += chunk.slice(0, 2048 - body.length); });
+        response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+      });
+      request.on('timeout', () => request.destroy(new Error('Webhook request timed out')));
+      request.on('error', reject);
+      request.end(serializedPayload);
     });
-
-    statusCode = response.status;
-
-    const text = await response.text();
-    responseBody = text.length > 2048 ? text.slice(0, 2048) : text;
+    statusCode = result.status;
+    responseBody = result.body;
   } catch (error) {
     statusCode = 0;
     responseBody = error instanceof Error ? error.message : "Unknown networking error";

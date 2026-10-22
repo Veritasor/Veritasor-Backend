@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import dotenv from 'dotenv'
 import { logger } from './logger.js'
+import { config } from '../config/index.js'
 
 export interface SecretLoader {
   get(key: string): string
@@ -45,6 +46,8 @@ export type SecretProvider = 'env' | 'file' | 'aws' | 'vault' | 'gsm'
 
 export interface SecretLoaderOptions {
   provider?: SecretProvider
+  source?: SecretProvider
+  filePath?: string
   timeout?: number
   fallbackEnabled?: boolean
   awsRegion?: string
@@ -130,32 +133,50 @@ export class EnvAdapter extends BaseSecretAdapter {
 }
 
 export class FileAdapter extends BaseSecretAdapter {
-  constructor(private readonly filePath: string = process.env.SECRET_FILE_PATH ?? '') {
+  constructor(private readonly filePath: string) {
     super()
   }
 
   async reload(): Promise<void> {
-    const resolvedPath = this.filePath || process.env.SECRET_FILE_PATH
-    if (!resolvedPath || resolvedPath.trim() === '') {
-      throw new SecretLoadError('SECRET_FILE_PATH is required when SECRET_PROVIDER=file')
+    const resolvedPath = path.resolve(this.filePath)
+
+    let content: string
+    try {
+      content = await fs.readFile(resolvedPath, 'utf8')
+    } catch (error) {
+      throw new SecretLoadError(`Failed to read secret file at ${resolvedPath}`, error instanceof Error ? error : undefined)
     }
 
-    const raw = await fs.readFile(resolvedPath, 'utf8')
-    const parsed = raw.trim().startsWith('{') ? JSON.parse(raw) : dotenv.parse(raw)
-    const normalized = BaseSecretAdapter.normalizeSecretValues(parsed)
-
-    if (normalized.size === 0) {
-      throw new SecretLoadError(`Secret file contains no usable values: ${resolvedPath}`)
-    }
-
-    this.secrets = normalized
+    const data = this.parseFile(resolvedPath, content)
+    this.secrets = BaseSecretAdapter.normalizeSecretValues(data)
     this.loaded = true
   }
 
-  get(key: string): string {
+  async get(key: string): Promise<string> {
     this.ensureLoaded()
-    const normalizedKey = BaseSecretAdapter.normalizeSecretKey(key)
-    return this.toSecretValue(this.secrets.get(normalizedKey), normalizedKey)
+    return this.toSecretValue(this.secrets.get(BaseSecretAdapter.normalizeSecretKey(key)), key)
+  }
+
+  private parseFile(filePath: string, content: string): Record<string, unknown> {
+    const trimmed = content.trim()
+    const isJson = filePath.toLowerCase().endsWith('.json') || trimmed.startsWith('{')
+
+    if (isJson) {
+      try {
+        const parsed = JSON.parse(content)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>
+        }
+      } catch (error) {
+        throw new SecretLoadError(`Failed to parse JSON secrets file at ${filePath}`, error instanceof Error ? error : undefined)
+      }
+    }
+
+    try {
+      return dotenv.parse(content)
+    } catch (error) {
+      throw new SecretLoadError(`Failed to parse dotenv secrets file at ${filePath}`, error instanceof Error ? error : undefined)
+    }
   }
 }
 
@@ -653,7 +674,6 @@ class FailoverSecretLoader extends BaseSecretAdapter {
         }
       }
       await this.fallbackAdapter.reload()
-      this.allSecrets = this.fallbackAdapter.allSecrets
       this.loaded = true
     }
   }
@@ -661,18 +681,24 @@ class FailoverSecretLoader extends BaseSecretAdapter {
   get(key: string): string {
     this.ensureLoaded()
     const normalizedKey = BaseSecretAdapter.normalizeSecretKey(key)
-    const direct = this.secrets.get(normalizedKey)
-    if (direct !== undefined) {
-      return direct
+    if (this.secrets.has(normalizedKey)) {
+      return this.toSecretValue(this.secrets.get(normalizedKey), key)
     }
-
     try {
-      return this.fallbackAdapter.get(key)
-    } catch (error) {
-      if (error instanceof SecretNotFoundError) {
-        return this.toSecretValue(undefined, key)
+      return await this.withTimeout(this.primaryAdapter.get(key), this.timeout)
+    } catch (primaryErr) {
+      if (this.diskCache) {
+        const cached = await this.diskCache.load()
+        if (cached) {
+          for (const [k, v] of cached.entries()) {
+            this.secrets.set(k, v)
+          }
+          if (this.secrets.has(normalizedKey)) {
+            return this.toSecretValue(this.secrets.get(normalizedKey), key)
+          }
+        }
       }
-      throw error
+      return await this.fallbackAdapter.get(key)
     }
   }
 
@@ -686,8 +712,14 @@ class FailoverSecretLoader extends BaseSecretAdapter {
   }
 }
 
-export function createSecretLoader(options: SecretLoaderOptions = {}): SecretLoader {
-  const provider = options.provider ?? (process.env.SECRET_PROVIDER as SecretProvider) ?? 'env'
+export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAdapter {
+  const provider =
+    options.provider ??
+    options.source ??
+    (process.env.SECRET_LOADER as SecretProvider) ??
+    (process.env.SECRET_PROVIDER as SecretProvider) ??
+    (config?.secretLoader?.source as SecretProvider) ??
+    'env'
   const timeout = options.timeout ?? 5000
   const fallbackEnabled = options.fallbackEnabled ?? true
   const fallbackAdapter = new EnvAdapter()
@@ -697,9 +729,12 @@ export function createSecretLoader(options: SecretLoaderOptions = {}): SecretLoa
     case 'env':
       return fallbackAdapter
     case 'file': {
-      const filePath = process.env.SECRET_FILE_PATH || options.vaultBaseUrl
+      const filePath =
+        options.filePath ??
+        config?.secretLoader?.filePath ??
+        process.env.SECRET_FILE_PATH
       if (!filePath) {
-        throw new SecretLoadError('SECRET_FILE_PATH is required when SECRET_PROVIDER=file')
+        throw new SecretLoadError('SECRET_FILE_PATH is required when SECRET_LOADER=file')
       }
       primaryAdapter = new FileAdapter(filePath)
       break
@@ -714,9 +749,18 @@ export function createSecretLoader(options: SecretLoaderOptions = {}): SecretLoa
       break
     }
     case 'vault': {
-      const baseUrl = options.vaultBaseUrl ?? process.env.VAULT_BASE_URL
-      const secretPath = options.vaultSecretPath ?? process.env.VAULT_SECRET_PATH
-      const token = options.vaultToken ?? process.env.VAULT_TOKEN
+      const baseUrl =
+        options.vaultBaseUrl ??
+        config?.secretLoader?.vault?.baseUrl ??
+        process.env.VAULT_BASE_URL
+      const secretPath =
+        options.vaultSecretPath ??
+        config?.secretLoader?.vault?.secretPath ??
+        process.env.VAULT_SECRET_PATH
+      const token =
+        options.vaultToken ??
+        config?.secretLoader?.vault?.token ??
+        process.env.VAULT_TOKEN
 
       if (!baseUrl) {
         throw new SecretLoadError('VAULT_BASE_URL is required when SECRET_PROVIDER=vault')
@@ -740,9 +784,13 @@ export function createSecretLoader(options: SecretLoaderOptions = {}): SecretLoa
   }
 
   if (fallbackEnabled) {
-    const kmsKeyId = process.env.SECRET_CACHE_KMS_KEY_ID
-    const cachePath = process.env.SECRET_CACHE_PATH
-    const ttlMinutes = Number(process.env.SECRET_CACHE_TTL_MINUTES || 60 * 24)
+    const kmsKeyId =
+      config?.secretLoader?.cache?.kmsKeyId ?? process.env.SECRET_CACHE_KMS_KEY_ID
+    const cachePath =
+      config?.secretLoader?.cache?.path ?? process.env.SECRET_CACHE_PATH
+    const ttlMinutes =
+      config?.secretLoader?.cache?.ttlMinutes ??
+      Number(process.env.SECRET_CACHE_TTL_MINUTES || 60 * 24)
     
     let diskCache: KmsDiskCache | undefined
     if (kmsKeyId && cachePath) {

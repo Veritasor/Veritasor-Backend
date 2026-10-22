@@ -31,6 +31,7 @@ interface RateLimiterOptions {
   windowMs?: number;
   max?: number;
   bucket?: RateLimiterBucketResolver;
+  failureMode?: "open" | "closed";
   /**
    * Rate-limiting algorithm to use.
    * Defaults to `"fixed"` for backward compatibility.
@@ -309,11 +310,10 @@ const storePromises = new Map<RateLimiterAlgorithm, Promise<RateLimitStore>>();
 export function getStore(algorithm: RateLimiterAlgorithm = "fixed"): Promise<RateLimitStore> {
   let storePromise = storePromises.get(algorithm);
   if (!storePromise) {
-    storePromise = (async () => {
+    const pendingStore = (async () => {
       const hasRedis = process.env.REDIS_URL || process.env.REDIS_CLUSTER_NODES;
-      const fallback = algorithm === "sliding" ? slidingWindowMemoryStore : memoryStore;
       if (!hasRedis) {
-        return fallback;
+        return algorithm === "sliding" ? slidingWindowMemoryStore : memoryStore;
       }
       try {
         const client = getRedisClient();
@@ -326,10 +326,16 @@ export function getStore(algorithm: RateLimiterAlgorithm = "fixed"): Promise<Rat
         logger.info(`Rate limiter initialized with Redis store (algorithm: ${algorithm}).`);
         return algorithm === "sliding" ? new SlidingWindowRedisStore(client) : new RedisStore(client);
       } catch (err) {
-        logger.error("Failed to initialize Redis rate limiter store, falling back to memory:", err);
-        return fallback;
+        logger.error("Failed to initialize Redis rate limiter store:", err);
+        throw err;
       }
     })();
+    storePromise = pendingStore.catch((err) => {
+      if (storePromises.get(algorithm) === storePromise) {
+        storePromises.delete(algorithm);
+      }
+      throw err;
+    });
     storePromises.set(algorithm, storePromise);
   }
   return storePromise;
@@ -349,12 +355,7 @@ function getClientIdentifier(req: Request): string {
     return `user:${req.user.userId}`;
   }
 
-  const forwardedFor = req.headers["x-forwarded-for"];
-  if (typeof forwardedFor === "string" && forwardedFor.trim().length > 0) {
-    return `ip:${forwardedFor.split(",")[0].trim()}`;
-  }
-
-  return `ip:${req.ip || req.socket.remoteAddress || "unknown"}`;
+  return `ip:${req.ip || "unknown"}`;
 }
 
 function getDefaultBucket(req: Request): string {
@@ -425,6 +426,7 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
   const windowMs = options.windowMs ?? parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, DEFAULT_WINDOW_MS);
   const max = options.max ?? parsePositiveInteger(process.env.RATE_LIMIT_MAX, DEFAULT_MAX);
   const algorithm: RateLimiterAlgorithm = options.algorithm ?? "fixed";
+  const failureMode = options.failureMode ?? "open";
 
   return (req: Request, res: Response, next: NextFunction): void => {
     const bucket = resolveBucket(req, options.bucket);
@@ -466,6 +468,11 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
         next();
       } catch (err) {
         logger.error("Critical error in rateLimiter middleware (sync):", err);
+        if (failureMode === "closed") {
+          res.setHeader("Retry-After", "1");
+          res.status(503).json({ error: "Rate limiting is temporarily unavailable." });
+          return;
+        }
         next();
       }
       return;
@@ -475,7 +482,10 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
     getStore(algorithm)
       .then((store) => store.increment(key, windowMs))
       .catch((err) => {
-        logger.error(`Rate limit store failed for key ${key}, falling back to memory:`, err);
+        logger.error(`Rate limit store failed for key ${key}:`, err);
+        if (failureMode === "closed") {
+          throw err;
+        }
         return algorithm === "sliding"
           ? slidingWindowMemoryStore.increment(key, windowMs)
           : memoryStore.increment(key, windowMs);
@@ -504,6 +514,11 @@ export const rateLimiter = (options: RateLimiterOptions = {}) => {
       })
       .catch((err) => {
         logger.error("Critical error in rateLimiter middleware (async):", err);
+        if (failureMode === "closed") {
+          res.setHeader("Retry-After", "1");
+          res.status(503).json({ error: "Rate limiting is temporarily unavailable." });
+          return;
+        }
         next();
       });
   };

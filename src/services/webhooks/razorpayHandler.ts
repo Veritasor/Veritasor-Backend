@@ -10,6 +10,7 @@ import {
 import { isEventProcessed, markEventProcessed, checkTimestampTolerance } from './idempotency.js'
 import { saveDeadLetter } from './deadLetterQueue.js'
 import { webhookRetryAttempts, webhookRetryExhaustedTotal } from '../../metrics.js'
+import { hasForbiddenKeys } from '../../middleware/prototypePollution.js'
 
 const HANDLED_EVENT_TYPES = new Set(['payment.captured', 'payment.failed', 'order.paid'])
 const DEFAULT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
@@ -150,6 +151,10 @@ export function parseRazorpayEvent(
     payload = JSON.parse(body)
   } catch {
     throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
+  }
+
+  if (hasForbiddenKeys(payload)) {
+    throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload: forbidden keys detected')
   }
 
   const parsedEvent = razorpayEventSchema.safeParse(payload)

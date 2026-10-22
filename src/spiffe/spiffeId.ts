@@ -1,6 +1,23 @@
 import type { PeerCertificate } from "node:tls";
 
+const SAN_URI_PREFIX = "URI:";
 const SPIFFE_URI_PREFIX = "URI:spiffe://";
+
+/**
+ * Structural validation for a SPIFFE ID parsed out of a URI SAN.
+ *
+ * SPIFFE IDs are strictly hierarchical URIs: query strings and fragments are
+ * not part of the grammar, and ".." path segments would allow traversal-style
+ * confusion when IDs are compared or logged. Returns false for anything that
+ * does not look like a plain hierarchical SPIFFE ID — callers must treat that
+ * as "no SPIFFE ID" (fail closed), never fall back to another identity.
+ */
+function isWellFormedSpiffeId(id: string): boolean {
+  if (id.includes("..") || id.includes("?") || id.includes("#")) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * Returns true when `id` is a SPIFFE ID belonging to `trustDomain`.
@@ -26,11 +43,17 @@ export function extractSpiffeIdFromCert(
     return undefined;
   }
 
-  for (const entry of subjectAltName.split(", ")) {
+  // SAN entries are comma-separated, but do not rely on an exact ", "
+  // separator — trim each entry so "a,URI:x" and "a, URI:x" both parse.
+  for (const rawEntry of subjectAltName.split(",")) {
+    const entry = rawEntry.trim();
     if (!entry.startsWith(SPIFFE_URI_PREFIX)) {
       continue;
     }
-    const spiffeId = entry.slice(4);
+    const spiffeId = entry.slice(SAN_URI_PREFIX.length);
+    if (!isWellFormedSpiffeId(spiffeId)) {
+      continue;
+    }
     if (isSpiffeIdInTrustDomain(spiffeId, trustDomain)) {
       return spiffeId;
     }

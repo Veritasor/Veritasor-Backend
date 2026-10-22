@@ -18,6 +18,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request = require('supertest');
 import { app } from '../../src/app.js';
 import { Business } from '../../src/repositories/business.js';
+import { generateToken } from '../../src/utils/jwt.js';
 
 const mockBusinesses: Business[] = [];
 
@@ -88,9 +89,20 @@ vi.mock('../../src/repositories/business.js', () => {
   };
 });
 
+vi.mock('../../src/repositories/userRepository.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/repositories/userRepository.js')>();
+  return {
+    ...actual,
+    findUserById: vi.fn(async (id: string) => ({
+      id,
+      email: `${id}@example.test`,
+      role: 'user' as const,
+    })),
+  };
+});
+
 const createAuthHeader = (userId: string = 'test-user-123') => ({
-  Authorization: `Bearer test-token-${userId}`,
-  'x-user-id': userId,
+  Authorization: `Bearer ${generateToken({ userId, email: `${userId}@example.test` })}`,
 });
 
 describe('Business Service Integration Tests', () => {

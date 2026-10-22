@@ -1,5 +1,4 @@
 import { db } from "../../db/client.js";
-import { NotFoundError } from "../types/errors.js";
 
 /**
  * Resolve the business ID for a given user ID.
@@ -11,7 +10,7 @@ export async function resolveBusinessIdForUser(
   userId: string,
 ): Promise<string | null> {
   const result = await db.query(
-    "SELECT id FROM businesses WHERE user_id = $1 LIMIT 1",
+    "SELECT id FROM businesses WHERE user_id = $1 ORDER BY created_at ASC, id ASC LIMIT 1",
     [userId],
   );
   if (result.rows.length === 0) return null;

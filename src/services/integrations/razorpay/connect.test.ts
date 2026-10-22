@@ -14,6 +14,11 @@ import {
   _seedOAuthState,
   validateRazorpayState,
 } from './connect.js'
+import {
+  clearAll,
+  create,
+  getRazorpayCredentials,
+} from '../../../repositories/integration.js'
 
 // ─── Mock helpers ─────────────────────────────────────────────────────────────
 
@@ -42,12 +47,51 @@ describe('razorpay/connect', () => {
     process.env.RAZORPAY_ALLOWED_REDIRECT_ORIGINS = 'https://app.veritasor.com'
     process.env.RAZORPAY_CLIENT_ID = 'rzp_test_client_id'
     _clearOAuthStateStore()
+    clearAll()
     vi.useFakeTimers()
   })
 
   afterEach(() => {
+    clearAll()
     process.env = originalEnv
     vi.useRealTimers()
+  })
+
+  describe('Razorpay credential lookup', () => {
+    it('loads server-side credentials for the requested business', async () => {
+      await create({
+        provider: 'razorpay',
+        userId: 'user-1',
+        businessId: 'business-1',
+        externalId: 'rzp_test_key',
+        token: {
+          apiKeyId: 'rzp_test_key',
+          apiKeySecret: 'server-only-secret',
+        },
+        metadata: { verifiedAt: new Date().toISOString() },
+      })
+
+      await expect(getRazorpayCredentials('business-1')).resolves.toEqual({
+        apiKeyId: 'rzp_test_key',
+        apiKeySecret: 'server-only-secret',
+      })
+    })
+
+    it('does not return credentials from another business', async () => {
+      await create({
+        provider: 'razorpay',
+        userId: 'user-1',
+        businessId: 'business-1',
+        externalId: 'rzp_test_key',
+        token: {
+          apiKeyId: 'rzp_test_key',
+          apiKeySecret: 'server-only-secret',
+        },
+        metadata: {},
+      })
+
+      await expect(getRazorpayCredentials('business-2')).resolves.toBeNull()
+    })
   })
 
   // ─── _clearOAuthStateStore ──────────────────────────────────────────────────

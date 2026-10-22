@@ -4,7 +4,7 @@ import {
   createDataExport,
   updateDataExportStatus,
   createDownloadToken,
-  getDataExport,
+  getExportForUser,
 } from '../../repositories/dataExportRepository.js'
 import { createGdprExport } from './createGdprExport.js'
 
@@ -46,11 +46,13 @@ export async function initiateDataExport(userId: string): Promise<ExportResponse
 }
 
 /**
- * Get export status
+ * Get export status for the owning user.
+ * Returns null when the export does not exist or belongs to someone else,
+ * so callers can fail closed with a 404.
  */
-export async function getExportStatus(exportId: string): Promise<ExportResponse | null> {
+export async function getExportStatus(exportId: string, userId: string): Promise<ExportResponse | null> {
   try {
-    const exportJob = await getDataExport(exportId)
+    const exportJob = await getExportForUser(exportId, userId)
     if (!exportJob) return null
 
     // Handle dates from Redis (they come as strings from JSON.parse)
@@ -61,14 +63,14 @@ export async function getExportStatus(exportId: string): Promise<ExportResponse 
       ? exportJob.createdAt
       : exportJob.createdAt.toISOString()
 
-    let response: ExportResponse = {
+    const response: ExportResponse = {
       exportId: exportJob.id,
       status: exportJob.status,
       expiresAt,
       createdAt,
     }
 
-    // If completed, generate download token
+    // If completed, generate download token for the owner
     if (exportJob.status === 'completed') {
       const downloadToken = await createDownloadToken(exportJob.id)
       response.downloadToken = downloadToken
@@ -76,7 +78,7 @@ export async function getExportStatus(exportId: string): Promise<ExportResponse 
 
     return response
   } catch (err) {
-    logger.error('Failed to get export status', { exportId, error: err })
+    logger.error('Failed to get export status', { exportId, userId, error: err })
     throw err
   }
 }

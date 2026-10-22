@@ -65,14 +65,25 @@ export async function executeWithRetry<T = Response>(
       return result as T;
     }
 
+    // Drain the response body before retrying to prevent socket leaks in undici
+    if (result !== null && typeof result === 'object' && 'body' in result) {
+      try {
+        await (result as unknown as Response).body?.cancel();
+      } catch {
+        // Ignore cancellation errors
+      }
+    }
+
     // Check global retry budget before attempting retry
     const allowed = await globalOutboundRetryBudget.canRetry(provider, operation);
     if (!allowed) {
       // Record exhaustion and throw budget exceeded error
       await globalOutboundRetryBudget.recordRetry(provider, operation).catch(() => {});
+      const settings = globalOutboundRetryBudget as { maxRetries: number; windowMs: number };
       throw new GlobalRetryBudgetExceededError(
         await globalOutboundRetryBudget.getRetryCount(),
-        50,
+        settings.maxRetries,
+        settings.windowMs,
       );
     }
 

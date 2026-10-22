@@ -1,5 +1,6 @@
-import { Pool, PoolConfig, QueryResult, QueryConfig } from 'pg';
-import { Logger } from '../utils/logger';
+import { Pool, PoolConfig, QueryResult, QueryConfig, QueryResultRow } from 'pg';
+import { Logger, logger } from '../utils/logger.js';
+import { config } from '../config/index.js';
 
 /**
  * PgBouncer mode detection and prepared statement guard
@@ -46,7 +47,7 @@ export class PgClient {
     this.pool = new Pool(poolConfig);
     
     // Initialize detection
-    this.initializePgBouncerDetection(pgbouncerMode);
+    this.initializePgBouncerDetection(pgbouncerMode, options);
     
     // Log the detection result
     this.logDetectionResult();
@@ -55,8 +56,11 @@ export class PgClient {
   /**
    * Initialize PgBouncer mode detection
    */
-  private initializePgBouncerDetection(overrideMode?: 'session' | 'transaction' | 'statement'): void {
-    const detection = this.detectPgBouncerMode(overrideMode);
+  private initializePgBouncerDetection(
+    overrideMode?: 'session' | 'transaction' | 'statement',
+    options?: ClientOptions
+  ): void {
+    const detection = this.detectPgBouncerMode(overrideMode, options);
     this.pgbouncerMode = detection;
     
     // If PgBouncer is in transaction mode, disable prepared statements
@@ -69,11 +73,17 @@ export class PgClient {
    * Detect PgBouncer pooling mode
    * 
    * Detection methods:
-   * 1. Environment variable PGBOUNCER_MODE
-   * 2. Introspection query (if supported)
-   * 3. Default to session mode (safe)
+   * 1. Options override (overrideMode / pgbouncerMode)
+   * 2. Environment variable PGBOUNCER_MODE
+   * 3. Connection string parameters (pool_mode, pgbouncer) or host/port
+   * 4. Connection options (host, port)
+   * 5. PgBouncer-specific connection parameters (PGPGBOUNCER, PGPOOL_MODE)
+   * 6. Default to session mode (safe)
    */
-  private detectPgBouncerMode(overrideMode?: 'session' | 'transaction' | 'statement'): PgBouncerDetectionResult {
+  private detectPgBouncerMode(
+    overrideMode?: 'session' | 'transaction' | 'statement',
+    options?: ClientOptions
+  ): PgBouncerDetectionResult {
     // Check for override first (testing/forced config)
     if (overrideMode) {
       const isSafe = overrideMode === 'session';
@@ -94,6 +104,75 @@ export class PgClient {
         detected: true,
         reason: `Detected via environment variable PGBOUNCER_MODE=${envMode}`,
         safe: isSafe,
+      };
+    }
+
+    // Check connection string parameters and host/port
+    if (options?.connectionString) {
+      try {
+        const parsedUrl = new URL(options.connectionString);
+        const poolMode = parsedUrl.searchParams.get('pool_mode')?.toLowerCase();
+        if (poolMode && ['session', 'transaction', 'statement'].includes(poolMode)) {
+          const isSafe = poolMode === 'session';
+          return {
+            mode: poolMode as 'session' | 'transaction' | 'statement',
+            detected: true,
+            reason: `Detected via connection string parameter pool_mode=${poolMode}`,
+            safe: isSafe,
+          };
+        }
+
+        const hasPgBouncerParam = parsedUrl.searchParams.has('pgbouncer');
+        const isPgBouncerHost = parsedUrl.hostname.toLowerCase().includes('pgbouncer');
+        const isPgBouncerPort = parsedUrl.port === '6432';
+
+        if (hasPgBouncerParam || isPgBouncerHost || isPgBouncerPort) {
+          return {
+            mode: 'unknown',
+            detected: true,
+            reason: hasPgBouncerParam
+              ? 'PgBouncer parameter detected in connection string, defaulting to safe mode'
+              : 'PgBouncer host or port detected in connection string, defaulting to safe mode',
+            safe: true,
+          };
+        }
+      } catch {
+        // Fallback for non-URL formatted connection strings (e.g. key=value)
+        const poolModeMatch = options.connectionString.match(/\bpool_mode=([a-zA-Z]+)/i);
+        if (poolModeMatch) {
+          const poolMode = poolModeMatch[1].toLowerCase();
+          if (['session', 'transaction', 'statement'].includes(poolMode)) {
+            const isSafe = poolMode === 'session';
+            return {
+              mode: poolMode as 'session' | 'transaction' | 'statement',
+              detected: true,
+              reason: `Detected via connection string parameter pool_mode=${poolMode}`,
+              safe: isSafe,
+            };
+          }
+        }
+        if (
+          /\bpgbouncer=true\b/i.test(options.connectionString) ||
+          /\bhost=[^\s]*pgbouncer/i.test(options.connectionString) ||
+          /\bport=6432\b/i.test(options.connectionString)
+        ) {
+          return {
+            mode: 'unknown',
+            detected: true,
+            reason: 'PgBouncer parameter detected in connection string, defaulting to safe mode',
+            safe: true,
+          };
+        }
+      }
+    }
+
+    // Check host or port in options
+    if (options?.host?.toLowerCase().includes('pgbouncer') || options?.port === 6432) {
+      return {
+        mode: 'unknown',
+        detected: true,
+        reason: 'PgBouncer host or port detected in options, defaulting to safe mode',
+        safe: true,
       };
     }
 
@@ -151,7 +230,7 @@ export class PgClient {
   /**
    * Query with automatic prepared statement handling
    */
-  async query<T = any>(
+  async query<T extends QueryResultRow = any>(
     text: string,
     params?: any[],
     options?: { disablePrepared?: boolean }
@@ -169,30 +248,30 @@ export class PgClient {
       this.logger.warn(
         'Prepared statement attempted in transaction mode - falling back to unnamed prepared statement'
       );
-      return this.executeUnnamed(text, params);
+      return this.executeUnnamed<T>(text, params);
     }
 
     if (usePrepared) {
-      return this.executePrepared(text, params);
+      return this.executePrepared<T>(text, params);
     }
 
-    return this.executeUnnamed(text, params);
+    return this.executeUnnamed<T>(text, params);
   }
 
   /**
    * Execute with unnamed prepared statement (safe for transaction pooling)
    */
-  private async executeUnnamed<T = any>(
+  private async executeUnnamed<T extends QueryResultRow = any>(
     text: string,
     params?: any[]
   ): Promise<QueryResult<T>> {
-    return this.pool.query(text, params);
+    return this.pool.query<T>(text, params);
   }
 
   /**
    * Execute with named prepared statement (unsafe for transaction pooling)
    */
-  private async executePrepared<T = any>(
+  private async executePrepared<T extends QueryResultRow = any>(
     text: string,
     params?: any[]
   ): Promise<QueryResult<T>> {
@@ -203,7 +282,7 @@ export class PgClient {
       await this.pool.query(`PREPARE ${name} AS ${text}`);
       
       // Execute with parameters
-      const result = await this.pool.query(`EXECUTE ${name}`, params);
+      const result = await this.pool.query<T>(`EXECUTE ${name}`, params);
       
       // Deallocate after use
       await this.pool.query(`DEALLOCATE ${name}`);
@@ -220,6 +299,35 @@ export class PgClient {
    */
   async getClient() {
     return this.pool.connect();
+  }
+
+  /**
+   * Run a callback inside a single transaction on a dedicated pooled client.
+   *
+   * The callback receives the checked-out client and must use it for every
+   * statement that should participate in the transaction (including audit
+   * log writes). The transaction is committed when the callback resolves and
+   * rolled back when it throws. The client is always released to the pool.
+   */
+  async withTransaction<T>(
+    fn: (client: import('pg').PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        this.logger.error('Transaction rollback failed:', rollbackError);
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -263,21 +371,76 @@ let pgClient: PgClient | null = null;
 /** Lazy singleton database client. */
 export const db: PgClient = new Proxy({} as PgClient, {
   get(_target, prop) {
-    return (getPgClient() as Record<string, unknown>)[prop as string];
+    return (getPgClient() as unknown as Record<string, unknown>)[prop as string];
   },
 });
 
+/**
+ * Reset the PgClient singleton instance (primarily for testing).
+ */
+export function resetPgClient(): void {
+  pgClient = null;
+}
+
+/**
+ * Configuration precedence for PgClient singleton:
+ * 1. Primary: DATABASE_URL (via config.db.url) takes precedence. When present,
+ *    options are constructed from config.db:
+ *    - connectionString: config.db.url
+ *    - max: config.db.poolMax (from PGPOOL_MAX, default: 10)
+ *    - idleTimeoutMillis: config.db.idleTimeoutMs (from PG_IDLE_TIMEOUT_MS, default: 30000)
+ *    - connectionTimeoutMillis: config.db.connectionTimeoutMs (from PG_CONN_TIMEOUT_MS, default: 2000)
+ *    - ssl: config.db.ssl (from PGSSL and PGSSL_REJECT_UNAUTHORIZED)
+ *    If legacy DB_* environment variables are also present, a warning is logged
+ *    noting that they are ignored in favor of DATABASE_URL.
+ * 2. Fallback (Deprecated): If DATABASE_URL / config.db.url is absent, connection
+ *    parameters fall back to legacy DB_* environment variables (DB_HOST, DB_PORT,
+ *    DB_NAME, DB_USER, DB_PASSWORD, DB_MAX_CONNECTIONS, DB_IDLE_TIMEOUT)
+ *    and a deprecation warning is logged.
+ */
 export function getPgClient(): PgClient {
   if (!pgClient) {
-    pgClient = new PgClient({
-      host: process.env.DB_HOST || 'localhost',
-      port: parseInt(process.env.DB_PORT || '5432', 10),
-      database: process.env.DB_NAME || 'veritasor',
-      user: process.env.DB_USER || 'postgres',
-      password: process.env.DB_PASSWORD,
-      max: parseInt(process.env.DB_MAX_CONNECTIONS || '20', 10),
-      idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10),
-    });
+    const hasLegacyDbEnv = Boolean(
+      process.env.DB_HOST ||
+      process.env.DB_PORT ||
+      process.env.DB_NAME ||
+      process.env.DB_USER ||
+      process.env.DB_PASSWORD ||
+      process.env.DB_MAX_CONNECTIONS ||
+      process.env.DB_IDLE_TIMEOUT
+    );
+
+    let clientOptions: ClientOptions;
+
+    if (config?.db?.url) {
+      if (hasLegacyDbEnv) {
+        logger.warn(
+          'DATABASE_URL is configured; legacy DB_* environment variables (DB_HOST, DB_PORT, etc.) are ignored.'
+        );
+      }
+      clientOptions = {
+        connectionString: config.db.url,
+        max: config.db.poolMax,
+        idleTimeoutMillis: config.db.idleTimeoutMs,
+        connectionTimeoutMillis: config.db.connectionTimeoutMs,
+        ...(config.db.ssl !== undefined ? { ssl: config.db.ssl } : {}),
+      };
+    } else {
+      logger.warn(
+        'DATABASE_URL is not configured; falling back to legacy DB_* environment variables. This fallback is deprecated and will be removed in a future release.'
+      );
+      clientOptions = {
+        host: process.env.DB_HOST || 'localhost',
+        port: parseInt(process.env.DB_PORT || '5432', 10),
+        database: process.env.DB_NAME || 'veritasor',
+        user: process.env.DB_USER || 'postgres',
+        password: process.env.DB_PASSWORD,
+        max: parseInt(process.env.DB_MAX_CONNECTIONS || '20', 10),
+        idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10),
+      };
+    }
+
+    pgClient = new PgClient(clientOptions);
   }
   return pgClient;
 }

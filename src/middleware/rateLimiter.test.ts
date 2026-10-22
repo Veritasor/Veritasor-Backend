@@ -326,17 +326,120 @@ describe("cleanupSlidingStore & helper edge cases", () => {
 
   it("handles error in sync rateLimiter middleware without crashing app", async () => {
     const { rateLimiter, memoryStore } = await import("./rateLimiter.js");
-    vi.spyOn(memoryStore, "increment").mockImplementationOnce(() => {
+    const originalRedisUrl = process.env.REDIS_URL;
+    const originalClusterNodes = process.env.REDIS_CLUSTER_NODES;
+    delete process.env.REDIS_URL;
+    delete process.env.REDIS_CLUSTER_NODES;
+    const increment = vi.spyOn(memoryStore, "increment").mockImplementationOnce(() => {
       throw new Error("Sync store explosion");
     });
 
-    const middleware = rateLimiter();
-    const req = { method: "GET", path: "/test", headers: {}, socket: {} } as any;
-    const res = { setHeader: vi.fn() } as any;
-    const next = vi.fn();
+    try {
+      const middleware = rateLimiter({ bucket: "auth:login", failureMode: "closed" });
+      const req = {
+        method: "GET",
+        path: "/test",
+        headers: {},
+        socket: {},
+        ip: "192.0.2.1",
+      } as any;
+      const res = {
+        setHeader: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn(),
+      } as any;
+      const next = vi.fn();
 
-    middleware(req, res, next);
-    expect(next).toHaveBeenCalledOnce();
+      middleware(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.setHeader).toHaveBeenCalledWith("Retry-After", "1");
+      expect(next).not.toHaveBeenCalled();
+    } finally {
+      increment.mockRestore();
+      if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+      else process.env.REDIS_URL = originalRedisUrl;
+      if (originalClusterNodes === undefined) delete process.env.REDIS_CLUSTER_NODES;
+      else process.env.REDIS_CLUSTER_NODES = originalClusterNodes;
+    }
+  });
+
+  it("uses req.ip instead of the X-Forwarded-For header for limiter keys", async () => {
+    const { rateLimiter, memoryStore } = await import("./rateLimiter.js");
+    const originalRedisUrl = process.env.REDIS_URL;
+    const originalClusterNodes = process.env.REDIS_CLUSTER_NODES;
+    delete process.env.REDIS_URL;
+    delete process.env.REDIS_CLUSTER_NODES;
+    const increment = vi.spyOn(memoryStore, "increment");
+    try {
+      const middleware = rateLimiter({ bucket: "auth:login" });
+      const req = {
+        method: "POST",
+        path: "/login",
+        headers: { "x-forwarded-for": "203.0.113.99" },
+        socket: {},
+        ip: "192.0.2.8",
+      } as any;
+      const res = { setHeader: vi.fn() } as any;
+      const next = vi.fn();
+
+      middleware(req, res, next);
+
+      expect(increment).toHaveBeenCalledWith(
+        "rate-limit:auth:login:ip:192.0.2.8",
+        expect.any(Number),
+      );
+      expect(next).toHaveBeenCalledOnce();
+    } finally {
+      increment.mockRestore();
+      if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+      else process.env.REDIS_URL = originalRedisUrl;
+      if (originalClusterNodes === undefined) delete process.env.REDIS_CLUSTER_NODES;
+      else process.env.REDIS_CLUSTER_NODES = originalClusterNodes;
+    }
+  });
+
+  it("rejects closed limiters when the async store fails", async () => {
+    const rateLimiterModule = await import("./rateLimiter.js");
+    const originalRedisUrl = process.env.REDIS_URL;
+    const getStoreSpy = vi.spyOn(rateLimiterModule, "getStore").mockRejectedValue(
+      new Error("Redis unavailable"),
+    );
+    process.env.REDIS_URL = "redis://127.0.0.1:6379";
+
+    try {
+      const middleware = rateLimiterModule.rateLimiter({
+        bucket: "auth:login",
+        failureMode: "closed",
+      });
+      const req = {
+        method: "POST",
+        path: "/login",
+        headers: {},
+        socket: {},
+        ip: "192.0.2.1",
+      } as any;
+      let finishResponse!: () => void;
+      const responseSent = new Promise<void>((resolve) => {
+        finishResponse = resolve;
+      });
+      const res = {
+        setHeader: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn(finishResponse),
+      } as any;
+      const next = vi.fn();
+
+      middleware(req, res, next);
+      await responseSent;
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.setHeader).toHaveBeenCalledWith("Retry-After", "1");
+      expect(next).not.toHaveBeenCalled();
+    } finally {
+      if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+      else process.env.REDIS_URL = originalRedisUrl;
+      getStoreSpy.mockRestore();
+    }
   });
 
   it("handles zcard error inside SlidingWindowRedisStore multi.exec results", async () => {

@@ -107,7 +107,7 @@ export default async function disconnectShopify(req: Request, res: Response) {
     return res.status(500).json({ error: 'Failed to disconnect Shopify integration' })
   }
 
-  deleteToken(shop)
+  deleteToken(businessId, shop)
   logger.info(
     JSON.stringify({
       type: 'shopify_disconnect_completed',

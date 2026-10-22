@@ -51,6 +51,12 @@ export const rateLimitRejections = new Counter({
   registers: [metricsRegistry],
 });
 
+export const egressManifestUnsignedTotal = new Counter({
+  name: "egress_manifest_unsigned_total",
+  help: "Total number of egress IP manifest signing attempts refused due to a missing key",
+  registers: [metricsRegistry],
+});
+
 export const redisClusterRedirectionsTotal = new Counter({
   name: "redis_cluster_redirections_total",
   help: "Total number of Redis Cluster MOVED/ASK redirections handled in rateLimiter",
@@ -69,6 +75,13 @@ export const sorobanRetryTotal = new Counter({
 export const sorobanRetryBudgetExhaustedTotal = new Counter({
   name: "soroban_retry_budget_exhausted_total",
   help: "Total number of Soroban retry attempts refused because the retry budget was exhausted",
+  registers: [metricsRegistry],
+});
+
+export const sorobanCircuitBreakerState = new Gauge({
+  name: "soroban_circuit_breaker_state",
+  help: "Soroban RPC circuit breaker state (0=CLOSED, 1=OPEN, 2=HALF_OPEN)",
+  labelNames: ["rpc_url"] as const,
   registers: [metricsRegistry],
 });
 
@@ -326,6 +339,115 @@ export const sorobanBatchQueueDepth = new Gauge({
   registers: [metricsRegistry],
 });
 
+/**
+ * Idempotency batch-read size histogram.
+ *
+ * Observes the number of Redis keys fetched in a single pipeline batch
+ * by RedisIdempotencyStore. Useful for tuning `maxBatchSize` and
+ * `batchWindowMs` to balance pipeline overhead against per-request latency.
+ *
+ * Buckets are tuned around typical Redis pipeline sizes (1–100 keys).
+ */
+export const idempotencyBatchSize = new Histogram({
+  name: "idempotency_batch_size",
+  help: "Number of idempotency keys fetched in a single Redis pipeline batch",
+  buckets: [1, 2, 5, 10, 20, 50, 100],
+  registers: [metricsRegistry],
+});
+
+/**
+ * Stale webhook deliveries counter.
+ *
+ * Incremented when an inbound webhook delivery is rejected because its
+ * `X-Veritasor-Timestamp` header is outside the replay-tolerance window.
+ * High values indicate either clock skew on the sender or a replay attack.
+ */
+export const staleWebhookDeliveries = new Counter({
+  name: "webhook_stale_deliveries_total",
+  help: "Total number of webhook deliveries rejected due to stale timestamps",
+  registers: [metricsRegistry],
+});
+
+/**
+ * Active WebSocket connections gauge.
+ *
+ * Tracks the number of currently open attestation-stream connections.
+ * Incremented when a connection is accepted and decremented on close.
+ */
+export const wsConnections = new Gauge({
+  name: "ws_connections",
+  help: "Number of currently open WebSocket attestation-stream connections",
+  registers: [metricsRegistry],
+});
+
+/**
+ * WebSocket messages sent counter.
+ *
+ * Tracks messages successfully delivered to at least one WebSocket client,
+ * labelled by `type`. The label set is bounded to the known event types
+ * declared in AttestationEvent so cardinality cannot grow unbounded.
+ */
+export const wsMessagesTotal = new Counter({
+  name: "ws_messages_total",
+  help: "Total number of messages sent to WebSocket attestation-stream clients",
+  labelNames: ["type"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * WebSocket messages dropped counter.
+ *
+ * Incremented when a message could not be delivered to a client, labelled
+ * by the bounded `reason` set. Currently only `backpressure` is produced
+ * (client buffer full), but other reasons may be added in the future.
+ */
+export const wsMessagesDroppedTotal = new Counter({
+  name: "ws_messages_dropped_total",
+  help: "Total number of WebSocket attestation-stream messages dropped",
+  labelNames: ["reason"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Attestation submit end-to-end duration histogram.
+ *
+ * Observes the wall-clock time from the start of `submitOnChain()` to its
+ * completion, labelled by a bounded `status` value so cardinality is fixed.
+ *
+ * Allowed status values:
+ *   - "success"  — the submission (or pending/queued path) returned normally
+ *   - "error"    — an unhandled/unexpected error
+ *   - "rejected" — the submission was rejected for business reasons (e.g. VALIDATION_ERROR)
+ *
+ * Any unrecognised string passed to `observeAttestationSubmitLatency` is
+ * normalised to "error" so dynamic error codes from the Soroban client can
+ * never inflate label cardinality.
+ *
+ * Buckets are tuned around the 50-200ms SLO with extended tail coverage.
+ */
+const BOUNDED_ATTESTATION_STATUS = new Set(["success", "error", "rejected"]);
+
+const attestationSubmitDurationSeconds = new Histogram({
+  name: "attestation_submit_duration_seconds",
+  help: "End-to-end duration of an attestation submit operation in seconds",
+  labelNames: ["status"] as const,
+  buckets: [0.01, 0.025, 0.05, 0.1, 0.2, 0.5, 1, 2, 5],
+  registers: [metricsRegistry],
+});
+
+/**
+ * Record an observation for the attestation submit duration histogram.
+ *
+ * @param status   - Outcome of the submission. Normalised to a bounded set
+ *                   ("success" | "error" | "rejected") so unknown values from
+ *                   Soroban error codes cannot inflate label cardinality.
+ * @param seconds  - Duration in seconds (from `process.hrtime.bigint()` diff / 1e9).
+ */
+export function observeAttestationSubmitLatency(status: string, seconds: number): void {
+  const bounded = BOUNDED_ATTESTATION_STATUS.has(status) ? status : "error";
+  attestationSubmitDurationSeconds.observe({ status: bounded }, seconds);
+}
+
 export const webhookRetryAttempts = new Histogram({
   name: "webhook_retry_attempts",
   help: "Number of retry attempts made when processing a webhook event",
@@ -411,8 +533,7 @@ export const sorobanAttestationDedupeErrorsTotal = new Counter({
 });
 
 /**
- * Attestation submit latency histogram.
- * Tuned to resolve well around the 50-200ms SLO.
+ * Webhook secret rotation rollout status gauge.
  *
  * - `webhook_secret_rotation_status` (gauge, labels: subscription_id, business_id, status):
  *   1 = subscription has adopted the latest secret version, 0 = lagging behind.
