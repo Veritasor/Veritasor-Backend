@@ -19,6 +19,10 @@ const SHOP_HOST_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9.-]*\.myshopify\.com$/;
 const stateToShop = new Map<string, ShopifyOAuthState>();
 const shopTokens = new Map<string, string>();
 
+function tokenKey(businessId: string, shop: string): string {
+  return JSON.stringify([businessId, normalizeShop(shop)]);
+}
+
 export function normalizeShop(shop: string): string {
   const trimmed = shop.trim().toLowerCase();
 
@@ -82,16 +86,20 @@ export function consumeOAuthState(
   return record;
 }
 
-export function saveToken(shop: string, accessToken: string): void {
-  shopTokens.set(normalizeShop(shop), accessToken);
+export function saveToken(
+  businessId: string,
+  shop: string,
+  accessToken: string,
+): void {
+  shopTokens.set(tokenKey(businessId, shop), accessToken);
 }
 
-export function getToken(shop: string): string | undefined {
-  return shopTokens.get(normalizeShop(shop));
+export function getToken(businessId: string, shop: string): string | undefined {
+  return shopTokens.get(tokenKey(businessId, shop));
 }
 
-export function deleteToken(shop: string): boolean {
-  return shopTokens.delete(normalizeShop(shop));
+export function deleteToken(businessId: string, shop: string): boolean {
+  return shopTokens.delete(tokenKey(businessId, shop));
 }
 
 export function clearAll(): void {

@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
+import type { Server as HttpsServer } from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { applyRotatedTlsMaterial } from "../../../src/middleware/mtls.js";
 import {
   createSvidProvider,
   responseToTlsMaterial,
@@ -116,7 +118,9 @@ describe("SvidProvider", () => {
   });
 
   it("invokes onRotate when a subsequent SVID arrives", async () => {
-    const onRotate = vi.fn();
+    const server = {
+      setSecureContext: vi.fn(),
+    } as unknown as HttpsServer;
     const delayedWatchClient: WorkloadApiClient = {
       fetchX509Svid: vi.fn().mockResolvedValue(buildResponse()),
       watchX509Svid: vi.fn().mockReturnValue(() => undefined),
@@ -126,14 +130,19 @@ describe("SvidProvider", () => {
       trustDomain: TRUST_DOMAIN,
       client: delayedWatchClient,
       now: () => new Date("2026-07-28T09:00:00.000Z"),
-      onRotate,
+      onRotate: (material) => applyRotatedTlsMaterial(server, material),
     });
 
     await provider.start();
     const watchCallback = vi.mocked(delayedWatchClient.watchX509Svid).mock.calls[0]?.[0];
     watchCallback?.(buildResponse(`${SPIFFE_ID}/rotated`));
 
-    expect(onRotate).toHaveBeenCalledOnce();
+    expect(server.setSecureContext).toHaveBeenCalledOnce();
+    expect(server.setSecureContext).toHaveBeenCalledWith({
+      ca: TEST_CERT,
+      cert: TEST_CERT,
+      key: TEST_KEY,
+    });
     expect(provider.getTlsMaterial().spiffeId).toBe(`${SPIFFE_ID}/rotated`);
   });
 

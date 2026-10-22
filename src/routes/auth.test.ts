@@ -8,8 +8,23 @@ import { AuthenticationError } from "../types/errors.js";
 import { SignupError } from "../services/auth/signup.js";
 import { AppError, ConflictError, RateLimitError } from "../types/errors.js";
 
+const { meRateLimitUserId } = vi.hoisted(() => ({
+  meRateLimitUserId: { current: null as string | null },
+}));
+
 vi.mock("../services/auth/login.js", () => ({
   login: vi.fn(),
+}));
+
+vi.mock("../services/auth/me.js", () => ({
+  me: vi.fn().mockResolvedValue({ id: "user-1" }),
+}));
+
+vi.mock("../middleware/requireAuth.js", () => ({
+  requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    req.user = { id: "user-1", userId: "user-1" };
+    next();
+  },
 }));
 
 vi.mock("../services/auth/signup.js", () => ({
@@ -17,10 +32,18 @@ vi.mock("../services/auth/signup.js", () => ({
   SignupError: class extends Error {
     public type: string;
     public statusCode: number;
-    constructor(message: string, type: string, statusCode: number) {
+    public retryAfterMs?: number;
+    constructor(
+      message: string,
+      type: string,
+      statusCode: number,
+      details?: string[],
+      retryAfterMs?: number,
+    ) {
       super(message);
       this.type = type;
       this.statusCode = statusCode;
+      this.retryAfterMs = retryAfterMs;
     }
   },
   getSignupRateLimitHeaders: vi.fn(() => ({})),
@@ -28,8 +51,13 @@ vi.mock("../services/auth/signup.js", () => ({
 }));
 
 vi.mock("../middleware/rateLimiter.js", () => ({
-  rateLimiter: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) =>
-    next(),
+  rateLimiter: (options: { bucket?: string }) =>
+    (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      if (options.bucket === "auth:me") {
+        meRateLimitUserId.current = req.user?.userId ?? null;
+      }
+      next();
+    },
 }));
 
 const app = express();
@@ -178,13 +206,31 @@ describe("POST /api/v1/auth/login", () => {
   });
 });
 
+describe("GET /api/v1/auth/me", () => {
+  it("runs authentication before applying the per-user limiter", async () => {
+    meRateLimitUserId.current = null;
+
+    const res = await request(app).get("/api/v1/auth/me");
+
+    expect(res.status).toBe(200);
+    expect(meRateLimitUserId.current).toBe("user-1");
+  });
+});
+
 describe("signupErrorToAppError", () => {
   it("maps RATE_LIMITED to RateLimitError", () => {
-    const signupErr = new SignupError("Too many requests", "RATE_LIMITED", 429);
+    const signupErr = new SignupError(
+      "Too many requests",
+      "RATE_LIMITED",
+      429,
+      undefined,
+      12000,
+    );
     const result = signupErrorToAppError(signupErr);
     
     expect(result).toBeInstanceOf(RateLimitError);
     expect(result.message).toBe("Too many requests");
+    expect((result as RateLimitError).retryAfterMs).toBe(12000);
   });
 
   it("maps EMAIL_EXISTS to ConflictError", () => {

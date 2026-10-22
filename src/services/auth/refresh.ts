@@ -87,10 +87,10 @@ function extractJtiAndExp(token: string): { jti: string; exp: number } {
  *
  * Steps:
  *   1. Verify the token is structurally valid and not expired.
- *   2. Check the JTI against the shared used-token store (replay detection).
- *   3. Look up the user to confirm the account still exists.
- *   4. Atomically mark the old JTI as consumed.
- *   5. Issue a new access + refresh token pair.
+ *   2. Look up the user to confirm the account still exists.
+ *   3. Atomically mark the old JTI as consumed (insert-or-fail). A false
+ *      return means a concurrent or prior request already used this JTI.
+ *   4. Issue a new access + refresh token pair.
  *
  * @throws AuthenticationError on any validation or replay failure.
  */
@@ -113,23 +113,23 @@ export async function refresh(
   const { jti, exp } = extractJtiAndExp(refreshToken)
   const store = getUsedTokenStore()
 
-  const alreadyUsed = await store.has(jti)
-  if (alreadyUsed) {
-    throw new AuthenticationError('Invalid refresh token')
-  }
-
-  // Step 3 — confirm the user account still exists
+  // Step 2 — confirm the user account still exists
   const user = await findUserById(payload.userId)
   if (!user) {
     throw new AuthenticationError('User not found')
   }
 
-  // Step 4 — mark old JTI as consumed (TTL = token expiry)
+  // Step 3 — atomically mark old JTI as consumed (TTL = token expiry).
+  // Insert-or-fail is the single source of truth for replay detection:
+  // a false return means this JTI was already consumed (replay or race).
   // Failing here means the store is unavailable; fail closed.
   const expiresAt = new Date(exp * 1000)
-  await store.mark(jti, user.id, expiresAt)
+  const marked = await store.mark(jti, user.id, expiresAt)
+  if (!marked) {
+    throw new AuthenticationError('Invalid refresh token')
+  }
 
-  // Step 5 — issue new token pair
+  // Step 4 — issue new token pair
   const accessToken = generateToken({
     userId: user.id,
     email: user.email,

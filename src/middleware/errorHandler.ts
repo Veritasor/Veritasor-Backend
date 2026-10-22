@@ -31,6 +31,7 @@ import { logger } from "../utils/logger.js";
 type ErrorEnvelope = {
   status: "error";
   vrtCode: string;
+  code?: string;
   message: string;
   timestamp: string;
   requestId?: string;
@@ -56,6 +57,30 @@ const CLIENT_SAFE_POSTGRES_CONFLICT_CODES = new Set([
   "23503", // foreign_key_violation
   "23505", // unique_violation
 ]);
+
+function getBodyParserErrorType(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const type = (error as BodyParserError).type;
+  return typeof type === "string" ? type : undefined;
+}
+
+function getClientErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const candidate = error as BodyParserError;
+  for (const status of [candidate.status, candidate.statusCode]) {
+    if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status < 500) {
+      return status;
+    }
+  }
+
+  return undefined;
+}
 
 function isPostgresError(error: unknown): error is PostgresError {
   return (
@@ -240,6 +265,11 @@ function getStatusCode(error: unknown): number {
     }
   }
 
+  const clientErrorStatus = getClientErrorStatus(error);
+  if (clientErrorStatus !== undefined) {
+    return clientErrorStatus;
+  }
+
   return 500;
 }
 
@@ -283,6 +313,16 @@ export const errorHandler = (
     method: req.method,
     requestId,
   });
+
+  // Set Retry-After header if present on the error or context
+  if (isAppError(err) && err.status === 429) {
+    const retryAfterMs =
+      (err as any).retryAfterMs ??
+      (typeof err.context?.retryAfterMs === "number" ? err.context.retryAfterMs : undefined);
+    if (typeof retryAfterMs === "number" && retryAfterMs > 0 && !res.getHeader("Retry-After")) {
+      res.setHeader("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+    }
+  }
 
   // Create standardized error envelope
   const errorEnvelope = createErrorEnvelope(err, requestId);

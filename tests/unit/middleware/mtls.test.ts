@@ -7,6 +7,13 @@ vi.mock("../../../src/config/index.js", () => ({
     mtls: {
       enabled: true,
       cnAllowlist: [],
+      spiffeIdAllowlist: [],
+      spiffe: {
+        enabled: false,
+        trustDomain: "",
+        workloadApiSocket: "unix:///tmp/spire-agent/public/api.sock",
+        refreshRatio: 0.7,
+      },
       revocation: {
         enabled: true,
       },

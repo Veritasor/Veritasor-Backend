@@ -331,63 +331,127 @@ export async function list(
   filters: AttestationFilters,
   pagination: PaginationParams
 ): Promise<PaginatedResult<Attestation>> {
+  // ---------------------------------------------------------------------------
+  // Build parameterised WHERE clauses for the optional period and status filters.
+  //
+  // `status` defaults to 'submitted' when the column value is NULL in the DB,
+  // matching the behaviour the route layer previously applied in memory.
+  // ---------------------------------------------------------------------------
+
+  // We accumulate extra WHERE fragments and params after the primary filter.
+  const extraClauses: string[] = [];
+  const extraParams: any[] = [];
+
+  if (filters.period !== undefined) {
+    extraParams.push(filters.period);
+    // Index placeholder filled in per-branch below once we know the base offset.
+    extraClauses.push('__PERIOD__');
+  }
+
+  if (filters.status !== undefined) {
+    extraParams.push(filters.status);
+    extraClauses.push('__STATUS__');
+  }
+
+  /**
+   * Replace placeholder tokens with concrete $N references.
+   * baseParamCount is the number of $N params already used by the primary filter.
+   */
+  function buildExtra(baseParamCount: number, tableAlias?: string): { sql: string; params: any[] } {
+    const prefix = tableAlias ? `${tableAlias}.` : '';
+    let idx = baseParamCount + 1;
+    let sql = '';
+    const params: any[] = [];
+    let extraIdx = 0;
+
+    for (const clause of extraClauses) {
+      if (clause === '__PERIOD__') {
+        sql += ` AND ${prefix}period = $${idx}`;
+        params.push(extraParams[extraIdx]);
+        idx++;
+        extraIdx++;
+      } else if (clause === '__STATUS__') {
+        // Treat NULL status as 'submitted' so filtering by 'submitted' returns
+        // rows that have either status = 'submitted' OR status IS NULL.
+        sql += ` AND COALESCE(${prefix}status, 'submitted') = $${idx}`;
+        params.push(extraParams[extraIdx]);
+        idx++;
+        extraIdx++;
+      }
+    }
+    return { sql, params };
+  }
+
   let dataQuery: string;
   let countQuery: string;
-  let params: any[];
+  let dataParams: any[];
+  let countParams: any[];
 
   if (filters.userId) {
     // JOIN path — planner uses attestations_business_id_idx on the FK column
+    const extra = buildExtra(1, 'a');
     dataQuery = `
       SELECT a.* FROM attestations a
       INNER JOIN businesses b ON a.business_id = b.id
-      WHERE b.user_id = $1
+      WHERE b.user_id = $1${extra.sql}
       ORDER BY a.created_at DESC
-      LIMIT $2 OFFSET $3
+      LIMIT $${2 + extra.params.length} OFFSET $${3 + extra.params.length}
     `;
     countQuery = `
       SELECT COUNT(*) FROM attestations a
       INNER JOIN businesses b ON a.business_id = b.id
-      WHERE b.user_id = $1
+      WHERE b.user_id = $1${extra.sql}
     `;
-    params = [filters.userId, pagination.limit, pagination.offset];
+    dataParams = [filters.userId, ...extra.params, pagination.limit, pagination.offset];
+    countParams = [filters.userId, ...extra.params];
   } else if (filters.businessId) {
     // Direct filter — attestations_business_id_idx + attestations_created_at_idx
+    const extra = buildExtra(1);
     dataQuery = `
       SELECT * FROM attestations
-      WHERE business_id = $1
+      WHERE business_id = $1${extra.sql}
       ORDER BY created_at DESC
-      LIMIT $2 OFFSET $3
+      LIMIT $${2 + extra.params.length} OFFSET $${3 + extra.params.length}
     `;
     countQuery = `
       SELECT COUNT(*) FROM attestations
-      WHERE business_id = $1
+      WHERE business_id = $1${extra.sql}
     `;
-    params = [filters.businessId, pagination.limit, pagination.offset];
+    dataParams = [filters.businessId, ...extra.params, pagination.limit, pagination.offset];
+    countParams = [filters.businessId, ...extra.params];
   } else {
     // Full scan — attestations_created_at_idx for ORDER BY
+    const extra = buildExtra(0);
+    const hasExtra = extra.sql.length > 0;
     dataQuery = `
       SELECT * FROM attestations
+      ${hasExtra ? `WHERE ${extra.sql.replace(/^ AND /, '')}` : ''}
       ORDER BY created_at DESC
-      LIMIT $1 OFFSET $2
+      LIMIT $${1 + extra.params.length} OFFSET $${2 + extra.params.length}
     `;
-    countQuery = `SELECT COUNT(*) FROM attestations`;
-    params = [pagination.limit, pagination.offset];
+    countQuery = `
+      SELECT COUNT(*) FROM attestations
+      ${hasExtra ? `WHERE ${extra.sql.replace(/^ AND /, '')}` : ''}
+    `;
+    dataParams = [...extra.params, pagination.limit, pagination.offset];
+    countParams = [...extra.params];
   }
 
   await applyStatementTimeout(client, STATEMENT_TIMEOUT_MS);
 
-  const countParams = filters.userId || filters.businessId ? [params[0]] : [];
   const t0 = Date.now();
   const countResult = await client.query<{ count: string }>(countQuery, countParams);
   const total = parseInt(countResult.rows[0].count, 10);
 
-  const dataResult = await client.query<AttestationRow>(dataQuery, params);
+  const dataResult = await client.query<AttestationRow>(dataQuery, dataParams);
   const elapsedMs = Date.now() - t0;
   const items = dataResult.rows.map(mapRowToAttestation);
 
   warnIfSlow('list', elapsedMs, items.length, {
     businessId: filters.businessId,
     userId: filters.userId,
+    period: filters.period,
+    status: filters.status,
     limit: pagination.limit,
     offset: pagination.offset,
     total,
