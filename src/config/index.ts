@@ -10,6 +10,7 @@ export class ConfigValidationError extends Error {
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
   DATABASE_URL: z.string({
@@ -183,6 +184,18 @@ if (parsedEnv.NODE_ENV === "development" && !parsedEnv.JWT_SECRET) {
   parsedEnv.JWT_SECRET = "default_dev_secret_for_local_testing_only";
 }
 
+const exposeResetLinkInResponse = parseBooleanEnv(
+  "EXPOSE_RESET_LINK_IN_RESPONSE",
+  parsedEnv.EXPOSE_RESET_LINK_IN_RESPONSE,
+  false,
+);
+
+if (exposeResetLinkInResponse) {
+  logger.warn(
+    "EXPOSE_RESET_LINK_IN_RESPONSE is enabled. Reset links will be included in forgot-password HTTP responses in non-production environments.",
+  );
+}
+
 /**
  * CORS allowed origins.
  * - Dev: * (allow all) unless ALLOWED_ORIGINS is set.
@@ -255,6 +268,9 @@ const mtlsConfig = parseMtlsConfig(parsedEnv);
 
 export const config = {
   env: parsedEnv.NODE_ENV,
+  auth: {
+    exposeResetLinkInResponse: !isProduction && exposeResetLinkInResponse,
+  },
   jwtSecret: parsedEnv.JWT_SECRET as string,
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {

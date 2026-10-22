@@ -519,3 +519,10 @@ export const jobLastRunTimestamp = new Gauge({
   labelNames: ["job"] as const,
   registers: [metricsRegistry],
 });
+
+export const passwordResetFailuresTotal = new Counter({
+  name: "password_reset_failures_total",
+  help: "Total number of password reset email delivery failures",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});

@@ -21,10 +21,10 @@
  *   provided logger callback (or a no-op if omitted). The record contains only
  *   the first 8 hex chars of the raw token for correlation — never the full
  *   token, and never the hash.
- * • Email delivery failures — retryable vs. permanent failures are surfaced as
- *   distinct AppError codes so callers/operators can react appropriately.
- *   On any delivery failure the token is cleared from the DB before throwing,
- *   so the user is not left with an unusable token silently stored.
+ * • Email delivery failures — to prevent user enumeration, the endpoint returns
+ *   the identical generic 200 response regardless of delivery outcome. The
+ *   token is cleared from the DB so no dangling token is left behind, and
+ *   failures are recorded through structured audit logs and metrics.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -36,6 +36,7 @@ import {
 import { sendPasswordResetEmail } from '../email/sendReset.js'
 import { AppError } from '../../types/errors.js'
 import { hashResetToken, tokenLogPrefix } from '../../utils/tokenHash.js'
+import { passwordResetFailuresTotal } from '../../metrics.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ export interface ForgotPasswordRequest {
 
 export interface ForgotPasswordResponse {
   message: string
-  /** Returned only in non-production environments for local testing. */
+  /** Returned only when NODE_ENV === 'test' or explicit EXPOSE_RESET_LINK_IN_RESPONSE=true outside production. */
   resetLink?: string
 }
 
@@ -70,6 +71,32 @@ export interface ForgotPasswordAuditRecord {
 }
 
 export type ForgotPasswordLogger = (record: ForgotPasswordAuditRecord) => void
+
+/**
+ * Determines whether the reset link should be included in the response.
+ *
+ * Security: reset tokens must NEVER be exposed in responses in production or
+ * default environments. It is only included when:
+ * 1. NODE_ENV === 'test' (to keep automated tests working), or
+ * 2. Explicit EXPOSE_RESET_LINK_IN_RESPONSE=true is set AND environment is not production.
+ */
+export function shouldExposeResetLink(): boolean {
+  const nodeEnv = process.env.NODE_ENV
+  if (nodeEnv === 'test') {
+    return true
+  }
+  const flag = process.env.EXPOSE_RESET_LINK_IN_RESPONSE
+  if (!flag) {
+    return false
+  }
+  const normalized = flag.trim().toLowerCase()
+  const isEnabled =
+    normalized === 'true' ||
+    normalized === '1' ||
+    normalized === 'yes' ||
+    normalized === 'on'
+  return isEnabled && nodeEnv !== 'production'
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -144,6 +171,10 @@ export async function forgotPassword(
 
   // ── User not found: return the generic message without leaking existence ──
   if (!user) {
+    // Perform comparable crypto work to mitigate side-channel timing analysis
+    const dummyRaw = randomBytes(32).toString('hex')
+    hashResetToken(dummyRaw)
+
     logger({ event: 'forgot_password_user_not_found', timestamp: nowIso() })
     return {
       message:
@@ -198,24 +229,22 @@ export async function forgotPassword(
         userId: String(user.id),
         timestamp: nowIso(),
       })
-      throw new AppError(
-        'Unable to send reset email right now. Please try again shortly.',
-        503,
-        'RESET_EMAIL_RETRYABLE_FAILURE',
-      )
+      passwordResetFailuresTotal.inc({ outcome: 'retryable' })
+    } else {
+      logger({
+        event: 'forgot_password_email_permanent_failure',
+        tokenPrefix: logPrefix,
+        userId: String(user.id),
+        timestamp: nowIso(),
+      })
+      passwordResetFailuresTotal.inc({ outcome: 'permanent' })
     }
 
-    logger({
-      event: 'forgot_password_email_permanent_failure',
-      tokenPrefix: logPrefix,
-      userId: String(user.id),
-      timestamp: nowIso(),
-    })
-    throw new AppError(
-      'Password reset email is currently unavailable.',
-      500,
-      'RESET_EMAIL_UNAVAILABLE',
-    )
+    // Always return generic 200 response to prevent user enumeration
+    return {
+      message:
+        'If an account with this email exists, a reset link has been sent.',
+    }
   }
 
   logger({
@@ -225,11 +254,11 @@ export async function forgotPassword(
     timestamp: nowIso(),
   })
 
-  const isDev = process.env.NODE_ENV !== 'production'
+  const exposeResetLink = shouldExposeResetLink()
 
   return {
     message:
       'If an account with this email exists, a reset link has been sent.',
-    ...(isDev && { resetLink }),
+    ...(exposeResetLink && { resetLink }),
   }
 }

@@ -59,6 +59,7 @@ describe('forgotPassword', () => {
     mocks.sendPasswordResetEmail.mockResolvedValue({ retryable: false })
     vi.stubEnv('RESET_TOKEN_TTL_MINUTES', '')
     vi.stubEnv('RESET_PASSWORD_URL', '')
+    vi.stubEnv('EXPOSE_RESET_LINK_IN_RESPONSE', '')
     vi.stubEnv('NODE_ENV', 'test')
   })
 
@@ -136,6 +137,43 @@ describe('forgotPassword', () => {
     expect(JSON.stringify(logger.mock.calls)).not.toContain(tokenHash)
   })
 
+  it('omits the reset link when NODE_ENV is unset (development default)', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', '')
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
+    })
+    expect(response.resetLink).toBeUndefined()
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledOnce()
+  })
+
+  it('omits the reset link when NODE_ENV is development and EXPOSE_RESET_LINK_IN_RESPONSE is not set', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', 'development')
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
+    })
+    expect(response.resetLink).toBeUndefined()
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledOnce()
+  })
+
+  it('includes the reset link when EXPOSE_RESET_LINK_IN_RESPONSE=true in non-production', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', 'development')
+    vi.stubEnv('EXPOSE_RESET_LINK_IN_RESPONSE', 'true')
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response.resetLink).toBeDefined()
+    expect(response.resetLink).toContain('?token=')
+  })
+
   it('omits the reset link from the production response', async () => {
     mocks.findUserByEmail.mockResolvedValue(user)
     vi.stubEnv('NODE_ENV', 'production')
@@ -145,24 +183,42 @@ describe('forgotPassword', () => {
     expect(response).toEqual({
       message: 'If an account with this email exists, a reset link has been sent.',
     })
+    expect(response.resetLink).toBeUndefined()
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledOnce()
+  })
+
+  it('omits the reset link in production even if EXPOSE_RESET_LINK_IN_RESPONSE=true', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('EXPOSE_RESET_LINK_IN_RESPONSE', 'true')
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
+    })
+    expect(response.resetLink).toBeUndefined()
     expect(mocks.sendPasswordResetEmail).toHaveBeenCalledOnce()
   })
 
   it.each([
-    ['retryable', true, 503, 'RESET_EMAIL_RETRYABLE_FAILURE', 'forgot_password_email_retryable_failure'],
-    ['permanent', false, 500, 'RESET_EMAIL_UNAVAILABLE', 'forgot_password_email_permanent_failure'],
+    ['retryable', true, 'forgot_password_email_retryable_failure'],
+    ['permanent', false, 'forgot_password_email_permanent_failure'],
   ] as const)(
-    'clears the token and reports a %s email failure',
-    async (_kind, retryable, status, vrtCode, failureEvent) => {
+    'returns 200 with the same body as an unknown email and clears token on %s email failure',
+    async (_kind, retryable, failureEvent) => {
       mocks.findUserByEmail.mockResolvedValue(user)
       mocks.sendPasswordResetEmail.mockResolvedValue({ error: new Error('delivery failed'), retryable })
       const logger = vi.fn<ForgotPasswordLogger>()
 
-      await expect(completeRequest({ email: user.email }, logger)).rejects.toMatchObject({
-        name: 'AppError',
-        status,
-        vrtCode,
+      const unknownResponse = await completeRequest({ email: 'unknown@example.com' })
+      const response = await completeRequest({ email: user.email }, logger)
+
+      expect(response).toEqual(unknownResponse)
+      expect(response).toEqual({
+        message: 'If an account with this email exists, a reset link has been sent.',
       })
+      expect(response.resetLink).toBeUndefined()
       expect(mocks.updateUser).toHaveBeenCalledWith(user.id, {
         resetToken: null,
         resetTokenExpiry: null,

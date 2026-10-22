@@ -629,16 +629,13 @@ afterAll(async () => {
 | ------------------------------- | ---- | ------------------------------------------------------ |
 | `VALIDATION_ERROR`              | 400  | Missing or invalid input fields                        |
 | `INVALID_RESET_TOKEN`           | 400  | Token not found, expired, or already consumed          |
-| `RESET_EMAIL_RETRYABLE_FAILURE` | 503  | Email delivery failed transiently; client should retry |
-| `RESET_EMAIL_UNAVAILABLE`       | 500  | Email delivery failed permanently                      |
 
 ### Failure Modes
 
 | Condition                           | Behaviour                                                         |
 | ----------------------------------- | ----------------------------------------------------------------- |
 | Email not in DB                     | Generic 200 response; no token stored; no email sent              |
-| Email delivery — retryable          | Token cleared from DB; throws `503 RESET_EMAIL_RETRYABLE_FAILURE` |
-| Email delivery — permanent          | Token cleared from DB; throws `500 RESET_EMAIL_UNAVAILABLE`       |
+| Email delivery failure (retryable/permanent) | Token cleared from DB; generic 200 response returned; failure logged and metric incremented |
 | Invalid / expired token at reset    | Throws `400 INVALID_RESET_TOKEN`; no DB write                     |
 | Password too short                  | Throws `400 VALIDATION_ERROR` before token lookup                 |
 | Invalid `RESET_TOKEN_TTL_MINUTES`   | Falls back to `15`; warning to `stderr`                           |
