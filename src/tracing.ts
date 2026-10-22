@@ -730,6 +730,17 @@ export function getActiveTraceExemplarLabels(): Record<string, string> {
   };
 }
 
+export const UNMATCHED_ROUTE = "__unmatched__";
+
+export function getNormalizedRoute(req: Request): string {
+  if (req.route && req.route.path !== undefined) {
+    const basePath = req.baseUrl || "";
+    const routePath = typeof req.route.path === "string" ? req.route.path : String(req.route.path);
+    return `${basePath}${routePath}`;
+  }
+  return UNMATCHED_ROUTE;
+}
+
 export function startHttpRequestSpan(
   req: Request,
   res: Response,
@@ -762,14 +773,17 @@ export function startHttpRequestSpan(
   }
 
   context.with(requestContext, () => {
+    const initialRoute = req.route && req.route.path !== undefined ? getNormalizedRoute(req) : undefined;
+    const initialSpanName = initialRoute ? `HTTP ${req.method} ${initialRoute}` : `HTTP ${req.method}`;
+
     tracer.startActiveSpan(
-      `HTTP ${req.method} ${req.path}`,
+      initialSpanName,
       {
         kind: SpanKind.SERVER,
         attributes: {
           "http.request.method": req.method,
           "url.path": req.path,
-          "http.route": req.path,
+          ...(initialRoute ? { "http.route": initialRoute } : {}),
           "client.address": req.ip,
           "user_agent.original": req.headers["user-agent"] ?? "",
           "veritasor.correlation_id": correlationId,
@@ -789,7 +803,8 @@ export function startHttpRequestSpan(
             return;
           }
           ended = true;
-          const route = (req.route?.path as string | undefined) ?? req.path;
+          const route = getNormalizedRoute(req);
+          span.updateName?.(`HTTP ${req.method} ${route}`);
           span.setAttribute("http.route", route);
           span.setAttribute("http.response.status_code", res.statusCode);
           if (res.statusCode >= 500) {

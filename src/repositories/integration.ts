@@ -28,8 +28,8 @@ export interface CreateIntegrationData {
  * Data that can be updated on an existing integration
  */
 export interface UpdateIntegrationData {
-  token?: Record<string, any>
-  metadata?: Record<string, any>
+  token: Record<string, any>
+  metadata: Record<string, any>
 }
 
 // In-memory storage using Map data structure
@@ -142,8 +142,6 @@ export async function create(data: CreateIntegrationData): Promise<Integration> 
   integrations.set(integration.id, integration)
   
   return cloneIntegration(integration)
-
-
 }
 
 /**
@@ -198,7 +196,7 @@ export async function deleteById(businessId: string, id: string): Promise<boolea
 }
 
 /**
- * Clear all integrations from storage (for testing purposes)
+ * Clear offsets from storage (for testing purposes)
  * @internal
  */
 export function clearAll(): void {

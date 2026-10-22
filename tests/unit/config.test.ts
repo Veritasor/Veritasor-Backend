@@ -56,6 +56,20 @@ describe("Config Module Validation", () => {
     expect(config.jwtSecret).toBe("default_dev_secret_for_local_testing_only");
   });
 
+  it("should parse TRUST_PROXY as a hop count or proxy list", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+    process.env.TRUST_PROXY = "1";
+
+    const hopConfig = await loadConfig();
+    expect(hopConfig.config.trustProxy).toBe(1);
+
+    vi.resetModules();
+    process.env.TRUST_PROXY = "10.0.0.0/8, 192.168.0.0/16";
+    const cidrConfig = await loadConfig();
+    expect(cidrConfig.config.trustProxy).toEqual(["10.0.0.0/8", "192.168.0.0/16"]);
+  });
+
   it("should throw in production if ALLOWED_ORIGINS is missing", async () => {
     process.env.NODE_ENV = "production";
     process.env.DATABASE_URL = "postgres://localhost:5432/db";

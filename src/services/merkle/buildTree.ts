@@ -1,14 +1,61 @@
 import { createHash } from 'crypto';
 
+export type MerkleAlgorithmVersion = 1 | 2;
+
+export const MERKLE_VERSION_1: MerkleAlgorithmVersion = 1;
+export const MERKLE_VERSION_2: MerkleAlgorithmVersion = 2;
+
+function sha256(data: Buffer): Buffer {
+  return createHash('sha256').update(data).digest();
+}
+
+function normalizeVersion(version?: number | string): MerkleAlgorithmVersion {
+  if (version === 1 || version === '1') return 1;
+  return 2;
+}
+
 // ─── Hash primitive ───────────────────────────────────────────────────────────
 
 /**
  * SHA-256 over a UTF-8 string, returned as lowercase hex.
- * All tree construction and proof verification funnels through this function
- * so the algorithm is trivially swappable.
+ * The default v2 construction uses RFC 6962-style domain separation and keeps
+ * unpaired nodes unchanged when the level is odd.
  */
-export function hash(data: string): string {
-  return createHash('sha256').update(data).digest('hex');
+export function hash(data: string, version?: number | string): string {
+  const normalized = normalizeVersion(version);
+  const bytes = Buffer.from(data, 'utf8');
+  if (normalized === 1) {
+    return sha256(bytes).toString('hex');
+  }
+  return sha256(Buffer.concat([Buffer.from([0x00]), bytes])).toString('hex');
+}
+
+export function hashV1(data: string): string {
+  return hash(data, 1);
+}
+
+export function hashV2(data: string): string {
+  return hash(data, 2);
+}
+
+export function hashNode(left: string, right: string, version?: number | string): string {
+  const normalized = normalizeVersion(version);
+  const leftBytes = Buffer.from(left, 'hex');
+  const rightBytes = Buffer.from(right, 'hex');
+
+  if (normalized === 1) {
+    return sha256(Buffer.concat([leftBytes, rightBytes])).toString('hex');
+  }
+
+  return sha256(Buffer.concat([Buffer.from([0x01]), leftBytes, rightBytes])).toString('hex');
+}
+
+export function hashNodeV1(left: string, right: string): string {
+  return hashNode(left, right, 1);
+}
+
+export function hashNodeV2(left: string, right: string): string {
+  return hashNode(left, right, 2);
 }
 
 // ─── Performance guardrails ───────────────────────────────────────────────────
@@ -55,7 +102,12 @@ export const MERKLE_WARN_LEAVES: number = Math.floor(MERKLE_MAX_LEAVES * 0.1);
  * @throws {RangeError}  Leaf count is 0 or exceeds MERKLE_MAX_LEAVES.
  * @throws {TypeError}   Any leaf is not a non-empty string.
  */
-export function buildTree(leaves: string[]): string[] {
+export function buildTree(
+  leaves: string[],
+  version?: number | string
+): string[] {
+  const normalized = normalizeVersion(version);
+
   // ── Validation ────────────────────────────────────────────────────────────
   if (!Array.isArray(leaves) || leaves.length === 0) {
     throw new RangeError('buildTree requires at least one leaf');
@@ -90,21 +142,33 @@ export function buildTree(leaves: string[]): string[] {
   }
 
   // ── Construction ──────────────────────────────────────────────────────────
-  let level: string[] = leaves.map((l) => hash(l));
+  let level: string[] = leaves.map((l) => hash(l, normalized));
   const tree: string[] = [...level];
 
   while (level.length > 1) {
     const next: string[] = [];
     for (let i = 0; i < level.length; i += 2) {
       const left = level[i];
-      const right = i + 1 < level.length ? level[i + 1] : left; // duplicate last node if odd
-      next.push(hash(left + right));
+      if (i + 1 < level.length) {
+        const right = level[i + 1];
+        next.push(hashNode(left, right, normalized));
+      } else {
+        next.push(left); // RFC 6962 odd-node promotion: do not duplicate
+      }
     }
     tree.push(...next);
     level = next;
   }
 
   return tree; // tree[tree.length - 1] is the root
+}
+
+export function buildTreeV1(leaves: string[]): string[] {
+  return buildTree(leaves, 1);
+}
+
+export function buildTreeV2(leaves: string[]): string[] {
+  return buildTree(leaves, 2);
 }
 
 /**

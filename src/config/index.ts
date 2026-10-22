@@ -8,8 +8,9 @@ export class ConfigValidationError extends Error {
   }
 }
 
-export const envSchema = z.object({
+export const rawEnvSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  TRUST_PROXY: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
   DATABASE_URL: z.string({
@@ -45,7 +46,8 @@ export const envSchema = z.object({
   SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
   DRR_SCHEDULER_TIER_WEIGHTS: z.string().optional(),
   DRR_SCHEDULER_QUANTUM: z.string().optional(),
-  SECRET_LOADER: z.enum(["env", "file", "vault", "aws", "gsm"]).default("env"),
+  SECRET_LOADER: z.enum(["env", "file", "vault", "aws", "gsm"]).optional(),
+  SECRET_PROVIDER: z.enum(["env", "file", "vault", "aws", "gsm"]).optional(),
   SECRET_FILE_PATH: z.string().optional(),
   SECRET_CACHE_KMS_KEY_ID: z.string().optional(),
   SECRET_CACHE_PATH: z.string().optional(),
@@ -69,6 +71,16 @@ export const envSchema = z.object({
   OTEL_MTLS_CERT_PATH: z.string().optional(),
   OTEL_MTLS_KEY_PATH: z.string().optional(),
 }).superRefine((data, ctx) => {
+  if (data.SECRET_LOADER && data.SECRET_PROVIDER && data.SECRET_LOADER !== data.SECRET_PROVIDER) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `SECRET_LOADER (${data.SECRET_LOADER}) and SECRET_PROVIDER (${data.SECRET_PROVIDER}) conflict: both are set and disagree`,
+      path: ["SECRET_LOADER"],
+    });
+  }
+
+  const effectiveLoader = data.SECRET_LOADER ?? data.SECRET_PROVIDER ?? "env";
+
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
         ctx.addIssue({
@@ -78,7 +90,7 @@ export const envSchema = z.object({
         });
       }
 
-      if (data.SECRET_LOADER === 'env') {
+      if (effectiveLoader === 'env') {
         if (!data.JWT_SECRET || data.JWT_SECRET.length < 32) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -88,7 +100,7 @@ export const envSchema = z.object({
         }
       }
 
-      if (data.SECRET_LOADER === 'file' && !data.SECRET_FILE_PATH) {
+      if (effectiveLoader === 'file' && !data.SECRET_FILE_PATH) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "SECRET_FILE_PATH is required when SECRET_LOADER=file",
@@ -96,7 +108,7 @@ export const envSchema = z.object({
         });
       }
 
-      if (data.SECRET_LOADER === 'vault') {
+      if (effectiveLoader === 'vault') {
         if (!data.VAULT_BASE_URL) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -111,6 +123,48 @@ export const envSchema = z.object({
             path: ["VAULT_SECRET_PATH"]
           });
         }
+      }
+
+      const DEV_PERSISTED_QUERY_SECRET = 'default-dev-secret-do-not-use-in-prod';
+      if (!data.PERSISTED_QUERY_SECRET || data.PERSISTED_QUERY_SECRET.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PERSISTED_QUERY_SECRET must be at least 32 characters in production",
+          path: ["PERSISTED_QUERY_SECRET"]
+        });
+      } else if (data.PERSISTED_QUERY_SECRET === DEV_PERSISTED_QUERY_SECRET) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PERSISTED_QUERY_SECRET must not use the development default in production",
+          path: ["PERSISTED_QUERY_SECRET"]
+        });
+      }
+
+      if (!data.SOROBAN_CONTRACT_ID || data.SOROBAN_CONTRACT_ID.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SOROBAN_CONTRACT_ID is required in production",
+          path: ["SOROBAN_CONTRACT_ID"]
+        });
+      } else if (!/^C[A-Z2-7]{55}$/.test(data.SOROBAN_CONTRACT_ID)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SOROBAN_CONTRACT_ID must be a valid Soroban contract strkey (C + 55 base32 chars)",
+          path: ["SOROBAN_CONTRACT_ID"]
+        });
+      }
+
+      const expectedPassphrase = data.STELLAR_NETWORK === "public"
+        ? "Public Global Stellar Network ; September 2015"
+        : data.STELLAR_NETWORK === "testnet"
+          ? "Test SDF Network ; September 2015"
+          : "Test SDF Future Network ; October 2022";
+      if (data.SOROBAN_NETWORK_PASSPHRASE !== expectedPassphrase) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `SOROBAN_NETWORK_PASSPHRASE must match STELLAR_NETWORK=${data.STELLAR_NETWORK} in production`,
+          path: ["SOROBAN_NETWORK_PASSPHRASE"]
+        });
       }
     }
 });
@@ -162,6 +216,17 @@ function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValu
   return value;
 }
 
+function parseCsvList(rawValue: string | undefined): string[] {
+  if (!rawValue?.trim()) {
+    return [];
+  }
+
+  return rawValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 let parsedEnv: z.infer<typeof envSchema>;
 
 try {
@@ -205,6 +270,24 @@ export function getAllowedOrigins(): string | string[] {
 function parseCsvList(rawValue: string | undefined): string[] {
   if (!rawValue) return [];
   return rawValue.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function parseTrustProxy(rawValue: string | undefined): number | string[] | false {
+  const value = rawValue?.trim();
+  if (!value) return false;
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    if (!Number.isSafeInteger(hops)) {
+      throw new ConfigValidationError("TRUST_PROXY hop count must be a safe integer");
+    }
+    return hops;
+  }
+
+  const entries = value.split(",").map((entry) => entry.trim());
+  if (entries.some((entry) => entry.length === 0)) {
+    throw new ConfigValidationError("TRUST_PROXY must be a hop count or a comma-separated proxy list");
+  }
+  return entries;
 }
 
 function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
@@ -255,6 +338,7 @@ const mtlsConfig = parseMtlsConfig(parsedEnv);
 
 export const config = {
   env: parsedEnv.NODE_ENV,
+  trustProxy: parseTrustProxy(parsedEnv.TRUST_PROXY),
   jwtSecret: parsedEnv.JWT_SECRET as string,
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {
@@ -424,7 +508,7 @@ export const config = {
     },
   },
   secretLoader: {
-    source: parsedEnv.SECRET_LOADER,
+    source: (parsedEnv.SECRET_LOADER ?? parsedEnv.SECRET_PROVIDER ?? "env") as "env" | "file" | "vault" | "aws" | "gsm",
     filePath: parsedEnv.SECRET_FILE_PATH,
     /**
      * When `source` is `"vault"`, `VaultAdapter` (src/utils/secret-loader.ts)

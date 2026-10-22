@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isIP } from "node:net";
 
 // ---------------------------------------------------------------------------
 // Event Filter DSL
@@ -40,7 +41,20 @@ function isValidEventType(value: string): boolean {
   if (value.length === 0 || value.length > MAX_EVENT_TYPE_LENGTH) return false;
   if (value.startsWith(".") || value.endsWith(".")) return false;
   // Allow: letters, numbers, ., -, _, *, **
-  return /^[a-zA-Z0-9._*-]+$/.test(value);
+  if (!/^[a-zA-Z0-9._*-]+$/.test(value)) return false;
+
+  const segments = value.split(".");
+  if (segments.some((segment) => segment.length === 0)) return false;
+  if (
+    segments.some(
+      (segment) =>
+        segment.includes("*") && segment !== "*" && segment !== "**",
+    )
+  ) {
+    return false;
+  }
+
+  return value === "**" || !segments.includes("**");
 }
 
 /**
@@ -87,7 +101,7 @@ export const eventFiltersSchema = z
   .record(
     z.string().refine(isValidEventType, {
       message:
-        "Event type must contain only alphanumeric, dots, hyphens, underscores, and wildcards",
+        "Event type must use complete alphanumeric, hyphen, underscore, or wildcard segments; ** is only allowed as a standalone pattern",
     }),
     filterValueSchema,
   )
@@ -116,22 +130,45 @@ function hasBlockedScheme(url: string): boolean {
   );
 }
 
-function isValidUrl(value: string): boolean {
+export function isValidWebhookUrl(value: string): boolean {
   if (value.length > URL_MAX_LENGTH) return false;
   if (hasBlockedScheme(value)) return false;
   try {
     const u = new URL(value);
-    return u.protocol === "http:" || u.protocol === "https:";
+    if (u.username || u.password) return false;
+    if (u.protocol !== "https:") {
+      return process.env.NODE_ENV !== 'production' && u.protocol === 'http:' &&
+        (u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '[::1]');
+    }
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal')) return false;
+    if (isIP(host)) return !isBlockedAddress(host);
+    return true;
   } catch {
     return false;
   }
+}
+
+export function isBlockedAddress(address: string): boolean {
+  if (isIP(address) === 4) {
+    const n = address.split('.').map(Number);
+    return n[0] === 0 || n[0] === 10 || n[0] === 127 || n[0] >= 224 ||
+      (n[0] === 169 && n[1] === 254) || (n[0] === 172 && n[1] >= 16 && n[1] <= 31) ||
+      (n[0] === 192 && (n[1] === 168 || (n[1] === 0 && n[2] === 0) || (n[1] === 88 && n[2] === 99))) ||
+      (n[0] === 198 && (n[1] === 18 || n[1] === 19)) ||
+      (n[0] === 100 && n[1] >= 64 && n[1] <= 127);
+  }
+  const v = address.toLowerCase();
+  if (v.startsWith('::ffff:')) return isBlockedAddress(v.slice(7));
+  return v === '::' || v === '::1' || v.startsWith('fc') || v.startsWith('fd') ||
+    /^fe[89ab]/.test(v) || v.startsWith('ff');
 }
 
 const urlField = z
   .string()
   .min(1, "URL is required")
   .max(URL_MAX_LENGTH, `URL must not exceed ${URL_MAX_LENGTH} characters`)
-  .refine(isValidUrl, "URL must be a valid HTTPS endpoint");
+  .refine(isValidWebhookUrl, "URL must be a valid public HTTPS endpoint");
 
 const secretField = z
   .string()
@@ -212,7 +249,7 @@ export type ListWebhookSubscriptionsQuery = z.infer<
  *
  * Resolution order (first match wins):
  * 1. Exact match on event type (e.g. "attestation.created")
- * 2. Segment-level wildcard (e.g. "attestation.*")
+ * 2. Most-specific single-segment wildcard with the same segment count
  * 3. Recursive wildcard (e.g. "**" matches everything)
  *
  * When a filter object is matched, every key in the filter must exist as a
@@ -241,10 +278,14 @@ export function evaluateEventFilter(
     return matchesFilterObject(exact, eventPayload);
   }
 
-  // 2. Segment-level wildcard (e.g. "attestation.*")
+  // 2. Single-segment wildcard, preferring a wildcard in a later segment.
   const segments = eventType.split(".");
-  for (let i = 0; i < segments.length; i++) {
-    const wildcardPattern = [...segments.slice(0, i), "*"].join(".");
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const wildcardPattern = [
+      ...segments.slice(0, i),
+      "*",
+      ...segments.slice(i + 1),
+    ].join(".");
     const match = filters[wildcardPattern];
     if (typeof match === "boolean") return match;
     if (typeof match === "object" && match !== null) {

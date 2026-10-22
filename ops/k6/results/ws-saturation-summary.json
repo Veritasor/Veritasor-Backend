@@ -1,22 +1,22 @@
 {
-  "timestamp": "2026-07-30T04:06:02.310Z",
+  "timestamp": "2026-10-20T03:18:12.592Z",
   "saturationBaseline": [
     {
       "clientCount": 10,
       "messagesSent": 10,
-      "latencyMs": 0.7998999999981606,
+      "latencyMs": 0.6226000000024214,
       "dropRate": 0
     },
     {
       "clientCount": 50,
       "messagesSent": 50,
-      "latencyMs": 0.4474000000045635,
+      "latencyMs": 0.6083999999973457,
       "dropRate": 0
     },
     {
       "clientCount": 100,
       "messagesSent": 100,
-      "latencyMs": 1.263199999986682,
+      "latencyMs": 2.5169999999925494,
       "dropRate": 0
     }
   ],

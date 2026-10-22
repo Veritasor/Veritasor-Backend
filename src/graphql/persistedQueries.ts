@@ -1,5 +1,5 @@
 import { verifySignature, type PersistedQueryManifest, type SignedManifest } from '../../scripts/sync-persisted-queries.js';
-import { config } from '../config/index.js';
+const { config } = await import('../config/index.js');
 
 export class HashCollisionError extends Error {
   constructor(hash: string) {
@@ -52,7 +52,7 @@ export class PersistedQueryRegistry implements PersistedQueryStore {
 
   public static fromSignedManifest(
     signedManifest: SignedManifest,
-    secret: string = config.graphql?.persistedQuerySecret || process.env.PERSISTED_QUERY_SECRET || 'default-dev-secret-do-not-use-in-prod'
+    secret: string = config.graphql.persistedQuerySecret
   ): PersistedQueryRegistry {
     if (!verifySignature(signedManifest, secret)) {
       throw new ManifestSignatureError();

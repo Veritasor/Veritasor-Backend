@@ -147,12 +147,17 @@ export class ConflictError extends AppError {
  * RateLimitError - Used when rate limit is exceeded (429)
  */
 export class RateLimitError extends AppError {
+  public retryAfterMs?: number;
+
   constructor(
     message: string = "Rate limit exceeded",
-    context?: Record<string, unknown>
+    context?: Record<string, unknown>,
+    retryAfterMs?: number
   ) {
     super(message, 429, VRTErrorCodes.VRT_0006, context);
     this.name = "RateLimitError";
+    this.retryAfterMs =
+      retryAfterMs ?? (typeof context?.retryAfterMs === "number" ? context.retryAfterMs : undefined);
   }
 }
 
