@@ -30,6 +30,17 @@ interface AuthLogContext {
   duration?: number;
 }
 
+/**
+ * JWT failure-message classifiers.
+ *
+ * `jose`/`jsonwebtoken` error text varies ("jwt expired", "invalid iss claim",
+ * "unexpected audience", ...), so each claim is matched on the claim name or its
+ * documented short alias with word boundaries — never as a bare substring.
+ */
+const JWT_EXPIRY_ERROR = /\b(expired|exp)\b/i;
+const JWT_ISSUER_ERROR = /\b(issuer|iss)\b/i;
+const JWT_AUDIENCE_ERROR = /\b(audience|aud)\b/i;
+
 function logAuthEvent(context: AuthLogContext): void {
   const timestamp = new Date().toISOString();
   const logEntry = {
@@ -141,69 +152,6 @@ declare global {
   }
 }
 
-/**
- * Extracts and validates the Bearer token from the Authorization header.
- * 
- * This helper function handles various malformed Authorization headers gracefully:
- * - Missing or empty headers return null (unauthenticated)
- * - Non-"Bearer" schemes return null (unauthenticated, e.g., "Basic", "Token")
- * - Typos in "Bearer" prefix return null (e.g., "Bearr", "BEARER", "Bearer:")
- * - Missing or empty tokens (e.g., "Bearer " or "Bearer") return null
- * - Multiple spaces are normalized correctly (e.g., "Bearer  token" -> "token")
- * - Case-insensitive for the prefix (converts to lowercase before checking)
- * 
- * Algorithm:
- * 1. Return null if header is missing or empty (falsy)
- * 2. Split on first whitespace and validate prefix is exactly "bearer" (case-insensitive)
- * 3. Trim any excess whitespace and validate token is non-empty
- * 4. Return null if validation fails at any step (malformed header)
- * 
- * @param authHeader - The Authorization header value from the request
- * @returns The extracted Bearer token, or null if header is malformed/missing
- * 
- * @example
- * extractBearerToken('Bearer valid-token') // returns 'valid-token'
- * extractBearerToken('Bearer  multiple  spaces') // returns 'multiple  spaces'
- * extractBearerToken('Bearer') // returns null (no token)
- * extractBearerToken('Bearr token') // returns null (typo in prefix)
- * extractBearerToken('Bearer:token') // returns null (colon instead of space)
- * extractBearerToken('Token token') // returns null (wrong scheme)
- * extractBearerToken('') // returns null (empty)
- * extractBearerToken(undefined) // returns null (missing)
- */
-export function extractBearerToken(authHeader: string | undefined): string | null {
-  // Return null if header is missing or empty
-  if (!authHeader) {
-    return null;
-  }
-
-  // Split on the first whitespace to separate prefix from credentials
-  const parts = authHeader.split(/\s+/);
-
-  // Need at least 2 parts: prefix and token
-  if (parts.length < 2) {
-    return null;
-  }
-
-  // Validate prefix is exactly "bearer" (case-insensitive)
-  const prefix = parts[0].toLowerCase();
-  if (prefix !== "bearer") {
-    return null;
-  }
-
-  // Get the token (everything after the prefix, handling multiple spaces)
-  // We use slice(1) to get all parts after prefix and join with space
-  const token = parts.slice(1).join(" ");
-
-  // Validate token is non-empty after trimming
-  if (!token || token.trim() === "") {
-    return null;
-  }
-
-  // Return the token with internal whitespace preserved
-  // but external whitespace trimmed (handles edge cases like "Bearer  token  ")
-  return token.trim();
-}
 
 /**
  * Optional authentication middleware that attempts to authenticate requests
@@ -271,8 +219,14 @@ export async function optionalAuth(
         duration: Date.now() - startTime,
         ...extractionResult.details
       };
-      
+
       logAuthEvent(logContext);
+
+      // Silent failure model (docs/specs/optional-auth-middleware/design.md):
+      // every unauthenticated exit must leave `req.user` undefined, so a
+      // credential-less request can never ride a stale identity left on the
+      // request by anything upstream.
+      req.user = undefined;
       next();
       return;
     }
@@ -286,11 +240,17 @@ export async function optionalAuth(
       let eventType: AuthEventType;
       
       if (error instanceof Error) {
-        if (error.message.includes('expired') || error.message.includes('exp')) {
+        // Match whole claim names, not substrings: the previous bare
+        // `includes('exp')` classified "unexpected audience" (and any message
+        // containing "exp") as EXPIRED_TOKEN, so the audience failure was
+        // reported under the wrong event. Word boundaries keep the short claim
+        // aliases working ("exp claim", "invalid iss value") without matching
+        // inside unrelated words.
+        if (JWT_EXPIRY_ERROR.test(error.message)) {
           eventType = AuthEventType.EXPIRED_TOKEN;
-        } else if (error.message.includes('issuer') || error.message.includes('iss')) {
+        } else if (JWT_ISSUER_ERROR.test(error.message)) {
           eventType = AuthEventType.WRONG_ISSUER;
-        } else if (error.message.includes('audience') || error.message.includes('aud')) {
+        } else if (JWT_AUDIENCE_ERROR.test(error.message)) {
           eventType = AuthEventType.WRONG_AUDIENCE;
         } else {
           eventType = AuthEventType.INVALID_TOKEN;
@@ -327,8 +287,12 @@ export async function optionalAuth(
         tokenLength: extractionResult.details.tokenLength,
         duration: Date.now() - startTime
       };
-      
+
       logAuthEvent(logContext);
+
+      // Verification yielded no payload -> the request is unauthenticated, so a
+      // stale identity must not survive (same rule as the verify() throw path).
+      req.user = undefined;
       next();
       return;
     }

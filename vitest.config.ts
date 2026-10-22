@@ -11,6 +11,7 @@ export default {
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
       JWT_SECRET: "test-jwt-secret-key-at-least-thirty-two-characters-long",
       ENCRYPTION_KEY: "01234567890123456789012345678901",
+      SOROBAN_BATCH_MAX_LATENCY_MS: "500",
     },
     coverage: {
       provider: "v8",

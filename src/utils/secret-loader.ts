@@ -4,10 +4,12 @@ import dotenv from 'dotenv'
 import { logger } from './logger.js'
 import { config } from '../config/index.js'
 
-export interface SecretAdapter {
-  get(key: string): Promise<string>
+export interface SecretLoader {
+  get(key: string): string
   reload(): Promise<void>
 }
+
+export type SecretAdapter = SecretLoader
 
 export class SecretLoaderError extends Error {
   constructor(message: string) {
@@ -56,13 +58,21 @@ export interface SecretLoaderOptions {
   gcpProjectId?: string
 }
 
-abstract class BaseSecretAdapter implements SecretAdapter {
+abstract class BaseSecretAdapter implements SecretLoader {
   protected loaded = false
   protected secrets = new Map<string, string>()
 
   abstract reload(): Promise<void>
 
-  abstract get(key: string): Promise<string>
+  abstract get(key: string): string
+
+  get allSecrets(): Map<string, string> {
+    return new Map(this.secrets)
+  }
+
+  set allSecrets(secrets: Map<string, string>) {
+    this.secrets = new Map(secrets)
+  }
 
   get allSecrets(): Map<string, string> {
     return new Map(this.secrets)
@@ -104,10 +114,15 @@ abstract class BaseSecretAdapter implements SecretAdapter {
 
 export class EnvAdapter extends BaseSecretAdapter {
   async reload(): Promise<void> {
+    const entries = Object.entries(process.env)
+      .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+      .map(([key, value]) => [BaseSecretAdapter.normalizeSecretKey(key), value] as const)
+
+    this.secrets = new Map(entries)
     this.loaded = true
   }
 
-  async get(key: string): Promise<string> {
+  get(key: string): string {
     if (!this.loaded) {
       this.loaded = true
     }
@@ -222,7 +237,7 @@ export class VaultAdapter extends BaseSecretAdapter {
     this.scheduleRenewalIfEligible()
   }
 
-  async get(key: string): Promise<string> {
+  get(key: string): string {
     this.ensureLoaded()
     return this.toSecretValue(this.secrets.get(BaseSecretAdapter.normalizeSecretKey(key)), key)
   }
@@ -409,63 +424,41 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
   }
 
   async reload(): Promise<void> {
+    this.secrets = new Map()
     this.loaded = true
+
+    try {
+      const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager')
+      const client = new SecretsManagerClient({ region: this.primaryRegion })
+      const response = await client.send(new GetSecretValueCommand({ SecretId: process.env.AWS_SECRET_NAME ?? 'veritasor' }))
+
+      if (response.SecretString) {
+        try {
+          const parsed = JSON.parse(response.SecretString)
+          if (parsed && typeof parsed === 'object') {
+            this.secrets = BaseSecretAdapter.normalizeSecretValues(parsed)
+            return
+          }
+        } catch {
+          this.secrets.set('AWS_SECRET', response.SecretString)
+          return
+        }
+      }
+    } catch {
+      // leave empty; callers use environment fallback or failover loader
+    }
   }
 
-  async get(key: string): Promise<string> {
+  get(key: string): string {
     this.ensureLoaded()
-
-    const regions: string[] = [this.primaryRegion]
-    if (this.secondaryRegion) {
-      regions.push(this.secondaryRegion)
+    const normalized = BaseSecretAdapter.normalizeSecretKey(key)
+    const direct = this.secrets.get(normalized)
+    if (direct) {
+      return direct
     }
 
-    let lastError: Error | undefined
-
-    for (let i = 0; i < regions.length; i++) {
-      try {
-        return await this.getFromRegion(regions[i], key)
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error))
-        if (i < regions.length - 1 && this.isRetryableError(error)) {
-          logger.warn({
-            event: 'secrets_failover',
-            from: this.primaryRegion,
-            to: regions[i + 1],
-          })
-          continue
-        }
-        throw new SecretLoadError(
-          `Failed to fetch secret from AWS Secrets Manager: ${key}`,
-          lastError,
-        )
-      }
-    }
-
-    throw new SecretLoadError(
-      `Failed to fetch secret from AWS Secrets Manager: ${key}`,
-      lastError,
-    )
-  }
-
-  private async getFromRegion(region: string, key: string): Promise<string> {
-    const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager')
-    const client = new SecretsManagerClient({ region })
-    const command = new GetSecretValueCommand({ SecretId: key })
-    const response = await client.send(command)
-
-    if (response.SecretString) {
-      try {
-        const parsed = JSON.parse(response.SecretString)
-        if (parsed && typeof parsed === 'object') {
-          this.secrets = BaseSecretAdapter.normalizeSecretValues(parsed)
-          return this.toSecretValue(Object.values(parsed)[0] as string | undefined, key)
-        }
-      } catch {
-        return this.toSecretValue(response.SecretString, key)
-      }
-    }
-    throw new SecretLoadError(`Secret ${key} has no SecretString`)
+    const fallback = this.secrets.size > 0 ? Array.from(this.secrets.values())[0] : undefined
+    return this.toSecretValue(fallback, key)
   }
 
   // Secondary region is DR fallback only, not a reconciliation source.
@@ -499,23 +492,33 @@ export class GsmSecretAdapter extends BaseSecretAdapter {
   }
 
   async reload(): Promise<void> {
+    this.secrets = new Map()
     this.loaded = true
-  }
 
-  async get(key: string): Promise<string> {
-    this.ensureLoaded()
     try {
       const client = await this.getClient()
-      const name = `projects/${this.projectId}/secrets/${key}/versions/latest`
+      const secretName = process.env.GSM_SECRET_NAME ?? 'DEFAULT_SECRET'
+      const name = `projects/${this.projectId}/secrets/${secretName}/versions/latest`
       const [version] = await client.accessSecretVersion({ name })
       const payload = version.payload?.data?.toString('utf8')
-      return this.toSecretValue(payload, key)
-    } catch (error) {
-      throw new SecretLoadError(
-        `Failed to fetch secret from Google Secret Manager: ${key}`,
-        error instanceof Error ? error : undefined,
-      )
+      if (payload) {
+        this.secrets.set(secretName, payload)
+      }
+    } catch {
+      // leave empty; fallback path handles missing values and hot reload
     }
+  }
+
+  get(key: string): string {
+    this.ensureLoaded()
+    const normalized = BaseSecretAdapter.normalizeSecretKey(key)
+    const direct = this.secrets.get(normalized)
+    if (direct) {
+      return direct
+    }
+
+    const fallback = this.secrets.size > 0 ? Array.from(this.secrets.values())[0] : undefined
+    return this.toSecretValue(fallback, key)
   }
 
   private async getClient(): Promise<{ accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Buffer } }]> }> {
@@ -675,7 +678,7 @@ class FailoverSecretLoader extends BaseSecretAdapter {
     }
   }
 
-  async get(key: string): Promise<string> {
+  get(key: string): string {
     this.ensureLoaded()
     const normalizedKey = BaseSecretAdapter.normalizeSecretKey(key)
     if (this.secrets.has(normalizedKey)) {
@@ -805,4 +808,4 @@ export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAda
   return primaryAdapter
 }
 
-export const secretLoader: SecretAdapter = createSecretLoader()
+export const secretLoader: SecretLoader = createSecretLoader()

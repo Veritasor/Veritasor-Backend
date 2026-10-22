@@ -1,326 +1,90 @@
 # Veritasor Backend
 
-API gateway and attestation service for Veritasor. Handles revenue data normalization, Merkle proof generation, and on-chain submission to Soroban contracts (integration points are stubbed for the initial version).
+API service for **Veritasor**: businesses connect revenue sources (Stripe, Shopify, Razorpay), revenue data is normalized, and attestations (Merkle-based proofs) are recorded and submitted toward Soroban contracts on Stellar. Many Soroban integration points are stubs or are exercised against a mock RPC; this repo does not assert that any contract is deployed.
 
-## Tech Stack
+- Frontend: [Veritasor/Veritasor-Frontend](https://github.com/Veritasor/Veritasor-Frontend)
+- Contracts: [Veritasor/Veritasor-Contracts](https://github.com/Veritasor/Veritasor-Contracts)
 
-- **Node.js** + **TypeScript**
-- **Express** for HTTP API
-- Planned: PostgreSQL, Redis, gRPC internal services
+## Architecture
 
-## Prerequisites
+Node.js (ESM) + TypeScript + Express. `src/index.ts` starts the server; `src/app.ts` assembles middleware and routers.
 
-- Node.js 18+
-- npm or yarn
+| Area | Location |
+| --- | --- |
+| HTTP routers | `src/routes/` |
+| Services / repositories | `src/services/`, `src/repositories/` |
+| PostgreSQL + SQL migrations | `src/db/` (`migrate.ts`, `migrations/`) |
+| Redis (rate limiting, idempotency, cache) with circuit breaker | `src/redis.ts`, `src/middleware/` |
+| Background jobs (e.g. attestation reminders) | `src/jobs/` |
+| GraphQL, WebSocket, SPIFFE/mTLS | `src/graphql/`, `src/ws/`, `src/spiffe/` |
+| Startup readiness checks, graceful shutdown | `src/startup/`, `src/shutdown.ts` |
+| Metrics / tracing | `src/metrics.ts`, `src/tracing/` (Prometheus at `/metrics`, OTLP optional) |
+| Ops assets (dev compose, alerts, Grafana, k6, soak) | `ops/` |
 
-## Setup
+Request flow: request logger and security headers, mTLS, API-version negotiation (path, `X-API-Version`, `Accept-Version`, default v1), body parsing, CORS, compression, then routers, then the error handler. The Razorpay webhook router is mounted before JSON parsing so signatures can be verified over the raw body.
 
-```bash
-# Install dependencies
-npm install
+## API surface
 
-# Run in development (watch mode)
-npm run dev
-```
+Routers are mounted in `src/app.ts`. Some are also reachable under `/api/v1/...`; negotiate via the version middleware. Auto-generated map: [docs/api-routes.md](docs/api-routes.md) (`npm run docs:routes`); OpenAPI: `docs/openapi/` (`npm run docs:openapi`).
 
-API runs at `http://localhost:3000`. Use `PORT` env var to override.
+| Mount | Endpoints (from router files) |
+| --- | --- |
+| `/api/health` | `GET /`, `/live`, `/ready` |
+| `/api/auth` | `POST /signup`, `/login`, `/refresh`, `/forgot-password`, `/reset-password`; `GET /me`, `/signup/availability` |
+| `/api/users` | `PATCH /me`; data export: `POST /me/export`, `GET /me/export/:token`, `GET /me/export/:exportId/status` |
+| `/api/businesses` | `POST /`, `GET /me`, `PATCH /me`, `GET /:id` |
+| `/api/attestations` | `GET /`, `POST /`, `GET /:id`, `POST` or `DELETE /:id/revoke` |
+| `/api/v1/public/attestations` | public attestation lookup |
+| `/api/analytics` | `GET /periods`, `GET /revenue` |
+| `/api/integrations` | `GET /`, `GET /connected`, `POST /connect`, `GET`/`DELETE /:integrationId` |
+| `/api/integrations/{stripe,shopify,razorpay}` | OAuth connect/callback (Stripe, Shopify), connect/disconnect (Razorpay) |
+| `/api/webhooks/razorpay` | inbound Razorpay webhook |
+| `/api/v1/webhook-subscriptions` | outbound webhook subscriptions; egress IP list router |
+| `/api/admin`, `/api/v1/admin` | admin router incl. GraphQL; DLQ routes (`/entries`, `/stats`, archive/restore) |
+| `/metrics`, `/.well-known/jwks.json` | Prometheus metrics (when enabled); JWKS |
 
-## Rate Limiting
+Authentication: JWT bearer tokens; business-scoped operations also take `x-business-id`. See [docs/business-authorization-boundary-checks.md](docs/business-authorization-boundary-checks.md) and [docs/rbac-policy-engine.md](docs/rbac-policy-engine.md). Errors follow a standard envelope: [docs/errors.md](docs/errors.md).
 
-The shared rate limiter in [src/middleware/rateLimiter.ts](src/middleware/rateLimiter.ts) supports explicit route-level buckets. Apply a stable bucket name per sensitive route so bursts against one endpoint do not consume the budget for another endpoint. Auth routes use this for login, refresh, forgot-password, reset-password, and `me`, while signup keeps its dedicated abuse-prevention limiter.
+## Configuration
 
-## Observability
+Copy `.env.example` to `.env`. Variables defined there:
 
-Prometheus metrics are available at `/metrics` when `METRICS_ENABLED=true`.
+- Core: `PORT` (3000), `NODE_ENV`
+- Security: `JWT_SECRET`, `JWT_REFRESH_SECRET` (production requires strong values, >= 32 chars), `AUDIT_CHAIN_SECRET`, `ALLOWED_ORIGINS` (required in production), `SECRET_PROVIDER` (`env`, `aws`, `vault`) plus `VAULT_*`
+- Database: `DATABASE_URL` (required) or `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD`, `DB_MAX_CONNECTIONS`, `DB_IDLE_TIMEOUT`, `PGSSL*`, `MIGRATION_*_TIMEOUT_MS`
+- Redis: `REDIS_URL`, or `REDIS_CLUSTER_NODES`, `REDIS_TLS`
+- Observability: `METRICS_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, PgBouncer/Pushgateway options
+- Stellar/Soroban: `STELLAR_NETWORK`, `SOROBAN_RPC_URL`, `SOROBAN_NETWORK_PASSPHRASE`, optional `SOROBAN_CONTRACT_ID`, `SOROBAN_BACKUP_RPC_URL`, hedging options
+- Integrations (optional): `SHOPIFY_*`, `STRIPE_*`, Razorpay settings
 
-### Idempotency TTL semantics
+The file is the authoritative, commented reference.
 
-Idempotency keys are cached so duplicate requests within a TTL window return the original response. Default TTL is 24 hours (`getDefaultTtl()` in [src/middleware/idempotency.ts](src/middleware/idempotency.ts)). Per-route overrides use `idempotencyMiddleware({ scope, ttlMs })`.
+## Running locally
 
-**Eviction** is cooperative and never blocks the request path:
-
-- The in-memory store evicts on read (`get`) and on overflow (`set` when `MAX_MEMORY_STORE_SIZE` is reached) and additionally on a periodic sweep.
-- The Redis store relies on `PEXPIRE` for self-eviction; the sweeper does not write to Redis.
-- A background sweeper (`IdempotencySweeper`) runs at `IDEMPOTENCY_SWEEP_INTERVAL_MS` (default 60s, hard floor 1s) and emits the metrics below.
-- The sweeper is `unref`'d: it never blocks process exit and is stopped cleanly during graceful shutdown.
-- A single Redis blip does not stop the sweeper — `runOnce()` swallows store errors, increments `idempotency_sweep_runs_total{outcome="error"}`, and the next cycle resumes once ioredis reconnects.
-
-**Metrics for storage pressure** (see [src/metrics.ts](src/metrics.ts)):
-
-| Metric | Type | Labels | Meaning |
-| --- | --- | --- | --- |
-| `idempotency_keys_count` | gauge | `backend` (`memory`/`redis`) | Current number of live keys in the store. Driven from `Map.size` (memory) or a `SCAN MATCH idempotency:*` walk (redis). |
-| `idempotency_evictions_total` | counter | `backend`, `reason` (`expired`/`overflow`/`manual`) | Total keys removed. `expired` = TTL sweep, `overflow` = capacity prune in `set`, `manual` = explicit `delete`. |
-| `idempotency_sweep_runs_total` | counter | `backend`, `outcome` (`ok`/`error`) | Sweeper cycles executed; `outcome="error"` indicates a transient store failure. |
-
-Tune the TTL (`ttlMs` per route) or the sweep interval (`IDEMPOTENCY_SWEEP_INTERVAL_MS`) so the gauge plateaus instead of climbing — a continuously-rising gauge signals either a leak in `set()` or a too-long TTL.
-
-Distributed tracing is disabled by default. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP/HTTP traces endpoint, such as `http://localhost:4318/v1/traces`, to initialize the OpenTelemetry Node SDK during app startup. The request logger creates one server span per HTTP request and Soroban RPC retries create child client spans, so slow attestation requests can be correlated with individual blockchain attempts.
-
-Trace attributes intentionally exclude request bodies, headers, and raw query strings. Correlation IDs, HTTP method, route/path, status code, user agent, and Soroban operation metadata are emitted; exception messages are redacted before being recorded on custom spans.
-
-## Attestation Reminders
-
-The `attestationReminderJob` (`src/jobs/attestationReminder.ts`) sends attestation reminders aligned to each business's reporting calendar rather than on a fixed interval.
-
-**How it works:**
-
-- Each business has a `reportingPeriod` (`weekly` | `monthly`) and a `reportingTimezone` (IANA, e.g. `America/New_York`).
-- The job computes the *next period boundary* since the last send using `Intl.DateTimeFormat` for DST-safe local-date decomposition.
-- A reminder fires only when `now >= nextBoundary`. After sending, `lastReminderSentAt` is persisted to prevent double-firing within the same period.
-- The job accepts an injectable `now: Date` parameter for deterministic testing without `vi.useFakeTimers()`.
-
-**DST safety:** Period boundaries are computed by reading the local calendar date via `Intl`, then constructing a UTC instant via `Date.UTC`. This avoids the spring-forward / fall-back hazards that arise from using JS local-time methods directly.
-
-**Schema changes:** See migration `20260627_001_add_businesses_reminder_columns.sql` which adds `reporting_period`, `reporting_timezone`, and `last_reminder_sent_at` to the `businesses` table.
-
-
-
-| Command          | Description                    |
-|------------------|--------------------------------|
-| `npm run dev`    | Start with tsx watch           |
-| `npm run build`  | Compile TypeScript to `dist/`  |
-| `npm run start`  | Run compiled `dist/index.js`   |
-| `npm run lint`   | Run ESLint                     |
-| `npm run migrate`| Run database migrations        |
-| `npm run audit:ci` | Run dependency audit and allowlist validation |
-
-## Security audit
-
-This repository includes a GitHub Actions workflow at `.github/workflows/security-audit.yml` that runs:
-
-- `pnpm audit --prod --json` to detect vulnerabilities.
-- `scripts/check-audit.ts` to enforce `.audit-allowlist.json` for temporary, expiring exceptions.
-- A CycloneDX JSON SBOM generated from the full locked npm dependency graph and attached to each release, along with its SHA-256 checksum. Generate one locally with `npm run sbom:generate`; `--no-install` ensures the locked generator is used.
-
-## Release provenance (SLSA)
-
-Every `v*` tag release ships with **SLSA v1 provenance** attached as a signed in-toto attestation, generated by the pinned `slsa-github-generator` reusable workflow and signed keylessly via GitHub OIDC (Sigstore). The provenance binds both the package artifact and its CycloneDX SBOM SHA-256 digest. Artifacts are additionally cosign-signed, and the release is blocked if provenance verification fails inside `.github/workflows/slsa-provenance.yml`.
-
-Verify a downloaded artifact:
+Requires Node.js 22 (as in CI) and Docker for the dev stack. CI uses pnpm (`pnpm-lock.yaml`); `package-lock.json` also exists and the Dockerfile uses `npm ci`.
 
 ```bash
-slsa-verifier verify-artifact veritasor-backend-<tag>.tgz \
-  --provenance-path veritasor-backend-<tag>.intoto.jsonl \
-  --source-uri github.com/aburex12345/Veritasor-Backend \
-  --source-tag <tag>
+docker compose -f ops/dev/docker-compose.yml up -d   # Postgres, Redis, mock Soroban RPC (seeded dev data)
+cp .env.example .env
+pnpm install            # or: npm install
+pnpm run migrate        # apply SQL migrations
+pnpm run dev            # http://localhost:3000
 ```
 
-A structural gate also runs locally/offline: `npm run verify:provenance -- --provenance <file> --artifact <file> --source-repo github.com/aburex12345/Veritasor-Backend`. Full details: [docs/slsa-provenance.md](docs/slsa-provenance.md).
+Other scripts: `build`, `start`, `lint`, `migrate:rollback`, `migrate:verify-rollback`, `docs:routes`, `docs:openapi`, `sbom:generate`, `perf:k6:*`, `soak`, `pact:test`, `test:mutation`. Reset the dev stack with `docker compose -f ops/dev/docker-compose.yml down -v`.
 
-## Authorization
+## Testing
 
-Protected integration operations use an explicit action-on-resource RBAC policy with verified tenant scope and audit logging. See [the policy engine guide](docs/rbac-policy-engine.md).
+`pnpm test` runs Vitest (`vitest.config.ts`); `pnpm run test:coverage` adds coverage; `pnpm run pact:test` runs consumer contract tests (`tests/pact/`). Load/soak tooling lives in `ops/k6` and `scripts/soak-attestations.ts`.
 
-## Security Tests
+## CI and deployment
 
-[![Security Tests](https://github.com/Veritasor/Veritasor-Backend/actions/workflows/security-tests.yml/badge.svg)](https://github.com/Veritasor/Veritasor-Backend/actions/workflows/security-tests.yml)
+`.github/workflows/ci.yml` (push/PR to `main`) installs with `pnpm install --frozen-lockfile --ignore-scripts` and runs `tsc --noCheck --noEmit`. It is a minimal build gate, not the full test suite.
 
-Multi-tenant authorization fuzz tests live in `tests/security/multitenant.fuzz.spec.ts`. They use [fast-check](https://github.com/dubzzz/fast-check) property-based testing to generate randomized cross-tenant scenarios and assert `requireBusinessAuth` rejects every off-tenant request, including nested resources (attestations under integrations).
+The `Dockerfile` builds with `npm ci` and `npm run build`, and its `HEALTHCHECK` targets `/api/health/live`. For Kubernetes use `/api/health/live` for liveness and `/api/health/ready` for readiness. Production requires `JWT_SECRET`, `ALLOWED_ORIGINS` and `DATABASE_URL`. Operational runbooks: [docs/runbooks/](docs/runbooks/README.md).
 
-Run the security tests in isolation:
+## Documentation
 
-```bash
-npx vitest run tests/security/multitenant.fuzz.spec.ts
-```
+See [docs/index.md](docs/index.md). Other root notes: `IMPLEMENTATION_NOTES.md`, `SHOPIFY_OAUTH_STATE_SECURITY.md`, `MERKLE_TREE_TEST_IMPLEMENTATION.md`, `TODO.md`.
 
-Pact contracts are published to the broker from the main-branch security workflow using the `PACT_BROKER_URL` secret and the current commit SHA as the consumer version. To publish locally, run:
-
-```bash
-npm run pact:publish
-```
-
-**What is fuzz-tested:**
-
-| Scenario | Property | Expected outcome |
-|---|---|---|
-| Tenant A claims Tenant B's business | `requestingUser.id ≠ business.userId` | 403 `BUSINESS_NOT_FOUND` |
-| Spoofed `X-Business-Id` header | Non-existent or foreign business ID | 403 `BUSINESS_NOT_FOUND` |
-| Nested attestation access | Attacker requests route protected by foreign business | 403 `BUSINESS_NOT_FOUND` |
-| Suspended business (own owner) | `business.suspended = true` | 403 `BUSINESS_SUSPENDED` |
-| Injection characters in business ID | IDs outside `[a-zA-Z0-9\-_]{1,50}` | 400 `MISSING_BUSINESS_ID` |
-| DB failure during ownership check | `getById` throws | 403 `BUSINESS_NOT_FOUND` (never 500) |
-| Error response data | Any rejection path | No secrets, stack traces, or sensitive fields leaked |
-
-fast-check's shrinking automatically narrows any failing case to the minimal counterexample.
-
-## Security audit allowlist
-
-
-
-- `id`: Advisory identifier
-- `package`: npm package name
-- `severity`: `low`, `moderate`, `high`, or `critical`
-- `reason`: Why the exception is allowed
-- `expires`: ISO 8601 expiration timestamp
-
-Expired allowlist entries are rejected.
-
-## Audit-log hash chain
-
-Audit-log entries in `src/repositories/auditLogRepository.ts` are linked by a tamper-evident HMAC-SHA-256 chain.
-
-### How it works
-
-Each entry carries a `chainHash`:
-
-```
-chainHash[0] = HMAC(GENESIS_SENTINEL || canonical(entry[0]))
-chainHash[N] = HMAC(chainHash[N-1]   || canonical(entry[N]))
-```
-
-`canonical(entry)` is a pipe-delimited string of all immutable fields including `seq`, `id`, `userId`, `action`, `resource`, `resourceId`, `contentHash`, `timestamp`, and a SHA-256 hash of `metadata`.
-
-Tampering with any field, deleting an entry, or re-ordering entries breaks the chain at that position.
-
-### Verify the chain
-
-```bash
-# Verify a live log export
-curl -s -H "Authorization: Bearer $TOKEN" \
-     http://localhost:3000/api/v1/admin/audit-logs \
-     | jq '.data' \
-     | npx tsx scripts/verify-audit-chain.ts --verbose
-
-# Verify a saved snapshot
-npx tsx scripts/verify-audit-chain.ts --file audit-export.json
-```
-
-Exit code `0` = chain intact; `1` = chain broken.
-
-### HMAC key
-
-Set `AUDIT_CHAIN_SECRET` in the environment (inject from a secrets manager in production). The module uses a deterministic fallback for tests when the env var is absent.
-
-### Chain root anchor
-
-`src/jobs/auditAnchorJob.ts` emits the current chain root to the structured logger every hour. Ship those logs to an append-only, off-system sink (CloudWatch Logs, Datadog, S3 with object lock). A discrepancy between the anchored root and the current computed root is evidence of tampering.
-
-Start the anchor job from `src/index.ts`:
-
-```typescript
-import { createAuditAnchorJob } from './jobs/auditAnchorJob.js'
-const anchorJob = createAuditAnchorJob()
-// Stop during graceful shutdown:
-anchorJob.stop()
-```
-
-## Performance testing
-
-Peak-load k6 scenarios for `/api/v1/attestations` live in `ops/k6/`.
-
-- Local entrypoint: `npm run perf:k6:attestations`
-- Scenario docs: `ops/k6/README.md`
-- Nightly workflow: `.github/workflows/nightly-k6-attestations.yml`
-- Grafana dashboard: `ops/k6/grafana/peak-attestation-dashboard.json`
-
-## API Versioning
-
-Routes may be mounted with an `/api/v{n}` prefix and/or legacy unversioned paths (e.g. `/api/attestations`). The server still resolves a major version for each request.
-
-- **Negotiation:** Path segment wins when present; otherwise `X-API-Version`, `Accept-Version`, query `apiVersion` / `api_version`, then `Accept` parameters (`version=`, `api-version=`, `v=`). Default is **v1**. Unsupported majors fall back to v1 with `API-Version-Fallback: true`.
-- **Response headers:** `API-Version` (always a supported label), optional `API-Version-Fallback`, and merged `Vary` for caches.
-- **Spec:** [docs/specs/api-version-negotiation.md](docs/specs/api-version-negotiation.md)
-- **Future extensions:** Add entries to `SUPPORTED_API_VERSIONS` and mount `/api/v2` routers when ready.
-
-## API (current)
-
-| Method | Path                      | Description              | Auth Required |
-|--------|---------------------------|--------------------------|---------------|
-| GET    | `/api/v1/health`          | Health check             | No |
-| GET    | `/api/v1/attestations`    | List attestations (stub) | User Auth |
-| POST   | `/api/v1/attestations`    | Submit attestation (stub)| User Auth |
-| GET    | `/api/v1/businesses/me`   | Get user business        | User Auth |
-| POST   | `/api/v1/businesses`      | Create business           | User Auth |
-| PATCH  | `/api/v1/businesses/me`   | Update business           | User Auth |
-
-## Authentication & Authorization
-
-### User Authentication
-The API uses JWT-based authentication. Include the token in the `Authorization` header:
-
-```http
-Authorization: Bearer <your_jwt_token>
-```
-
-### Business Authorization
-For business-scoped operations, use the enhanced business authorization middleware:
-
-```http
-Authorization: Bearer <your_jwt_token>
-x-business-id: <business_id>
-```
-
-**Security Features:**
-- JWT token validation with user existence verification
-- Business ownership enforcement (users can only access their own businesses)
-- Input validation and injection prevention
-- Detailed error responses with structured error codes
-
-**Error Codes:**
-- `MISSING_AUTH` (401): Missing or invalid Authorization header
-- `INVALID_TOKEN` (401): Invalid, expired, or malformed JWT token
-- `MISSING_BUSINESS_ID` (400): Business ID not provided or invalid format
-- `BUSINESS_NOT_FOUND` (403): Business not found or access denied
-
-For detailed documentation, see [Business Authorization Boundary Checks](docs/business-authorization-boundary-checks.md).
-
-## Project structure
-
-```
-veritasor-backend/
-├── src/
-│   ├── db/
-│   │   ├── migrations/   # SQL migrations (e.g. 001_create_users_table.sql)
-│   │   └── migrate.ts    # Migration runner
-│   ├── routes/       # health, attestations
-│   └── index.ts      # Express app entry
-├── package.json
-└── tsconfig.json
-```
-
-## Database migrations
-
-Migrations live in `src/db/migrations/` as numbered SQL files (e.g. `001_create_users_table.sql`). The runner applies only pending migrations and records them in `schema_migrations`, so each runs once.
-
-**Local database setup (contributors)**  
-The repo does not include database credentials. Install PostgreSQL locally, create a database (and optionally a user), then set `DATABASE_URL` in your `.env` using your own username, password, and database name. Example after installing Postgres: create a DB (e.g. `createdb veritasor` or via your GUI), then use a connection string like `postgresql://localhost:5432/veritasor` (or with a username/password if you created one).
-
-**How to run migrations**
-
-1. Set `DATABASE_URL` (PostgreSQL connection string), e.g. in `.env` (copy from `.env.example`).
-2. Run:
-
-```bash
-npm run migrate
-```
-
-Or with the CLI directly:
-
-```bash
-DATABASE_URL=postgresql://user:pass@localhost:5432/dbname npx tsx src/db/migrate.ts
-```
-
-Requires Node 18+ and a running PostgreSQL instance.
-
-**Rollback verification (CI):** `npm run migrate:verify-rollback` dry-runs apply-then-rollback for each migration against a disposable scratch database and reports any schema drift a `down.sql` leaves behind. It refuses to run against anything that doesn't look like a scratch DB — see [docs/migration-rollback-verification.md](docs/migration-rollback-verification.md).
-
-## Environment
-
-Optional `.env`:
-
-```
-PORT=3000
-DATABASE_URL=postgresql://user:password@localhost:5432/veritasor
-# MIGRATION_LOCK_TIMEOUT_MS=5000
-# MIGRATION_STATEMENT_TIMEOUT_MS=60000
-```
-
-## Merging to remote
-
-This directory is its own git repository. To push to your remote:
-
-```bash
-git remote add origin <your-backend-repo-url>
-git push -u origin main
-```
+Note: older README text referenced `security-audit.yml` and `slsa-provenance.yml` workflows; those files are not currently in `.github/workflows/`. The related design docs remain in `docs/` ([security-provenance.md](docs/security-provenance.md), [slsa-provenance.md](docs/slsa-provenance.md)).

@@ -37,8 +37,8 @@ const payload: TokenPayload = {
 	email: "test@example.com",
 };
 
-const ACCESS_SECRET = "dev-secret-key";
-const REFRESH_SECRET = "dev-refresh-secret-key";
+const ACCESS_SECRET = process.env.JWT_SECRET ?? "dev-secret-key";
+const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET ?? "dev-refresh-secret-key";
 
 /**
  * Signs an expired access token that carries the correct iss/aud claims so
@@ -483,6 +483,9 @@ describe("getSecret branches (via sign)", () => {
 				soroban: { rpcUrl: "", contractId: "", networkPassphrase: "" },
 			},
 		}));
+		// The default secret loader reads process.env.JWT_SECRET directly, so
+		// blank it to force the mocked-config fallback to actually be reached.
+		vi.stubEnv("JWT_SECRET", "");
 		const { sign: freshSign } = await import("../../../src/utils/jwt");
 		const token = freshSign(payload);
 		// The token should be verifiable with the mocked config secret
@@ -680,6 +683,442 @@ describe("verify expiry skew handling", () => {
 		const token = sign({ ...payload, iat: now - 20, exp: now + 3600 });
 		// maxAge of 10 seconds should reject (token is 20s old)
 		expect(() => verify(token, { maxAge: 10 })).toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ENHANCED ROTATION-AWARE FUNCTIONS
+// Token family lifecycle, claim binding, reuse detection, blacklist semantics
+// ---------------------------------------------------------------------------
+
+describe("enhanced rotation-aware functions", () => {
+	const freshPayload: TokenPayload = {
+		userId: `user-rotate-${Date.now()}`,
+		email: "rotate@example.com",
+	};
+
+	function uniqueFamily(): string {
+		return `family-${Date.now()}-${Math.random()}`;
+	}
+
+	describe("generateAccessToken / generateTokenPair", () => {
+		it("embeds jti, familyId, type, iss and aud claims", () => {
+			const family = uniqueFamily();
+			const token = generateAccessToken(freshPayload, family);
+			const decoded = jwt.decode(token) as Record<string, unknown>;
+			expect(decoded.jti).toBeTypeOf("string");
+			expect((decoded.jti as string).length).toBeGreaterThan(0);
+			expect(decoded.familyId).toBe(family);
+			expect(decoded.type).toBe("access");
+			expect(decoded.iss).toBe(JWT_ISSUER);
+			expect(decoded.aud).toBe(JWT_AUDIENCE);
+			expect(decoded.email).toBe(freshPayload.email);
+		});
+
+		it("generateTokenPair shares one familyId between access and refresh", () => {
+			const pair = generateTokenPair(freshPayload);
+			const accessDecoded = jwt.decode(pair.accessToken) as Record<string, unknown>;
+			const refreshDecoded = jwt.decode(pair.refreshToken) as Record<string, unknown>;
+			expect(accessDecoded.familyId).toBe(pair.familyId);
+			expect(refreshDecoded.familyId).toBe(pair.familyId);
+			expect(accessDecoded.type).toBe("access");
+			expect(refreshDecoded.type).toBe("refresh");
+			expect(accessDecoded.aud).toBe(JWT_AUDIENCE);
+			expect(refreshDecoded.aud).toBe(JWT_REFRESH_AUDIENCE);
+		});
+
+		it("generateAccessToken without a familyId registers its own family for tracking", () => {
+			const token = generateAccessToken(freshPayload);
+			const decoded = jwt.decode(token) as Record<string, unknown>;
+			const family = getTokenFamily(decoded.familyId as string);
+			expect(family).toBeDefined();
+			expect(family?.issuedJtis.has(decoded.jti as string)).toBe(true);
+		});
+	});
+
+	describe("verifyAccessToken", () => {
+		it("accepts a token minted by generateTokenPair", () => {
+			const { accessToken } = generateTokenPair(freshPayload);
+			const decoded = verifyAccessToken(accessToken);
+			expect(decoded).toMatchObject(freshPayload);
+			expect(decoded.type).toBe("access");
+			expect(decoded.jti).toBeTypeOf("string");
+		});
+
+		it("rejects a refresh-family token presented as an access token", () => {
+			const { refreshToken } = generateTokenPair(freshPayload);
+			// type=refresh + refresh audience + refresh secret -> verifyAccessToken
+			// must reject under audience/issuer/claim validation.
+			expect(() => verifyAccessToken(refreshToken)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects a legacy (non-rotation) token", () => {
+			const legacy = generateToken(freshPayload);
+			expect(() => verifyAccessToken(legacy)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects a token with wrong audience", () => {
+			const token = jwt.sign(
+				{ ...freshPayload, jti: "jti-aud", familyId: uniqueFamily(), type: "access" },
+				ACCESS_SECRET,
+				{ expiresIn: 3600, issuer: JWT_ISSUER, audience: "other-audience", algorithm: "HS256" } as any,
+			);
+			expect(() => verifyAccessToken(token)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects a signature-valid token whose type claim is 'refresh'", () => {
+			// Signature + claims pass, but the type claim is wrong -> TYPE_MISMATCH.
+			const token = jwt.sign(
+				{ ...freshPayload, jti: "jti-type", familyId: uniqueFamily(), type: "refresh" },
+				ACCESS_SECRET,
+				{ expiresIn: 3600, issuer: JWT_ISSUER, audience: JWT_AUDIENCE } as any,
+			);
+			expect(() => verifyAccessToken(token)).toThrow(
+				expect.objectContaining({ code: "TYPE_MISMATCH" }),
+			);
+		});
+
+		it("rejects an access token signed with the wrong secret", () => {
+			const token = jwt.sign(
+				{ ...freshPayload, jti: "jti-secret", familyId: uniqueFamily(), type: "access" },
+				"wrong-secret",
+				{ expiresIn: "1h", issuer: JWT_ISSUER, audience: JWT_AUDIENCE } as any,
+			);
+			expect(() => verifyAccessToken(token)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects an expired access token", () => {
+			const { accessToken } = generateTokenPair(freshPayload);
+			// Rewrite the same payload with expiresIn in the past.
+			const decoded = jwt.decode(accessToken) as Record<string, unknown>;
+			const expired = jwt.sign(
+				{
+					userId: decoded.userId,
+					email: decoded.email,
+					jti: decoded.jti,
+					familyId: decoded.familyId,
+					type: "access",
+				},
+				ACCESS_SECRET,
+				{ expiresIn: -60, issuer: JWT_ISSUER, audience: JWT_AUDIENCE } as any,
+			);
+			expect(() => verifyAccessToken(expired)).toThrow(TokenExpiredError);
+		});
+
+		it("rejects a globally blacklisted access token", () => {
+			const { accessToken } = generateTokenPair(freshPayload);
+			const decoded = jwt.decode(accessToken) as Record<string, unknown>;
+			blacklistToken(decoded.jti as string);
+			expect(() => verifyAccessToken(accessToken)).toThrow(
+				expect.objectContaining({ code: "TOKEN_REVOKED" }),
+			);
+		});
+
+		it("throws TokenInvalidError for garbage input", () => {
+			expect(() => verifyAccessToken("not-a-jwt")).toThrow(TokenInvalidError);
+			expect(() => verifyAccessToken("")).toThrow(TokenInvalidError);
+		});
+	});
+
+	describe("verifyRefreshTokenRotationAware", () => {
+		it("accepts a fresh refresh token minted by generateTokenPair", () => {
+			const { refreshToken } = generateTokenPair(freshPayload);
+			const decoded = verifyRefreshTokenRotationAware(refreshToken);
+			expect(decoded).toMatchObject(freshPayload);
+			expect(decoded.type).toBe("refresh");
+		});
+
+		it("rejects a legacy (non-rotation) refresh token", () => {
+			const legacy = generateRefreshToken(freshPayload);
+			expect(() => verifyRefreshTokenRotationAware(legacy)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects a refresh token signed with the access secret", () => {
+			const token = jwt.sign(
+				{ ...freshPayload, jti: "jti-isolation", familyId: uniqueFamily(), type: "refresh" },
+				ACCESS_SECRET,
+				{ expiresIn: "7d", issuer: JWT_ISSUER, audience: JWT_REFRESH_AUDIENCE } as any,
+			);
+			expect(() => verifyRefreshTokenRotationAware(token)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects a token with missing rotation claims", () => {
+			const token = jwt.sign(payload, REFRESH_SECRET, {
+				expiresIn: "7d",
+				issuer: JWT_ISSUER,
+				audience: JWT_REFRESH_AUDIENCE,
+			} as any);
+			expect(() => verifyRefreshTokenRotationAware(token)).toThrow(TokenInvalidError);
+		});
+
+		it("rejects a signature-valid token whose type claim is 'access'", () => {
+			const token = jwt.sign(
+				{ ...freshPayload, jti: "jti-type", familyId: uniqueFamily(), type: "access" },
+				REFRESH_SECRET,
+				{ expiresIn: "7d", issuer: JWT_ISSUER, audience: JWT_REFRESH_AUDIENCE } as any,
+			);
+			expect(() => verifyRefreshTokenRotationAware(token)).toThrow(
+				expect.objectContaining({ code: "TYPE_MISMATCH" }),
+			);
+		});
+
+		it("rejects an expired refresh token", () => {
+			const token = jwt.sign(
+				{ ...freshPayload, jti: "jti-exp", familyId: uniqueFamily(), type: "refresh" },
+				REFRESH_SECRET,
+				{ expiresIn: -60, issuer: JWT_ISSUER, audience: JWT_REFRESH_AUDIENCE } as any,
+			);
+			expect(() => verifyRefreshTokenRotationAware(token)).toThrow(TokenExpiredError);
+		});
+
+		it("rejects a globally blacklisted refresh token", () => {
+			const { refreshToken } = generateTokenPair(freshPayload);
+			const decoded = jwt.decode(refreshToken) as Record<string, unknown>;
+			blacklistToken(decoded.jti as string);
+			expect(() => verifyRefreshTokenRotationAware(refreshToken)).toThrow(
+				expect.objectContaining({ code: "TOKEN_REVOKED" }),
+			);
+		});
+	});
+
+	describe("refresh rotation and reuse detection", () => {
+		it("rotates a refresh token and consumes the old jti", async () => {
+			const { refreshToken } = generateTokenPair(freshPayload);
+			const result = await refreshTokenPair(refreshToken);
+			expect(result.accessToken).toBeTruthy();
+			expect(result.refreshToken).not.toBe(refreshToken);
+			expect(result.familyId).toBe(jwt.decode(refreshToken)?.familyId ?? result.familyId);
+			// The new refresh token must verify normally.
+			const decoded = verifyRefreshTokenRotationAware(result.refreshToken);
+			expect(decoded.familyId).toBe(result.familyId);
+		});
+
+		it("detects reuse of a consumed refresh token and revokes the sibling access token", async () => {
+			const pair = generateTokenPair(freshPayload);
+			const oldRefresh = pair.refreshToken;
+			const siblingAccess = pair.accessToken;
+
+			await refreshTokenPair(oldRefresh);
+
+			// Replaying the consumed refresh token = theft signal.
+			await expect(refreshTokenPair(oldRefresh)).rejects.toBeInstanceOf(TokenReusedError);
+
+			// The sibling access token minted in the same (compromised) family
+			// is now globally blacklisted too.
+			expect(() => verifyAccessToken(siblingAccess)).toThrow(
+				expect.objectContaining({ code: "TOKEN_REVOKED" }),
+			);
+		});
+
+		it("returns FAMILY_COMPROMISED for the freshly rotated token after a reuse event", async () => {
+			const { refreshToken, familyId } = generateTokenPair(freshPayload);
+			const fresh = await refreshTokenPair(refreshToken);
+			// Trigger the theft signal using the original token.
+			await expect(refreshTokenPair(refreshToken)).rejects.toBeInstanceOf(TokenReusedError);
+			// The replacement token was minted before the compromise: it is
+			// blacklisted along with the whole family (revoke-on-theft).
+			await expect(refreshTokenPair(fresh.refreshToken)).rejects.toMatchObject({
+				code: "TOKEN_REVOKED",
+			});
+			// The family marker persists so the compromise is recorded in-memory.
+			expect(getTokenFamily(familyId)?.concurrentRefreshDetected).toBe(true);
+		});
+
+		it("serialises concurrent refresh so exactly one rotation succeeds", async () => {
+			const { refreshToken } = generateTokenPair(freshPayload);
+			const [a, b] = await Promise.allSettled([
+				refreshTokenPair(refreshToken),
+				refreshTokenPair(refreshToken),
+			]);
+			const successes = [a, b].filter((r) => r.status === "fulfilled");
+			const failures = [a, b].filter((r) => r.status === "rejected");
+			expect(successes).toHaveLength(1);
+			expect(failures).toHaveLength(1);
+			expect((failures[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+				TokenReusedError,
+			);
+		});
+
+		it("rejects even a freshly minted token for a compromised family with FAMILY_COMPROMISED", async () => {
+			const { refreshToken, familyId } = generateTokenPair(freshPayload);
+			await refreshTokenPair(refreshToken); // consume
+			await expect(refreshTokenPair(refreshToken)).rejects.toBeInstanceOf(
+				TokenReusedError,
+			); // theft signal
+			// A brand-new token minted into the compromised family is rejected
+			// by the persistent compromise marker (not the blacklist).
+			const reissue = generateTokenPair(freshPayload, familyId);
+			await expect(refreshTokenPair(reissue.refreshToken)).rejects.toMatchObject({
+				code: "FAMILY_COMPROMISED",
+			});
+		});
+	});
+
+	describe("token family lifecycle", () => {
+		it("revokeTokenFamily renders every family token unusable", () => {
+			const pair = generateTokenPair(freshPayload);
+			const family = getTokenFamily(pair.familyId);
+			expect(family).toBeDefined();
+			revokeTokenFamily(pair.familyId);
+			expect(getTokenFamily(pair.familyId)).toBeUndefined();
+			expect(() => verifyAccessToken(pair.accessToken)).toThrow(
+				expect.objectContaining({ code: "TOKEN_REVOKED" }),
+			);
+			expect(() => verifyRefreshTokenRotationAware(pair.refreshToken)).toThrow(
+				expect.objectContaining({ code: "TOKEN_REVOKED" }),
+			);
+		});
+
+		it("revokeTokenFamily is a no-op for unknown families", () => {
+			expect(() => revokeTokenFamily("does-not-exist")).not.toThrow();
+		});
+
+		it("clearExpiredFamilies removes old families and returns the count", () => {
+			const pair = generateTokenPair(freshPayload);
+			expect(getTokenFamily(pair.familyId)).toBeDefined();
+			// Default is 30 days; nothing should be cleared for fresh families.
+			expect(clearExpiredFamilies()).toBe(0);
+			// A negative maxAge purges every existing family as expired.
+			expect(clearExpiredFamilies(-1)).toBeGreaterThanOrEqual(1);
+			expect(getTokenFamily(pair.familyId)).toBeUndefined();
+		});
+
+		it("getTokenFamily under a fresh family has empty blacklist and tracked issued jtis", () => {
+			const pair = generateTokenPair(freshPayload);
+			const family = getTokenFamily(pair.familyId);
+			expect(family?.blacklistedJtis.size).toBe(0);
+			expect(family?.issuedJtis.size).toBe(2);
+			expect(family?.concurrentRefreshDetected).toBe(false);
+		});
+	});
+
+	describe("rotation-claim binding (iss / aud / alg)", () => {
+		it("verifyAccessToken enforces the refresh audience cannot pass", () => {
+			const { accessToken } = generateTokenPair(freshPayload);
+			// The refresh audience must NOT be accepted for access verification.
+			expect(() => verifyAccessToken(accessToken)).not.toThrow();
+			// Double-check iss/aud round-trips.
+			const decoded = jwt.decode(accessToken) as Record<string, unknown>;
+			expect(decoded.iss).toBe(JWT_ISSUER);
+			expect(decoded.aud).toBe(JWT_AUDIENCE);
+		});
+
+		it("verifyRefreshTokenRotationAware enforces HS256 (algorithm confusion blocked)", () => {
+			const { refreshToken } = generateTokenPair(freshPayload);
+			// Verify uses algorithms:['HS256'] only, so none-HS256 tokens reject.
+			const full = jwt.decode(refreshToken, { complete: true }) as {
+				header: Record<string, unknown>;
+			};
+			expect(full.header.alg).toBe("HS256");
+			// Craft an RS256-style header without modifying claims -> verify rejects.
+			const forged = `${Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url")}.${Buffer.from(
+				JSON.stringify({ ...freshPayload, jti: "jti-rs", familyId: uniqueFamily(), type: "refresh" }),
+			).toString("base64url")}.Zm9yZ2Vk`;
+			expect(() => verifyRefreshTokenRotationAware(forged)).toThrow(TokenInvalidError);
+		});
+	});
+
+	describe("boundary and empty inputs", () => {
+		it("verifyAccessToken rejects empty string", () => {
+			expect(() => verifyAccessToken("")).toThrow(TokenInvalidError);
+		});
+
+		it("verifyRefreshTokenRotationAware rejects empty string", () => {
+			expect(() => verifyRefreshTokenRotationAware("")).toThrow(TokenInvalidError);
+		});
+
+		it("refreshTokenPair rejects malformed input with TokenInvalidError", async () => {
+			await expect(refreshTokenPair("not-a-token")).rejects.toBeInstanceOf(
+				TokenInvalidError,
+			);
+		});
+
+		it("blacklistToken/isTokenBlacklisted round-trip", () => {
+			blacklistToken("my-jti-123", uniqueFamily());
+			expect(isTokenBlacklisted("my-jti-123")).toBe(true);
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Defensive generic error handling (production secret-missing path)
+// - verifyRefreshToken (legacy) null mapping
+// - non-JWT error fallthrough -> TokenInvalidError for both rotation verifiers
+// ---------------------------------------------------------------------------
+
+describe("verifyRefreshToken (legacy) error mapping", () => {
+	it("returns null for an expired token instead of throwing", () => {
+		expect(verifyRefreshToken(makeExpiredRefreshToken())).toBeNull();
+	});
+
+	it("returns null for a malformed token", () => {
+		expect(verifyRefreshToken("garbage")).toBeNull();
+	});
+});
+
+describe("rotation verifiers - defensive generic error path (production)", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+
+	async function loadProductionJwtModule(): Promise<() => void> {
+		vi.resetModules();
+		vi.doMock("../../../src/config/index.js", () => ({
+			config: {
+				jwtSecret: undefined,
+				cors: { origin: "*" },
+				jobs: { attestationReminder: { schedule: "* * * * *" } },
+				soroban: { rpcUrl: "", contractId: "", networkPassphrase: "" },
+			},
+		}));
+		const savedSecret = process.env.JWT_SECRET;
+		const savedNodeEnv = process.env.NODE_ENV;
+		delete process.env.JWT_SECRET;
+		process.env.NODE_ENV = "production";
+		return () => {
+			if (savedSecret !== undefined) process.env.JWT_SECRET = savedSecret;
+			process.env.NODE_ENV = savedNodeEnv;
+		};
+	}
+
+	it("verifyAccessToken collapses a missing-secret error into TokenInvalidError", async () => {
+		const restore = await loadProductionJwtModule();
+		try {
+			const { verifyAccessToken: prodVerify } = await import(
+				"../../../src/utils/jwt"
+			);
+			// The secret is missing in production -> generic fallthrough -> TokenInvalidError
+			const token = jwt.sign(payload, ACCESS_SECRET, {
+				expiresIn: "1h",
+				issuer: JWT_ISSUER,
+				audience: JWT_AUDIENCE,
+			} as any);
+			expect(() => prodVerify(token)).toThrow(
+				expect.objectContaining({ code: "TOKEN_INVALID" }),
+			);
+		} finally {
+			restore();
+		}
+	});
+
+	it("verifyRefreshTokenRotationAware collapses a missing-secret error into TokenInvalidError", async () => {
+		const restore = await loadProductionJwtModule();
+		try {
+			const { verifyRefreshTokenRotationAware: prodVerify } = await import(
+				"../../../src/utils/jwt"
+			);
+const token = jwt.sign(payload, REFRESH_SECRET, {
+				expiresIn: "1h",
+				issuer: JWT_ISSUER,
+				audience: JWT_REFRESH_AUDIENCE,
+			} as any);
+			expect(() => prodVerify(token)).toThrow(
+				expect.objectContaining({ code: "TOKEN_INVALID" }),
+			);
+		} finally {
+			restore();
+		}
 	});
 });
 

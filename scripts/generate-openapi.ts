@@ -8,12 +8,16 @@ import { generateOpenApiSpec } from '../src/utils/openapi.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const OUT_PATH = path.resolve(__dirname, '../docs/openapi.json');
+const OUT_PATH = path.resolve(__dirname, '../docs/openapi/openapi.json');
+
+export function getOpenApiSpec() {
+  const routes = generateRouteMap(app);
+  return generateOpenApiSpec(routes);
+}
 
 export function main() {
   try {
-    const routes = generateRouteMap(app);
-    const spec = generateOpenApiSpec(routes);
+    const spec = getOpenApiSpec();
 
     const docsDir = path.dirname(OUT_PATH);
     if (!fs.existsSync(docsDir)) {

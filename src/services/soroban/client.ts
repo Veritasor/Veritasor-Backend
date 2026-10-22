@@ -1,9 +1,13 @@
 import { Networks, rpc, StrKey } from "@stellar/stellar-sdk";
 import { logger } from "../../utils/logger.js";
 import { config } from "../../config/index.js";
+import { sorobanCircuitBreakerState } from "../../metrics.js";
 import {
   SorobanRetryBudgetExceededError,
   sorobanRetryBudget,
+  fullJitter,
+  getBackoffConfig,
+  type BackoffConfig,
 } from "./retry-budget.js";
 import { traceSorobanRpcAttempt } from "../../tracing.js";
 
@@ -56,6 +60,11 @@ export enum CircuitBreakerState {
   HALF_OPEN = "half_open" // Testing if service recovered
 }
 
+type CircuitBreakerStateChangeListener = (
+  oldState: CircuitBreakerState,
+  newState: CircuitBreakerState,
+) => void;
+
 /**
  * Observability hooks for monitoring and metrics collection.
  */
@@ -67,7 +76,7 @@ export type SorobanObservabilityHooks = {
   /** Called after each failed RPC attempt */
   onRequestFailure?: (operationName: string, attempt: number, durationMs: number, error: unknown) => void;
   /** Called when circuit breaker state changes */
-  onCircuitBreakerStateChange?: (oldState: CircuitBreakerState, newState: CircuitBreakerState) => void;
+  onCircuitBreakerStateChange?: CircuitBreakerStateChangeListener;
   /** Called when a retry occurs */
   onRetry?: (operationName: string, attempt: number, delayMs: number, error: unknown) => void;
 };
@@ -106,6 +115,10 @@ export class SorobanCircuitBreakerError extends Error {
   }
 }
 
+export function isSorobanCircuitBreakerOpen(error: unknown): error is SorobanCircuitBreakerError {
+  return error instanceof SorobanCircuitBreakerError && error.state === CircuitBreakerState.OPEN;
+}
+
 const DEFAULT_RPC_URL = "https://soroban-testnet.stellar.org";
 const DEFAULT_RETRY_POLICY: SorobanRetryPolicy = {
   timeoutMs: 5_000,
@@ -136,12 +149,12 @@ export class CircuitBreaker {
   private lastFailureTime = 0;
   private readonly threshold: number;
   private readonly resetTimeoutMs: number;
-  private readonly onStateChange?: (oldState: CircuitBreakerState, newState: CircuitBreakerState) => void;
+  private readonly onStateChange?: CircuitBreakerStateChangeListener;
 
   constructor(
     threshold: number,
     resetTimeoutMs: number,
-    onStateChange?: (oldState: CircuitBreakerState, newState: CircuitBreakerState) => void,
+    onStateChange?: CircuitBreakerStateChangeListener,
   ) {
     this.threshold = threshold;
     this.resetTimeoutMs = resetTimeoutMs;
@@ -151,9 +164,9 @@ export class CircuitBreaker {
   /**
    * Records a successful operation, potentially closing the circuit.
    */
-  recordSuccess(): void {
+  recordSuccess(onStateChange?: CircuitBreakerStateChangeListener): void {
     if (this.state === CircuitBreakerState.HALF_OPEN) {
-      this.transitionTo(CircuitBreakerState.CLOSED);
+      this.transitionTo(CircuitBreakerState.CLOSED, onStateChange);
     }
     this.failureCount = 0;
   }
@@ -161,27 +174,27 @@ export class CircuitBreaker {
   /**
    * Records a failed operation, potentially opening the circuit.
    */
-  recordFailure(): void {
+  recordFailure(onStateChange?: CircuitBreakerStateChangeListener): void {
     this.failureCount++;
     this.lastFailureTime = Date.now();
 
     if (this.state === CircuitBreakerState.CLOSED && this.failureCount >= this.threshold) {
-      this.transitionTo(CircuitBreakerState.OPEN);
+      this.transitionTo(CircuitBreakerState.OPEN, onStateChange);
     } else if (this.state === CircuitBreakerState.HALF_OPEN) {
-      this.transitionTo(CircuitBreakerState.OPEN);
+      this.transitionTo(CircuitBreakerState.OPEN, onStateChange);
     }
   }
 
   /**
    * Checks if the circuit breaker allows the request to proceed.
    */
-  canProceed(): boolean {
+  canProceed(onStateChange?: CircuitBreakerStateChangeListener): boolean {
     switch (this.state) {
       case CircuitBreakerState.CLOSED:
         return true;
       case CircuitBreakerState.OPEN:
         if (Date.now() - this.lastFailureTime >= this.resetTimeoutMs) {
-          this.transitionTo(CircuitBreakerState.HALF_OPEN);
+          this.transitionTo(CircuitBreakerState.HALF_OPEN, onStateChange);
           return true;
         }
         return false;
@@ -199,11 +212,61 @@ export class CircuitBreaker {
     return this.state;
   }
 
-  private transitionTo(newState: CircuitBreakerState): void {
+  private transitionTo(
+    newState: CircuitBreakerState,
+    onStateChange?: CircuitBreakerStateChangeListener,
+  ): void {
     const oldState = this.state;
     this.state = newState;
     this.onStateChange?.(oldState, newState);
+    if (onStateChange && onStateChange !== this.onStateChange) {
+      onStateChange(oldState, newState);
+    }
   }
+}
+
+const sorobanCircuitBreakers = new Map<string, CircuitBreaker>();
+
+const circuitBreakerStateMetricValues: Record<CircuitBreakerState, number> = {
+  [CircuitBreakerState.CLOSED]: 0,
+  [CircuitBreakerState.OPEN]: 1,
+  [CircuitBreakerState.HALF_OPEN]: 2,
+};
+
+function getCircuitBreakerStateMetricValue(state: CircuitBreakerState): number {
+  return circuitBreakerStateMetricValues[state];
+}
+
+export function getSorobanCircuitBreaker(
+  rpcUrl: string,
+  policyOverrides: Partial<SorobanRetryPolicy> = {},
+): CircuitBreaker {
+  const existing = sorobanCircuitBreakers.get(rpcUrl);
+  if (existing) {
+    return existing;
+  }
+
+  const policy = getSorobanRetryPolicy(policyOverrides);
+  const circuitBreaker = new CircuitBreaker(
+    policy.circuitBreakerThreshold,
+    policy.circuitBreakerResetMs,
+    (oldState, newState) => {
+      sorobanCircuitBreakerState.set(
+        { rpc_url: rpcUrl },
+        getCircuitBreakerStateMetricValue(newState),
+      );
+      logger.warn(
+        { rpcUrl, oldState, newState },
+        "soroban: circuit breaker state changed",
+      );
+    },
+  );
+  sorobanCircuitBreakerState.set(
+    { rpc_url: rpcUrl },
+    getCircuitBreakerStateMetricValue(circuitBreaker.getState()),
+  );
+  sorobanCircuitBreakers.set(rpcUrl, circuitBreaker);
+  return circuitBreaker;
 }
 
 function getRequiredEnv(name: string): string {
@@ -364,28 +427,33 @@ function sleep(delayMs: number): Promise<void> {
 }
 
 /**
- * Full-jitter exponential backoff.
+ * Calculates exponential backoff delay with full jitter for retry attempts.
  *
- * Implements the "Full Jitter" algorithm from the AWS Exponential Backoff
- * blog post: delay = random(0, min(cap, base * 2^attempt)).
- * This completely avoids thundering-herd problems because every retrying
- * client picks a uniformly distributed delay within the window.
+ * Uses the full jitter algorithm to prevent thundering herd:
+ * each retrying client picks a uniformly random delay in [0, cap]
+ * where cap = min(retryMaxDelayMs, retryBaseDelayMs * 2^attempt).
  *
- * @param attemptNumber - 1-based retry attempt number
- * @param policy        - retry policy (base, cap)
- * @param random        - PRNG returning values in [0, 1)
+ * This delegates to the fullJitter() function from retry-budget.ts
+ * which implements the AWS Exponential Backoff algorithm.
+ *
+ * @param attemptNumber - 1-based retry attempt number (1 = first retry)
+ * @param policy - retry policy containing base and max delays
+ * @param random - PRNG returning values in [0, 1) for testability
+ * @returns Delay in milliseconds before the next retry
  */
 function calculateRetryDelay(
   attemptNumber: number,
   policy: SorobanRetryPolicy,
   random: RandomFn,
 ): number {
-  const temp = Math.min(
+  // Convert from 1-based attempt to 0-based for fullJitter
+  const zeroBasedAttempt = attemptNumber - 1;
+  return fullJitter(
+    zeroBasedAttempt,
+    policy.retryBaseDelayMs,
     policy.retryMaxDelayMs,
-    policy.retryBaseDelayMs * 2 ** attemptNumber,
+    random,
   );
-  const delay = Math.round(random() * temp);
-  return Math.max(MIN_DELAY_MS, delay);
 }
 
 function isAbortError(error: unknown): boolean {
@@ -503,12 +571,11 @@ export async function executeSorobanRequest<T>(
   const random = options.random ?? Math.random;
   const hooks = options.observabilityHooks;
 
-  // Use provided circuit breaker or create a new one for standalone usage
+  // Standalone requests have no RPC URL to share a breaker by.
   const circuitBreaker = options.circuitBreaker ?? new CircuitBreaker(
     policy.circuitBreakerThreshold,
     policy.circuitBreakerResetMs,
     (oldState, newState) => {
-      hooks?.onCircuitBreakerStateChange?.(oldState, newState);
       logger.warn(
         {
           operationName: options.operationName,
@@ -522,7 +589,7 @@ export async function executeSorobanRequest<T>(
   );
 
   // Check circuit breaker before proceeding
-  if (!circuitBreaker.canProceed()) {
+  if (!circuitBreaker.canProceed(hooks?.onCircuitBreakerStateChange)) {
     const error = new SorobanCircuitBreakerError(
       `Circuit breaker is ${circuitBreaker.getState()} for Soroban RPC ${options.operationName}`,
       circuitBreaker.getState(),
@@ -549,7 +616,7 @@ export async function executeSorobanRequest<T>(
       );
 
       const duration = Date.now() - startTime;
-      circuitBreaker.recordSuccess();
+      circuitBreaker.recordSuccess(hooks?.onCircuitBreakerStateChange);
       hooks?.onRequestSuccess?.(options.operationName, attempt, duration);
 
       const shouldRetry =
@@ -562,10 +629,11 @@ export async function executeSorobanRequest<T>(
 
       if (!sorobanRetryBudget.canRetry()) {
         const currentRetryCount = sorobanRetryBudget.getRetryCount();
-        throw new SorobanRetryBudgetExceededError(
+        const budgetError = new SorobanRetryBudgetExceededError(
           currentRetryCount,
           config.soroban.retryBudgetMaxRetries,
         );
+        throw budgetError;
       }
 
       sorobanRetryBudget.recordRetry(options.operationName);
@@ -590,17 +658,20 @@ export async function executeSorobanRequest<T>(
         isRetryableSorobanError(error) && attempt <= policy.maxRetries;
 
       if (!retryable) {
-        circuitBreaker.recordFailure();
+        circuitBreaker.recordFailure(hooks?.onCircuitBreakerStateChange);
         hooks?.onRequestFailure?.(options.operationName, attempt, duration, error);
         throw error;
       }
 
       if (!sorobanRetryBudget.canRetry()) {
         const currentRetryCount = sorobanRetryBudget.getRetryCount();
-        throw new SorobanRetryBudgetExceededError(
+        const budgetError = new SorobanRetryBudgetExceededError(
           currentRetryCount,
           config.soroban.retryBudgetMaxRetries,
         );
+        circuitBreaker.recordFailure(hooks?.onCircuitBreakerStateChange);
+        hooks?.onRequestFailure?.(options.operationName, attempt, duration, budgetError);
+        throw budgetError;
       }
 
       sorobanRetryBudget.recordRetry(options.operationName);
@@ -669,24 +740,9 @@ export function createSorobanRpcServer(
       rpcUrl.startsWith("http://127.0.0.1"),
   });
 
-  // Shared circuit breaker for all operations on this server instance
+  // Share failure state across server instances targeting this RPC endpoint.
   const policy = getSorobanRetryPolicy(policyOverrides);
-  const circuitBreaker = new CircuitBreaker(
-    policy.circuitBreakerThreshold,
-    policy.circuitBreakerResetMs,
-    (oldState, newState) => {
-      observabilityHooks?.onCircuitBreakerStateChange?.(oldState, newState);
-      logger.warn(
-        {
-          rpcUrl,
-          oldState,
-          newState,
-          requestId,
-        },
-        "soroban: circuit breaker state changed",
-      );
-    },
-  );
+  const circuitBreaker = getSorobanCircuitBreaker(rpcUrl, policy);
 
   const wrappedMethods = new Map<
     ServerMethodName,

@@ -55,6 +55,10 @@ describe("mtlsRevocation helpers", () => {
     expect(parseCrlNextUpdate("issuer=/CN=test")).toBeUndefined();
   });
 
+  it("returns undefined when CRL next update is present but invalid", () => {
+    expect(parseCrlNextUpdate("nextUpdate=not-a-date")).toBeUndefined();
+  });
+
   it("caps cache TTL to the smaller of config and OCSP freshness", () => {
     const now = () => new Date("2026-07-28T10:00:00.000Z");
     const ttl = computeOcspCacheTtlMs(
@@ -76,6 +80,25 @@ describe("mtlsRevocation helpers", () => {
         getOCSPResponse: () => Buffer.from("staple"),
       } as never),
     ).toEqual(Buffer.from("staple"));
+  });
+
+  it("returns undefined for missing or empty stapled OCSP responses", () => {
+    expect(getStapledOcspResponse({} as never)).toBeUndefined();
+    expect(getStapledOcspResponse({ ocspResponse: Buffer.alloc(0) } as never))
+      .toBeUndefined();
+    expect(getStapledOcspResponse({ getOCSPResponse: () => Buffer.alloc(0) } as never))
+      .toBeUndefined();
+    expect(getStapledOcspResponse({ getOCSPResponse: () => undefined } as never))
+      .toBeUndefined();
+  });
+
+  it("keeps a nonempty socket OCSP response ahead of the helper", () => {
+    const getOCSPResponse = vi.fn(() => Buffer.from("helper"));
+    const response = Buffer.from("socket");
+
+    expect(getStapledOcspResponse({ ocspResponse: response, getOCSPResponse } as never))
+      .toBe(response);
+    expect(getOCSPResponse).not.toHaveBeenCalled();
   });
 
   it("converts raw peer cert bytes into PEM", () => {
@@ -264,6 +287,27 @@ describe("MtlsRevocationChecker", () => {
     expect(result).toMatchObject({ ok: false, status: "ocsp_unavailable", source: "ocsp" });
   });
 
+  it("treats an empty OCSP response as unavailable without invoking OpenSSL", async () => {
+    const { config } = await import("../../../src/config/index.js");
+    (config as { mtls: { revocation: { crlPath: string | undefined } } })
+      .mtls.revocation.crlPath = undefined;
+
+    const runOpenSsl = vi.fn();
+    const checker = new MtlsRevocationChecker({ ...checkerOptions, runOpenSsl });
+    const result = await checker.verifyClientCertificate(
+      { ocspResponse: Buffer.alloc(0) } as never,
+      peerCert,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      status: "ocsp_unavailable",
+      source: "ocsp",
+      detail: "No stapled OCSP response was provided by the client certificate path",
+    });
+    expect(runOpenSsl).not.toHaveBeenCalled();
+  });
+
   it("rejects when the CRL reports the certificate as revoked", async () => {
     const runOpenSsl = vi
       .fn()
@@ -345,6 +389,33 @@ describe("MtlsRevocationChecker", () => {
     currentTime = new Date("2026-07-28T10:06:00.000Z");
     await checker.verifyClientCertificate(socket, peerCert);
 
+    expect(runOpenSsl).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the cached result before expiry and revalidates exactly at expiry", async () => {
+    let currentTime = new Date("2026-07-28T10:00:00.000Z");
+    const runOpenSsl = vi.fn().mockResolvedValue({
+      stdout: "/tmp/client-cert.pem: good\nNext Update: Jul 28 11:00:00 2026 GMT\n",
+      stderr: "",
+    });
+    const checker = new MtlsRevocationChecker({
+      ...checkerOptions,
+      runOpenSsl,
+      now: () => currentTime,
+    });
+    const socket = { ocspResponse: Buffer.from("ocsp") } as never;
+
+    const first = await checker.verifyClientCertificate(socket, peerCert);
+    currentTime = new Date("2026-07-28T10:04:59.999Z");
+    expect(await checker.verifyClientCertificate(socket, peerCert)).toBe(first);
+    expect(runOpenSsl).toHaveBeenCalledOnce();
+
+    currentTime = new Date("2026-07-28T10:05:00.000Z");
+    expect(await checker.verifyClientCertificate(socket, peerCert)).toMatchObject({
+      ok: true,
+      status: "good",
+      source: "ocsp",
+    });
     expect(runOpenSsl).toHaveBeenCalledTimes(2);
   });
 

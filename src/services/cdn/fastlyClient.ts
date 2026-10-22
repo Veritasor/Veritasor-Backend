@@ -2,7 +2,7 @@
 
 import { CdnClient } from "./cdnClientAdapter.js";
 import https from "node:https";
-import { logger } from "../utils/logger.js";
+import { logger } from "../../utils/logger.js";
 
 /**
  * Fastly CDN client implementation.
@@ -13,10 +13,10 @@ export class FastlyClient implements CdnClient {
   private serviceId: string;
   private baseUrl: string;
 
-  constructor() {
-    this.apiKey = process.env.FASTLY_API_KEY ?? "";
-    this.serviceId = process.env.FASTLY_SERVICE_ID ?? "";
-    this.baseUrl = process.env.FASTLY_API_BASE_URL ?? "https://api.fastly.com";
+  constructor(apiKey?: string, serviceId?: string, baseUrl?: string) {
+    this.apiKey = apiKey ?? process.env.FASTLY_API_KEY ?? "";
+    this.serviceId = serviceId ?? process.env.FASTLY_SERVICE_ID ?? "";
+    this.baseUrl = baseUrl ?? process.env.FASTLY_API_BASE_URL ?? "https://api.fastly.com";
     if (!this.apiKey || !this.serviceId) {
       throw new Error("Fastly configuration missing FASTLY_API_KEY or FASTLY_SERVICE_ID");
     }
@@ -77,4 +77,29 @@ export class FastlyClient implements CdnClient {
 }
 
 // Export a singleton instance for injection
-export const fastlyClient = new FastlyClient();
+let _instance: FastlyClient | undefined;
+
+export function resetFastlyClient(): void {
+  _instance = undefined;
+}
+
+export const fastlyClient: FastlyClient = new Proxy(
+  Object.create(FastlyClient.prototype),
+  {
+    get(_target, prop, receiver) {
+      if (prop === "purge") {
+        return async (...args: any[]) => {
+          if (!_instance) {
+            _instance = new FastlyClient();
+          }
+          return _instance.purge(...(args as [string[]]));
+        };
+      }
+      if (!_instance) {
+        _instance = new FastlyClient();
+      }
+      const val = Reflect.get(_instance, prop, receiver);
+      return typeof val === "function" ? val.bind(_instance) : val;
+    },
+  },
+);

@@ -16,6 +16,7 @@
  */
 
 import { attestationRepository } from '../../repositories/attestation.js'
+import { revenueReportQuerySchema } from './revenueReportSchema.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,6 +84,11 @@ const parsePeriod = (value: string, label: string): { year: number; month: numbe
     )
   }
   const [year, month] = value.split('-').map(Number)
+  if (month < 1 || month > 12) {
+    throw new TimeWindowError(
+      `Invalid month for "${label}": "${value}". Month must be between 01 and 12.`,
+    )
+  }
   return { year, month }
 }
 
@@ -91,6 +97,29 @@ const parsePeriod = (value: string, label: string): { year: number; month: numbe
  */
 const toOrdinal = ({ year, month }: { year: number; month: number }): number =>
   year * 12 + (month - 1)
+
+/**
+ * Validate the raw query parameters against {@link revenueReportQuerySchema}.
+ *
+ * This keeps the schema as the single source of truth for the public query
+ * contract while still surfacing a {@link TimeWindowError} to callers so the
+ * HTTP layer can respond with 400.
+ *
+ * @param period - A single YYYY-MM month (mutually exclusive with from/to).
+ * @param from   - Start of an inclusive YYYY-MM range.
+ * @param to     - End of an inclusive YYYY-MM range.
+ *
+ * @throws {TimeWindowError} When the schema rejects the supplied parameters.
+ */
+const validateQuery = (period?: string, from?: string, to?: string): void => {
+  const result = revenueReportQuerySchema.safeParse({ period, from, to })
+  if (!result.success) {
+    const message = result.error.issues
+      .map((issue) => issue.message)
+      .join('; ')
+    throw new TimeWindowError(message || 'Invalid revenue report query parameters.')
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Service
@@ -119,6 +148,9 @@ export const getRevenueReport = (
   from?: string,
   to?: string,
 ): RevenueReport | null => {
+  // --- Guard: schema-level validation of the public query contract ---
+  validateQuery(period, from, to)
+
   // --- Guard: at least one query mode must be present ---
   if (!period && !(from && to)) {
     throw new TimeWindowError(

@@ -187,6 +187,49 @@ interface HealthResponseBody {
 export const healthRouter = Router();
 
 /**
+ * GET /health/live
+ *
+ * Liveness check for container orchestrators.
+ * This endpoint intentionally avoids dependency checks so transient database,
+ * Redis, or upstream outages do not cause the container to be restarted.
+ *
+ * @security - No authentication required; no sensitive data exposed
+ * @response 200 - Process is running and able to serve HTTP
+ */
+healthRouter.get("/live", (_req: Request, res: Response) => {
+  res.status(200).json({
+    status: "ok",
+    service: "veritasor-backend",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * GET /health/ready
+ *
+ * Readiness check for load balancers and rollout controllers.
+ * Uses the same bounded database probe as startup readiness. When no
+ * DATABASE_URL is configured, the process is considered ready because there
+ * is no database dependency to validate in that environment.
+ *
+ * @security - No authentication required; failure reasons are sanitized
+ * @response 200 - Required dependencies are ready
+ * @response 503 - Required dependencies are unavailable
+ */
+healthRouter.get("/ready", async (_req: Request, res: Response) => {
+  const db = await checkDb();
+  const ready = db !== "down";
+
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "ok" : "unhealthy",
+    service: "veritasor-backend",
+    timestamp: new Date().toISOString(),
+    db,
+    dependencies: db ? { database: db } : undefined,
+  });
+});
+
+/**
  * GET /health
  *
  * Basic health check: Checks database and Redis connectivity.

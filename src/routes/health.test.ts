@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import express from "express";
-import { healthRouter } from "./health.js";
+import { healthRouter, HealthResponseSchema } from "./health.js";
 
 // ---------------------------------------------------------------------------
 // Test app setup
@@ -25,20 +25,21 @@ function buildApp() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Stub the pg Client so DB checks don't need a real database. */
-function mockPgClient(behaviour: "ok" | "down" | "timeout") {
-  return vi.mock("pg", () => {
-    const Client = vi.fn().mockImplementation(() => ({
-      connect: vi.fn().mockImplementation(() => {
-        if (behaviour === "down") return Promise.reject(new Error("ECONNREFUSED"));
-        if (behaviour === "timeout") return new Promise(() => {}); // never resolves
-        return Promise.resolve();
-      }),
-      query: vi.fn().mockResolvedValue({ rows: [{ "?column?": 1 }] }),
-      end: vi.fn().mockResolvedValue(undefined),
-    }));
-    return { default: { Client } };
-  });
+/**
+ * Stub the shared db client so DB checks don't need a real database.
+ * `checkDatabase()` (src/startup/readiness.ts) queries via `db` from
+ * `../db/client.js`, so that is the boundary to mock here rather than `pg`
+ * directly — `db` wraps a `pg.Pool`, not a `pg.Client`.
+ */
+function mockDbClient(behaviour: "ok" | "down") {
+  vi.doMock("../db/client.js", () => ({
+    db: {
+      query:
+        behaviour === "ok"
+          ? vi.fn().mockResolvedValue({ rows: [{ "?column?": 1 }] })
+          : vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
+    },
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -106,14 +107,7 @@ describe("GET /api/health/ready", () => {
 
   it("returns 200 and db:ok when DB is reachable", async () => {
     // Mock pg to simulate a healthy DB
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockResolvedValue(undefined),
-        query: vi.fn().mockResolvedValue({ rows: [] }),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("ok");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -126,14 +120,7 @@ describe("GET /api/health/ready", () => {
   });
 
   it("returns 503 and db:down when DB is unreachable", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-        query: vi.fn(),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("down");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -183,14 +170,7 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 with db:ok when DB is healthy (shallow mode)", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockResolvedValue(undefined),
-        query: vi.fn().mockResolvedValue({ rows: [] }),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("ok");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -203,14 +183,7 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 with status degraded when DB is down (shallow mode)", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-        query: vi.fn(),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("down");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -234,14 +207,7 @@ describe("GET /api/health", () => {
   });
 
   it("returns 503 in deep mode when DB is down", async () => {
-    vi.doMock("pg", () => {
-      const Client = vi.fn().mockImplementation(() => ({
-        connect: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-        query: vi.fn(),
-        end: vi.fn().mockResolvedValue(undefined),
-      }));
-      return { default: { Client } };
-    });
+    mockDbClient("down");
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -252,12 +218,60 @@ describe("GET /api/health", () => {
     expect(res.body.status).toBe("unhealthy");
   });
 
+  it("omits redis from the response when REDIS_URL is empty and keeps the schema valid", async () => {
+    const original = process.env.REDIS_URL;
+    process.env.REDIS_URL = "";
+
+    const res = await request(buildApp()).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(res.body.redis).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.REDIS_URL;
+    } else {
+      process.env.REDIS_URL = original;
+    }
+  });
+
+  it("returns redis:ok when REDIS_URL is configured and redis responds", async () => {
+    const original = process.env.REDIS_URL;
+    process.env.REDIS_URL = "redis://localhost:6379";
+    vi.doMock(
+      "redis",
+      () => ({
+        createClient: vi.fn(() => ({
+          connect: vi.fn().mockResolvedValue(undefined),
+          ping: vi.fn().mockResolvedValue("PONG"),
+          quit: vi.fn().mockResolvedValue(undefined),
+        })),
+      }),
+      { virtual: true },
+    );
+
+    const { healthRouter: freshRouter } = await import("./health.js");
+    const app = express();
+    app.use("/api/health", freshRouter);
+
+    const res = await request(app).get("/api/health");
+    expect(res.status).toBe(200);
+    expect(res.body.redis).toBe("ok");
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.REDIS_URL;
+    } else {
+      process.env.REDIS_URL = original;
+    }
+  });
+
   it("does not include redis field when REDIS_URL is not set", async () => {
     const original = process.env.REDIS_URL;
     delete process.env.REDIS_URL;
 
     const res = await request(buildApp()).get("/api/health");
     expect(res.body.redis).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
 
     if (original !== undefined) process.env.REDIS_URL = original;
   });
@@ -269,8 +283,60 @@ describe("GET /api/health", () => {
     const res = await request(buildApp()).get("/api/health");
     expect(res.body.soroban).toBeUndefined();
     expect(res.body.email).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
 
     process.env.DATABASE_URL = original;
+  });
+
+  it("omits soroban from deep mode when SOROBAN_RPC_URL is empty and keeps the schema valid", async () => {
+    const original = process.env.SOROBAN_RPC_URL;
+    process.env.SOROBAN_RPC_URL = "";
+
+    const res = await request(buildApp()).get("/api/health?mode=deep");
+    expect(res.status).toBe(200);
+    expect(res.body.soroban).toBeUndefined();
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.SOROBAN_RPC_URL;
+    } else {
+      process.env.SOROBAN_RPC_URL = original;
+    }
+  });
+
+  it("returns soroban:ok in deep mode when SOROBAN_RPC_URL is configured and the RPC responds", async () => {
+    const original = process.env.SOROBAN_RPC_URL;
+    process.env.SOROBAN_RPC_URL = "https://rpc.example.com";
+    vi.doMock(
+      "soroban-client",
+      () => ({
+        default: {
+          Server: class MockServer {
+            constructor(public url: string, public opts: unknown) {}
+            async getHealth() {
+              return { status: "healthy" };
+            }
+          },
+        },
+      }),
+      { virtual: true },
+    );
+
+    const { healthRouter: freshRouter } = await import("./health.js");
+    const app = express();
+    app.use("/api/health", freshRouter);
+
+    const res = await request(app).get("/api/health?mode=deep");
+    expect(res.status).toBe(200);
+    expect(res.body.soroban).toBe("ok");
+    expect(res.body.status).toBe("ok");
+    expect(HealthResponseSchema.safeParse(res.body).success).toBe(true);
+
+    if (original === undefined) {
+      delete process.env.SOROBAN_RPC_URL;
+    } else {
+      process.env.SOROBAN_RPC_URL = original;
+    }
   });
 
   it("returns a valid ISO 8601 timestamp", async () => {

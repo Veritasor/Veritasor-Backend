@@ -223,6 +223,35 @@ export class PgClient {
   }
 
   /**
+   * Run a callback inside a single transaction on a dedicated pooled client.
+   *
+   * The callback receives the checked-out client and must use it for every
+   * statement that should participate in the transaction (including audit
+   * log writes). The transaction is committed when the callback resolves and
+   * rolled back when it throws. The client is always released to the pool.
+   */
+  async withTransaction<T>(
+    fn: (client: import('pg').PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        this.logger.error('Transaction rollback failed:', rollbackError);
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Get the current PgBouncer detection status
    */
   getPgBouncerStatus(): PgBouncerDetectionResult | null {

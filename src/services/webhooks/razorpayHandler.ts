@@ -10,6 +10,7 @@ import {
 import { isEventProcessed, markEventProcessed, checkTimestampTolerance } from './idempotency.js'
 import { saveDeadLetter } from './deadLetterQueue.js'
 import { webhookRetryAttempts, webhookRetryExhaustedTotal } from '../../metrics.js'
+import { hasForbiddenKeys } from '../../middleware/prototypePollution.js'
 
 const HANDLED_EVENT_TYPES = new Set(['payment.captured', 'payment.failed', 'order.paid'])
 const DEFAULT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
@@ -152,6 +153,10 @@ export function parseRazorpayEvent(
     throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
   }
 
+  if (hasForbiddenKeys(payload)) {
+    throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload: forbidden keys detected')
+  }
+
   const parsedEvent = razorpayEventSchema.safeParse(payload)
   if (!parsedEvent.success) {
     throw new RazorpayWebhookError('invalid_event', 400, 'Invalid event structure')
@@ -271,8 +276,9 @@ export async function handleRazorpayEvent(
     if (event.id) {
       webhookRetryExhaustedTotal.inc({ provider: 'razorpay' })
       const cause = error instanceof BackoffError ? error.cause : error
+      const attemptCount = error instanceof BackoffError ? error.attemptCount : 1
       try {
-        await saveDeadLetter('razorpay', event.id, event, cause)
+        await saveDeadLetter('razorpay', event.id, event, cause, attemptCount)
       } catch (dlqError) {
         logger.error(
           JSON.stringify({

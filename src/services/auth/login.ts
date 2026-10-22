@@ -1,4 +1,5 @@
 import { findUserByEmail } from '../../repositories/userRepository.js'
+import { normalizeStoredEmail } from '../../utils/abusePrevention.js'
 import { verifyPassword } from '../../utils/password.js'
 import { generateToken, generateRefreshToken } from '../../utils/jwt.js'
 import { AuthenticationError } from '../../types/errors.js'
@@ -20,8 +21,9 @@ export interface LoginResponse {
 export async function login(request: LoginRequest): Promise<LoginResponse> {
   const { email, password } = request
 
-  // Zod schema already validated presence and format
-  const user = await findUserByEmail(email)
+  // Zod schema already validated presence and format. Use the shared stored-form
+  // normalizer so plus tags are preserved consistently with signup.
+  const user = await findUserByEmail(normalizeStoredEmail(email))
   if (!user) {
     throw new AuthenticationError('Invalid email or password')
   }

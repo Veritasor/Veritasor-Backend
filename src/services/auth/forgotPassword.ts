@@ -36,6 +36,7 @@ import {
 import { sendPasswordResetEmail } from '../email/sendReset.js'
 import { AppError } from '../../types/errors.js'
 import { hashResetToken, tokenLogPrefix } from '../../utils/tokenHash.js'
+import { normalizeStoredEmail } from '../../utils/abusePrevention.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -138,7 +139,7 @@ export async function forgotPassword(
   // parallel so the total wall-clock time is ~consistent whether or not the
   // user exists.
   const [user] = await Promise.all([
-    findUserByEmail(email.trim().toLowerCase()),
+    findUserByEmail(normalizeStoredEmail(email)),
     timingDelay(),
   ])
 

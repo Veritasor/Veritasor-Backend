@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { integrationRepository } from '../../../repositories/integrations.js'
 import { executeWithRetry } from '../clientWrapper.js'
 import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
+import { disconnectRazorpay } from './disconnect.js'
 
 const RAZORPAY_VERIFY_URL = 'https://api.razorpay.com/v1/payments'
 const RAZORPAY_OAUTH_URL = 'https://auth.razorpay.com/authorize'
@@ -391,3 +392,5 @@ export async function connectRazorpay(req: Request, res: Response) {
 }
 
 export default connectRazorpay
+
+export { disconnectRazorpay }

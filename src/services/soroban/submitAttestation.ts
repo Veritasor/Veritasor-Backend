@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BASE_FEE, Contract, Keypair, StrKey, TransactionBuilder, nativeToScVal, rpc, scValToNative } from '@stellar/stellar-sdk';
-import { createSorobanRpcServer, getSorobanConfig } from './client.js';
+import { createSorobanRpcServer, getSorobanConfig, isSorobanCircuitBreakerOpen } from './client.js';
 import { getSorobanBatchedSubmissionFlag } from '../features/flags.js';
 import { logger } from '../../utils/logger.js';
 import { AdaptiveBatchSizeController, sampleSorobanFeeStats } from './adaptiveBatchSize.js';
@@ -36,7 +36,7 @@ export type SubmitAttestationParams = {
 
 export type SubmitAttestationResult = {
   txHash: string;
-  status: 'pending' | 'confirmed' | 'unsigned';
+  status: 'pending' | 'confirmed' | 'unsigned' | 'queued';
   unsignedXdr?: string;
   ledger?: number;
   resultMerkleRoot?: string;
@@ -245,6 +245,169 @@ export async function markAsSubmitted(
   if (!redisClient) return
 
   await markAttestationSubmitted(params, txHash, redisClient)
+}
+
+export type QueuedAttestationStatus = 'queued' | 'processing' | 'failed';
+
+export type EnqueuedAttestationQueueItem = SubmitAttestationParams & {
+  idempotencyKey: string;
+  queuedAt: number;
+  nextAttemptAt: number;
+  attempts: number;
+  status: QueuedAttestationStatus;
+  txHash?: string;
+};
+
+export type EnqueueQueuedAttestationOptions = {
+  idempotencyKey?: string;
+};
+
+export type QueuedAttestationResult = {
+  queued: boolean;
+  reason?: 'disabled' | 'invalid' | 'duplicate' | 'queue_full';
+  item?: EnqueuedAttestationQueueItem;
+};
+
+const DEFAULT_DEGRADED_QUEUE_MAX_ITEMS = 1000;
+const DEFAULT_DEGRADED_QUEUE_BACKOFF_MS = 5_000;
+const MAX_DEGRADED_QUEUE_BACKOFF_MS = 60_000;
+
+let queuedAttestationStore: EnqueuedAttestationQueueItem[] = [];
+
+export function resetQueuedAttestationStore(): void {
+  queuedAttestationStore = [];
+}
+
+export function isSorobanQueueEnabled(): boolean {
+  return process.env.SOROBAN_DEGRADED_QUEUE_ENABLED === 'true';
+}
+
+export function resolveQueuedAttestationQueueLimit(): number {
+  const raw = process.env.SOROBAN_DEGRADED_QUEUE_MAX_ITEMS;
+  if (raw == null || raw.trim() === '') {
+    return DEFAULT_DEGRADED_QUEUE_MAX_ITEMS;
+  }
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 1) {
+    return DEFAULT_DEGRADED_QUEUE_MAX_ITEMS;
+  }
+  return value;
+}
+
+function getQueuedAttestationBackoffMs(attempts: number): number {
+  const base = DEFAULT_DEGRADED_QUEUE_BACKOFF_MS * 2 ** Math.max(0, attempts - 1);
+  return Math.min(MAX_DEGRADED_QUEUE_BACKOFF_MS, base);
+}
+
+export function enqueueQueuedAttestation(
+  params: SubmitAttestationParams,
+  options: EnqueueQueuedAttestationOptions = {},
+): QueuedAttestationResult {
+  if (!isSorobanQueueEnabled()) {
+    return { queued: false, reason: 'disabled' };
+  }
+
+  const normalized = {
+    ...params,
+    business: params.business?.trim() ?? '',
+    period: params.period?.trim() ?? '',
+    merkleRoot: params.merkleRoot?.trim() ?? '',
+    version: params.version?.trim() ?? '1.0.0',
+  };
+
+  if (!normalized.business || !normalized.period || !normalized.merkleRoot) {
+    return { queued: false, reason: 'invalid' };
+  }
+
+  const idempotencyKey = options.idempotencyKey ?? computeAttestationDedupeKey(normalized);
+  if (queuedAttestationStore.some((item) => item.idempotencyKey === idempotencyKey)) {
+    return { queued: false, reason: 'duplicate' };
+  }
+
+  const maxItems = resolveQueuedAttestationQueueLimit();
+  if (queuedAttestationStore.length >= maxItems) {
+    return { queued: false, reason: 'queue_full' };
+  }
+
+  const item: EnqueuedAttestationQueueItem = {
+    ...normalized,
+    idempotencyKey,
+    queuedAt: Date.now(),
+    nextAttemptAt: Date.now(),
+    attempts: 0,
+    status: 'queued',
+  };
+
+  queuedAttestationStore.push(item);
+
+  logger.info({
+    event: 'soroban_degraded_queue_enqueue',
+    business: normalized.business,
+    period: normalized.period,
+    idempotencyKey,
+    queueDepth: queuedAttestationStore.length,
+  }, 'soroban: queued unsigned attestation while breaker is open');
+
+  return { queued: true, item };
+}
+
+export async function drainQueuedAttestations(
+  limit: number = 10,
+): Promise<Array<{ item: EnqueuedAttestationQueueItem; result?: SubmitAttestationResult; error?: unknown }>> {
+  const boundedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 10;
+
+  const dueItems = queuedAttestationStore
+    .filter((item) => item.nextAttemptAt <= Date.now())
+    .sort((a, b) => a.queuedAt - b.queuedAt)
+    .slice(0, boundedLimit);
+
+  if (dueItems.length === 0) {
+    return [];
+  }
+
+  const results: Array<{ item: EnqueuedAttestationQueueItem; result?: SubmitAttestationResult; error?: unknown }> = [];
+
+  for (const item of dueItems) {
+    const index = queuedAttestationStore.findIndex((candidate) => candidate.idempotencyKey === item.idempotencyKey);
+    if (index === -1) {
+      continue;
+    }
+
+    const current = queuedAttestationStore[index];
+    current.status = 'processing';
+
+    try {
+      const result = await submitAttestation({
+        ...current,
+        submit: true,
+      });
+
+      queuedAttestationStore.splice(index, 1);
+      results.push({ item: current, result });
+    } catch (error) {
+      const attempts = current.attempts + 1;
+      current.attempts = attempts;
+      current.nextAttemptAt = Date.now() + getQueuedAttestationBackoffMs(attempts);
+      current.status = 'failed';
+
+      logger.warn({
+        event: 'soroban_degraded_queue_retry',
+        idempotencyKey: current.idempotencyKey,
+        attempts,
+        nextAttemptAt: current.nextAttemptAt,
+        error: error instanceof Error ? error.message : String(error),
+      }, 'soroban: queued attestation failed to drain');
+
+      if (error instanceof SorobanSubmissionError && ['DEDUPED', 'VALIDATION_ERROR'].includes(error.code)) {
+        queuedAttestationStore.splice(index, 1);
+      }
+
+      results.push({ item: current, error });
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -637,6 +800,14 @@ export async function submitAttestation(params: SubmitAttestationParams): Promis
   } catch (error) {
     if (error instanceof SorobanSubmissionError) {
       throw error;
+    }
+
+    if (isSorobanCircuitBreakerOpen(error)) {
+      throw new SorobanSubmissionError(
+        `Soroban circuit breaker is ${error.state} for ${error.operationName}.`,
+        'SOROBAN_CIRCUIT_BREAKER_OPEN',
+        error,
+      );
     }
 
     throw new SorobanSubmissionError(

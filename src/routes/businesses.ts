@@ -14,7 +14,7 @@
  */
 
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 import { z } from 'zod';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { asyncErrorHandler } from '../middleware/errorHandler.js';
@@ -28,12 +28,13 @@ import {
 } from '../services/business/schemas.js'
 import type { WebhookSubscription } from '../services/webhooks/dispatcher.js';
 import crypto from 'node:crypto';
+import { isValidWebhookUrl } from '../schemas/webhookSubscription.js';
 
 const router = Router();
 export const webhookRouter = Router({ mergeParams: true });
 
 const webhookRegistrationSchema = z.object({
-  url: z.string().url(),
+  url: z.string().url().refine(isValidWebhookUrl, 'URL must be a valid public HTTPS endpoint'),
   secret: z.string().min(32), // Mandate cryptographically strong secrets
 });
 

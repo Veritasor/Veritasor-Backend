@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   PermissionService,
+  requireBusinessTierRolePromotionPermission,
   requirePermissions
 } from "../../src/middleware/permissions.js";
 import {
@@ -349,5 +350,14 @@ describe("requirePermissions middleware", () => {
       error: "Internal Server Error",
       message: "Error checking permissions",
     });
+  });
+
+  it("should expose a dedicated admin guard for business-tier role promotion", async () => {
+    mockReq.user = { id: "admin_123", userId: "admin_123", email: "admin@example.com", role: "admin" as any };
+
+    await requireBusinessTierRolePromotionPermission(mockReq as Request, mockRes as Response, mockNext);
+
+    expect(mockNext).toHaveBeenCalled();
+    expect(mockReq.permissionContext?.permissions).toContain(IntegrationPermission.ADMIN_MANAGE_USERS);
   });
 });

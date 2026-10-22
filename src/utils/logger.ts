@@ -84,6 +84,36 @@ export const logger = {
   error: (...args: unknown[]) => writeLog("error", args),
 };
 
+/**
+ * Scoped, class-style logger.
+ *
+ * `Logger` is a thin adapter over the same {@link writeLog} pipeline as the
+ * module-level {@link logger} object, so scoped call sites keep redaction,
+ * request-correlation and OpenTelemetry emission identical to unscoped ones.
+ * The scope is emitted as the leading message segment.
+ *
+ * Usage: `const log = new Logger("DLQ"); log.info("archived", { count: 3 });`
+ */
+export class Logger {
+  constructor(private readonly scope: string) {}
+
+  debug(...args: unknown[]): void {
+    writeLog("debug", [this.scope, ...args]);
+  }
+
+  info(...args: unknown[]): void {
+    writeLog("info", [this.scope, ...args]);
+  }
+
+  warn(...args: unknown[]): void {
+    writeLog("warn", [this.scope, ...args]);
+  }
+
+  error(...args: unknown[]): void {
+    writeLog("error", [this.scope, ...args]);
+  }
+}
+
 function writeLog(level: LogLevel, args: unknown[]): void {
   const entry = buildLogEntry(level, args);
   const output = JSON.stringify(entry);

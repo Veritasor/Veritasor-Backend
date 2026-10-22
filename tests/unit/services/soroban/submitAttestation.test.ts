@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { scValToNative } from '@stellar/stellar-sdk';
+import { nativeToScVal, xdr } from '@stellar/stellar-sdk';
 import {
   SorobanSubmissionError,
   waitForConfirmation,
@@ -12,15 +12,12 @@ import {
   markAttestationSubmitted,
 } from '../../../../src/services/soroban/submitAttestation.js';
 
-vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@stellar/stellar-sdk')>();
-  return {
-    ...actual,
-    scValToNative: vi.fn(),
-  };
-});
-
-const mockScValToNative = vi.mocked(scValToNative);
+// NOTE: `@stellar/stellar-sdk` is deliberately NOT mocked in this file.
+// Mocks of externalized (node_modules) modules can leak across test files
+// sharing a vmForks worker (the mock registry is keyed by module specifier,
+// not by test file), breaking unrelated suites regardless of factory
+// contents. All fixtures below construct real ScVals with `nativeToScVal`
+// so `validateConfirmedResult` exercises the genuine decoding path.
 
 const VALID_TX_HASH = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
 
@@ -119,7 +116,7 @@ describe('validateConfirmedResult', () => {
   const SUBMITTED_ROOT = '0xabc123';
 
   afterEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('throws RESULT_VALIDATION_FAILED when returnValue is undefined', () => {
@@ -145,29 +142,28 @@ describe('validateConfirmedResult', () => {
     expect((error as SorobanSubmissionError).code).toBe('RESULT_VALIDATION_FAILED');
   });
 
-  it('throws RESULT_VALIDATION_FAILED when scValToNative throws', () => {
-    mockScValToNative.mockImplementation(() => {
-      throw new Error('unexpected scval format');
-    });
+  it('throws RESULT_VALIDATION_FAILED when the decoded value is undefined', () => {
+    // A real ScVal that the real scValToNative maps to `undefined` — the
+    // observable boundary the production code must defend against.
+    const undecodable = nativeToScVal(undefined);
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: undecodable } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
     expect(error).toBeInstanceOf(SorobanSubmissionError);
     expect((error as SorobanSubmissionError).code).toBe('RESULT_VALIDATION_FAILED');
-    expect((error as SorobanSubmissionError).message).toContain('Failed to decode');
-    expect((error as SorobanSubmissionError).cause).toBeInstanceOf(Error);
+    expect((error as SorobanSubmissionError).message).toContain('not a valid object');
   });
 
   it('throws RESULT_VALIDATION_FAILED when decoded value is not an object', () => {
-    mockScValToNative.mockReturnValue('just a string');
+    const scVal = nativeToScVal('just a string');
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: scVal } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
@@ -176,11 +172,11 @@ describe('validateConfirmedResult', () => {
   });
 
   it('throws RESULT_VALIDATION_FAILED when merkle_root is missing', () => {
-    mockScValToNative.mockReturnValue({ timestamp: 100 });
+    const scVal = nativeToScVal({ timestamp: 100 });
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: scVal } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
@@ -189,11 +185,11 @@ describe('validateConfirmedResult', () => {
   });
 
   it('throws RESULT_MISMATCH when on-chain root differs from submitted root', () => {
-    mockScValToNative.mockReturnValue({ merkle_root: 'wrong_root', timestamp: 100 });
+    const scVal = nativeToScVal({ merkle_root: 'wrong_root', timestamp: 100 });
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: scVal } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
@@ -207,11 +203,11 @@ describe('validateConfirmedResult', () => {
   });
 
   it('throws RESULT_VALIDATION_FAILED when timestamp is missing', () => {
-    mockScValToNative.mockReturnValue({ merkle_root: SUBMITTED_ROOT });
+    const scVal = nativeToScVal({ merkle_root: SUBMITTED_ROOT });
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: scVal } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
@@ -219,39 +215,51 @@ describe('validateConfirmedResult', () => {
     expect((error as SorobanSubmissionError).message).toContain('does not contain a valid timestamp');
   });
 
-  it('throws RESULT_VALIDATION_FAILED when timestamp is NaN', () => {
-    mockScValToNative.mockReturnValue({ merkle_root: SUBMITTED_ROOT, timestamp: NaN });
+  it('throws RESULT_VALIDATION_FAILED when the timestamp decodes to NaN', () => {
+    // NaN cannot be embedded in an ScVal, so simulate a corrupted map entry:
+    // a real ScMap whose `timestamp` value decodes to a non-number (an ScSymbol).
+    const corrupted = xdr.ScVal.scvMap([
+      new xdr.ScMapEntry({
+        key: xdr.ScVal.scvSymbol('merkle_root'),
+        val: xdr.ScVal.scvString(SUBMITTED_ROOT),
+      }),
+      new xdr.ScMapEntry({
+        key: xdr.ScVal.scvSymbol('timestamp'),
+        val: xdr.ScVal.scvSymbol('not-a-number'),
+      }),
+    ]);
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: corrupted } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
     expect(error).toBeInstanceOf(SorobanSubmissionError);
+    expect((error as SorobanSubmissionError).code).toBe('RESULT_VALIDATION_FAILED');
     expect((error as SorobanSubmissionError).message).toContain('does not contain a valid timestamp');
   });
 
   it('returns merkleRoot and timestamp on successful validation', () => {
-    mockScValToNative.mockReturnValue({ merkle_root: SUBMITTED_ROOT, timestamp: 99999 });
+    const scVal = nativeToScVal({ merkle_root: SUBMITTED_ROOT, timestamp: 99999 });
 
-    const result = validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+    const result = validateConfirmedResult({ returnValue: scVal } as any, SUBMITTED_ROOT);
     expect(result).toEqual({ merkleRoot: SUBMITTED_ROOT, timestamp: 99999 });
   });
 
   it('returns validated values when merkle_root is a non-string value that coerces to the matching root', () => {
-    mockScValToNative.mockReturnValue({ merkle_root: 42, timestamp: 5 });
+    const scVal = nativeToScVal({ merkle_root: 42, timestamp: 5 });
 
-    const result = validateConfirmedResult({ returnValue: {} } as any, '42');
+    const result = validateConfirmedResult({ returnValue: scVal } as any, '42');
     expect(result).toEqual({ merkleRoot: '42', timestamp: 5 });
   });
 
   it('throws RESULT_VALIDATION_FAILED when merkle_root is empty after coercion', () => {
-    mockScValToNative.mockReturnValue({ merkle_root: null, timestamp: 5 });
+    const scVal = nativeToScVal({ merkle_root: null, timestamp: 5 });
 
     let error: unknown;
     try {
-      validateConfirmedResult({ returnValue: {} } as any, SUBMITTED_ROOT);
+      validateConfirmedResult({ returnValue: scVal } as any, SUBMITTED_ROOT);
     } catch (e) {
       error = e;
     }
