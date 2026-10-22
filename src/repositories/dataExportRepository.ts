@@ -65,6 +65,16 @@ export async function getDataExport(exportId: string): Promise<DataExport | null
 }
 
 /**
+ * Get export by ID, only if it belongs to the given user
+ */
+export async function getExportForUser(exportId: string, userId: string): Promise<DataExport | null> {
+  const exportRecord = await getDataExport(exportId)
+  if (!exportRecord) return null
+  if (exportRecord.userId !== userId) return null
+  return exportRecord
+}
+
+/**
  * Update export status
  */
 export async function updateDataExportStatus(
@@ -113,9 +123,9 @@ export async function createDownloadToken(exportId: string): Promise<string> {
 }
 
 /**
- * Verify and consume download token (one-time use)
+ * Read the export id behind a download token without consuming it.
  */
-export async function consumeDownloadToken(token: string): Promise<string | null> {
+export async function peekDownloadToken(token: string): Promise<string | null> {
   const client = getRedisClient()
   const tokenKey = `${TOKEN_KEY_PREFIX}${token}`
 
@@ -123,17 +133,30 @@ export async function consumeDownloadToken(token: string): Promise<string | null
   if (!data) return null
 
   const tokenData = JSON.parse(data)
-
-  // Check if already downloaded
-  if (tokenData.downloaded) {
-    return null
-  }
-
-  // Mark as downloaded
-  tokenData.downloaded = true
-  await redisCircuitBreaker.execute(() => client.set(tokenKey, JSON.stringify(tokenData)))
+  if (tokenData.downloaded) return null
 
   return tokenData.exportId
+}
+
+/**
+ * Verify and consume download token (one-time use)
+ */
+export async function consumeDownloadToken(token: string): Promise<string | null> {
+  const client = getRedisClient()
+  const tokenKey = `${TOKEN_KEY_PREFIX}${token}`
+
+  const script = `local value = redis.call('GET', KEYS[1]); if not value then return nil end; local data = cjson.decode(value); if data.downloaded then return nil end; data.downloaded = true; redis.call('SET', KEYS[1], cjson.encode(data), 'KEEPTTL'); return data.exportId`
+  const result = await redisCircuitBreaker.execute(() => client.eval(script, 1, tokenKey))
+  return typeof result === 'string' ? result : null
+}
+
+/** Read the export ID without consuming the one-time token. */
+export async function peekDownloadToken(token: string): Promise<string | null> {
+  const client = getRedisClient()
+  const data = await redisCircuitBreaker.execute(() => client.get(`${TOKEN_KEY_PREFIX}${token}`))
+  if (!data) return null
+  const parsed = JSON.parse(data)
+  return parsed.downloaded ? null : parsed.exportId
 }
 
 /**

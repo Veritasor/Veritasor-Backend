@@ -406,6 +406,20 @@ const COMMON_WEAK_PASSWORDS = new Set([
  */
 export interface EmailValidationResult {
   isValid: boolean;
+  /**
+   * Trimmed + lowercased address exactly as it should be persisted. Plus tags
+   * are preserved so users can log in with the address they typed.
+   */
+  storedEmail: string;
+  /**
+   * Canonical plus-stripped form used only for rate limiting and duplicate-mailbox
+   * abuse detection. Never persist this as the account email.
+   */
+  canonicalEmail: string;
+  /**
+   * @deprecated Canonical form retained for backward compatibility. Use
+   * `storedEmail` for persistence and `canonicalEmail` for rate limiting.
+   */
   normalizedEmail: string;
   domain: string;
   errors: string[];
@@ -456,24 +470,38 @@ export const DEFAULT_ABUSE_PREVENTION_CONFIG: AbusePreventionConfig = {
 };
 
 /**
- * Normalize an email address for consistent comparison and storage.
+ * Normalize an email address for persistence and authentication lookups.
+ *
+ * This is the **stored-form** normalizer shared by signup, login and
+ * forgot-password:
  * - Trims whitespace
  * - Converts to lowercase
- * - Removes dots from Gmail addresses (optional, not enabled by default for privacy)
+ * - **Preserves plus tags** (`a+x@b.com` stays `a+x@b.com`)
+ *
+ * Plus-stripping is intentionally not performed here. The plus-stripped form is
+ * the canonical key for rate limiting / abuse detection (see `normalizeEmail`),
+ * not the address a user signs in with.
  *
  * @param email - The email address to normalize
- * @returns Normalized email address
+ * @returns Trimmed, lowercased email with plus tags preserved
  */
+export function normalizeStoredEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 /**
- * Normalize an email address for consistent comparison and storage.
+ * Normalize an email address to its canonical abuse-detection form.
  * - Trims whitespace
  * - Converts to lowercase
- * - Removes plus-addressing (e.g., user+tag@gmail.com → user@gmail.com)
+ * - Removes plus-addressing (e.g., user+tag@gmail.com -> user@gmail.com)
  * - (Optionally) removes dots from Gmail addresses (not enabled by default)
+ *
+ * Use this only for rate limiting and duplicate-mailbox detection. Persist
+ * `normalizeStoredEmail(email)` instead.
  *
  * @param email - The email address to normalize
  * @param options - Optional normalization options
- * @returns Normalized email address
+ * @returns Canonical email address
  */
 export function normalizeEmail(email: string, options?: { removeGmailDots?: boolean }): string {
   let normalized = email.trim().toLowerCase();
@@ -538,6 +566,8 @@ export function validateEmail(
   if (!email || typeof email !== "string") {
     return {
       isValid: false,
+      storedEmail: "",
+      canonicalEmail: "",
       normalizedEmail: "",
       domain: "",
       errors: ["Email is required"],
@@ -548,12 +578,14 @@ export function validateEmail(
     };
   }
 
-  // Normalize the email
-  const normalizedEmail = normalizeEmail(email);
-  const domain = extractEmailDomain(normalizedEmail);
+  // Validate the stored form (plus tags preserved) and derive the canonical
+  // abuse-detection form (plus tags stripped) separately.
+  const storedEmail = normalizeStoredEmail(email);
+  const canonicalEmail = normalizeEmail(email);
+  const domain = extractEmailDomain(canonicalEmail);
 
-  // Check email length
-  if (normalizedEmail.length > config.maxEmailLength) {
+  // Check email length against the value that will actually be persisted.
+  if (storedEmail.length > config.maxEmailLength) {
     errors.push(`Email must not exceed ${config.maxEmailLength} characters`);
   }
 
@@ -561,16 +593,16 @@ export function validateEmail(
   // This regex is more permissive than strict RFC 5322 but catches most issues
   const emailRegex =
     /^[^\s@"<>()\[\]\\,;:]+@[^\s@"<>()\[\]\\,;:]+\.[^\s@"<>()\[\]\\,;:]+$/;
-  if (!emailRegex.test(normalizedEmail)) {
+  if (!emailRegex.test(storedEmail)) {
     errors.push("Invalid email format");
   }
 
   // Check for common format issues
-  if (normalizedEmail.startsWith("@") || normalizedEmail.endsWith("@")) {
+  if (storedEmail.startsWith("@") || storedEmail.endsWith("@")) {
     errors.push("Email cannot start or end with @");
   }
 
-  if (normalizedEmail.includes("@@")) {
+  if (storedEmail.includes("@@")) {
     errors.push("Email cannot contain consecutive @ symbols");
   }
 
@@ -592,8 +624,9 @@ export function validateEmail(
 
   // Calculate suspicion score based on patterns
 
-  // Check for suspiciously long local part (before @)
-  const localPart = normalizedEmail.split("@")[0] || "";
+  // Use the canonical form for abuse heuristics so a random plus tag cannot
+  // hide the underlying mailbox pattern.
+  const localPart = canonicalEmail.split("@")[0] || "";
   if (localPart.length > 64) {
     warnings.push("Email local part is unusually long");
     suspicionScore += 20;
@@ -621,7 +654,10 @@ export function validateEmail(
 
   return {
     isValid: errors.length === 0,
-    normalizedEmail,
+    storedEmail,
+    canonicalEmail,
+    // Backward-compatible alias: canonical form, not the persisted address.
+    normalizedEmail: canonicalEmail,
     domain,
     errors,
     warnings,

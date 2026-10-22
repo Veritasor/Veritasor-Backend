@@ -220,55 +220,63 @@ describe('Stripe Integration Store', () => {
         const shop = 'test-shop'
         const token = 'test-access-token'
 
-        store.saveToken(shop, token)
-        const retrieved = store.getToken(shop)
+        store.saveToken('business-1', shop, token)
+        const retrieved = store.getToken('business-1', shop)
 
         expect(retrieved).toBe(token)
       })
 
       it('should normalize shop when storing tokens', () => {
-        store.saveToken('TEST-SHOP', 'token-1')
+        store.saveToken('business-1', 'TEST-SHOP', 'token-1')
         
-        expect(store.getToken('test-shop')).toBe('token-1')
-        expect(store.getToken('test-shop.myshopify.com')).toBe('token-1')
+        expect(store.getToken('business-1', 'test-shop')).toBe('token-1')
+        expect(store.getToken('business-1', 'test-shop.myshopify.com')).toBe('token-1')
       })
 
       it('should return undefined for unknown shop', () => {
-        const result = store.getToken('unknown-shop')
+        const result = store.getToken('business-1', 'unknown-shop')
         expect(result).toBeUndefined()
       })
 
       it('should overwrite existing token for same shop', () => {
         const shop = 'test-shop'
 
-        store.saveToken(shop, 'token-1')
-        store.saveToken(shop, 'token-2')
+        store.saveToken('business-1', shop, 'token-1')
+        store.saveToken('business-1', shop, 'token-2')
 
-        expect(store.getToken(shop)).toBe('token-2')
+        expect(store.getToken('business-1', shop)).toBe('token-2')
+      })
+
+      it('should keep tokens isolated by business for the same shop', () => {
+        store.saveToken('business-1', 'shared-shop', 'token-1')
+        store.saveToken('business-2', 'shared-shop', 'token-2')
+
+        expect(store.getToken('business-1', 'shared-shop')).toBe('token-1')
+        expect(store.getToken('business-2', 'shared-shop')).toBe('token-2')
       })
     })
 
     describe('deleteToken', () => {
       it('should delete existing token', () => {
         const shop = 'test-shop'
-        store.saveToken(shop, 'test-token')
+        store.saveToken('business-1', shop, 'test-token')
 
-        const deleted = store.deleteToken(shop)
+        const deleted = store.deleteToken('business-1', shop)
         expect(deleted).toBe(true)
-        expect(store.getToken(shop)).toBeUndefined()
+        expect(store.getToken('business-1', shop)).toBeUndefined()
       })
 
       it('should return false for non-existent token', () => {
-        const deleted = store.deleteToken('unknown-shop')
+        const deleted = store.deleteToken('business-1', 'unknown-shop')
         expect(deleted).toBe(false)
       })
 
       it('should normalize shop when deleting', () => {
-        store.saveToken('test-shop', 'test-token')
+        store.saveToken('business-1', 'test-shop', 'test-token')
 
-        const deleted = store.deleteToken('TEST-SHOP.myshopify.com')
+        const deleted = store.deleteToken('business-1', 'TEST-SHOP.myshopify.com')
         expect(deleted).toBe(true)
-        expect(store.getToken('test-shop')).toBeUndefined()
+        expect(store.getToken('business-1', 'test-shop')).toBeUndefined()
       })
     })
   })
@@ -278,12 +286,12 @@ describe('Stripe Integration Store', () => {
       const expiresAt = Date.now() + 10 * 60 * 1000
 
       store.setOAuthState('state-1', 'shop-1', 'user-1', 'business-1', expiresAt)
-      store.saveToken('shop-1', 'token-1')
+      store.saveToken('business-1', 'shop-1', 'token-1')
 
       store.clearAll()
 
       expect(store.consumeOAuthState('state-1')).toBeUndefined()
-      expect(store.getToken('shop-1')).toBeUndefined()
+      expect(store.getToken('business-1', 'shop-1')).toBeUndefined()
     })
   })
 })

@@ -1,15 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createSecretLoader: vi.fn(),
+  secretGet: vi.fn(),
+  unsignedMetricInc: vi.fn(),
   warn: vi.fn(),
+  error: vi.fn(),
 }));
 
 vi.mock("../../utils/secret-loader.js", () => ({
-  createSecretLoader: mocks.createSecretLoader,
+  secretLoader: { get: mocks.secretGet },
+}));
+vi.mock("../../metrics.js", () => ({
+  egressManifestUnsignedTotal: { inc: mocks.unsignedMetricInc },
 }));
 vi.mock("../../utils/logger.js", () => ({
-  logger: { warn: mocks.warn },
+  logger: { warn: mocks.warn, error: mocks.error },
 }));
 
 import {
@@ -26,9 +31,8 @@ describe("webhook egress IP allow-list", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
-    mocks.createSecretLoader.mockReturnValue({
-      get: vi.fn().mockResolvedValue("loader-signing-key"),
-    });
+    mocks.secretGet.mockReturnValue("loader-signing-key");
+    vi.stubEnv("NODE_ENV", "test");
   });
 
   afterEach(() => {
@@ -77,7 +81,8 @@ describe("webhook egress IP allow-list", () => {
       algorithm: "hmac-sha256",
     });
     expect(verifyManifestSignature(signed, "loader-signing-key")).toBe(true);
-    expect(mocks.createSecretLoader).toHaveBeenCalledOnce();
+    expect(mocks.secretGet).toHaveBeenCalledOnce();
+    expect(mocks.secretGet).toHaveBeenCalledWith("WEBHOOK_EGRESS_SIGNING_KEY");
   });
 
   it("rejects tampered, malformed, and wrong-length signatures", () => {
@@ -116,8 +121,8 @@ describe("webhook egress IP allow-list", () => {
   });
 
   it("uses the environment secret when secret loading fails", async () => {
-    mocks.createSecretLoader.mockReturnValue({
-      get: vi.fn().mockRejectedValue(new Error("secret service unavailable")),
+    mocks.secretGet.mockImplementation(() => {
+      throw new Error("secret service unavailable");
     });
     vi.stubEnv("WEBHOOK_EGRESS_SIGNING_KEY", "environment-signing-key");
 
@@ -128,9 +133,10 @@ describe("webhook egress IP allow-list", () => {
   });
 
   it("uses the development key and warns when no secret source is available", async () => {
-    mocks.createSecretLoader.mockReturnValue({
-      get: vi.fn().mockRejectedValue(new Error("secret service unavailable")),
+    mocks.secretGet.mockImplementation(() => {
+      throw new Error("secret service unavailable");
     });
+    vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("WEBHOOK_EGRESS_SIGNING_KEY", "");
 
     const signed = await getSignedManifest(new Date("2026-09-28T12:00:00.000Z"));
@@ -145,6 +151,25 @@ describe("webhook egress IP allow-list", () => {
     expect(mocks.warn).toHaveBeenCalledWith(
       expect.stringContaining("WEBHOOK_EGRESS_SIGNING_KEY not configured"),
     );
+    expect(mocks.unsignedMetricInc).not.toHaveBeenCalled();
+  });
+
+  it("refuses to sign and records an unsigned event in production without a key", async () => {
+    mocks.secretGet.mockImplementation(() => {
+      throw new Error("secret service unavailable");
+    });
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("WEBHOOK_EGRESS_SIGNING_KEY", "");
+
+    await expect(
+      getSignedManifest(new Date("2026-09-28T12:00:00.000Z")),
+    ).rejects.toThrow("WEBHOOK_EGRESS_SIGNING_KEY is not configured");
+
+    expect(mocks.unsignedMetricInc).toHaveBeenCalledOnce();
+    expect(mocks.error).toHaveBeenCalledWith(
+      expect.stringContaining("egress_manifest_unsigned"),
+    );
+    expect(mocks.warn).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid clock value deterministically", async () => {

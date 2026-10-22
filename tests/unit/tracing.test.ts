@@ -39,16 +39,23 @@ vi.mock("@opentelemetry/exporter-logs-otlp-grpc", () => ({
 const mockExporterCalls: Array<{ type: string; opts: Record<string, unknown> }> = [];
 
 class FakeSpan {
+  public name: string;
   public attributes: Record<string, unknown>;
   public exceptions: unknown[] = [];
   public status: unknown;
   public ended = false;
 
   constructor(
-    public readonly name: string,
+    name: string,
     options: { attributes?: Record<string, unknown> },
   ) {
+    this.name = name;
     this.attributes = { ...(options.attributes ?? {}) };
+  }
+
+  updateName(name: string) {
+    this.name = name;
+    return this;
   }
 
   setAttribute(key: string, value: unknown) {

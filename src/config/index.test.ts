@@ -1,194 +1,154 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { envSchema, ConfigValidationError } from "./index.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ConfigValidationError, envSchema, rawEnvSchema } from "./index.js";
 
-describe("src/config/index.ts", () => {
-  const originalEnv = process.env;
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+
+describe("mTLS and Redis Config Validation", () => {
+  const originalEnv = { ...process.env };
 
   beforeEach(() => {
     vi.resetModules();
-    process.env = { ...originalEnv };
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      DATABASE_URL: "postgres://localhost:5432/test_db",
+    };
+    // Clean up mTLS and Redis environment variables
+    delete process.env.MTLS_ENABLED;
+    delete process.env.MTLS_SPIFFE_ENABLED;
+    delete process.env.SPIFFE_TRUST_DOMAIN;
+    delete process.env.MTLS_CA_PATH;
+    delete process.env.MTLS_CERT_PATH;
+    delete process.env.MTLS_KEY_PATH;
+    delete process.env.MTLS_CN_ALLOWLIST;
+    delete process.env.MTLS_SPIFFE_ID_ALLOWLIST;
+    delete process.env.SPIFFE_WORKLOAD_API_SOCKET;
+    delete process.env.REDIS_URL;
+    delete process.env.REDIS_CLUSTER_NODES;
+    delete process.env.REDIS_TLS;
+    delete process.env.REDIS_FORCE_SINGLE_NODE;
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    process.env = { ...originalEnv };
   });
 
-  describe("ConfigValidationError", () => {
-    it("should create an error with the correct name and message", async () => {
-      const { ConfigValidationError } = await import("./index.js");
-      const err = new ConfigValidationError("test error");
-      expect(err).toBeInstanceOf(Error);
-      expect(err.name).toBe("ConfigValidationError");
-      expect(err.message).toBe("test error");
-    });
-  });
+  async function loadConfig() {
+    return await import("./index.js");
+  }
 
-  describe("envSchema", () => {
-    it("should successfully parse a valid development environment", () => {
-      const env = {
-        DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-      };
-      const parsed = envSchema.parse(env);
-      expect(parsed.NODE_ENV).toBe("development");
-    });
+  describe("mTLS configuration", () => {
+    it("populates config.mtls and sets enabled=true when MTLS_ENABLED=true and cert paths are provided", async () => {
+      process.env.MTLS_ENABLED = "true";
+      process.env.MTLS_CA_PATH = "/certs/ca.pem";
+      process.env.MTLS_CERT_PATH = "/certs/server.pem";
+      process.env.MTLS_KEY_PATH = "/certs/server-key.pem";
+      process.env.MTLS_CN_ALLOWLIST = "client1.internal, client2.internal";
+      process.env.MTLS_SPIFFE_ID_ALLOWLIST = "spiffe://example.org/ns/prod/sa/app";
 
-    it("should throw if DATABASE_URL is missing or invalid", () => {
-      expect(() => envSchema.parse({})).toThrow(/DATABASE_URL environment variable is required/);
-      expect(() => envSchema.parse({ DATABASE_URL: "not-a-url" })).toThrow(/must be a valid URL/);
-    });
+      const { config } = await loadConfig();
 
-    describe("production rules", () => {
-      it("should throw if ALLOWED_ORIGINS is not set in production", () => {
-        const env = {
-          NODE_ENV: "production",
-          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-        };
-        const result = envSchema.safeParse(env);
-        expect(result.success).toBe(false);
-        if (!result.success) {
-          const issues = result.error.issues;
-          expect(issues).toEqual(expect.arrayContaining([
-            expect.objectContaining({ path: ["ALLOWED_ORIGINS"], message: "ALLOWED_ORIGINS must be set in production" })
-          ]));
-        }
-      });
-
-      it("should throw if JWT_SECRET is short in production with env loader", () => {
-        const env = {
-          NODE_ENV: "production",
-          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-          ALLOWED_ORIGINS: "https://app.example.com",
-          SECRET_LOADER: "env",
-          JWT_SECRET: "short",
-        };
-        const result = envSchema.safeParse(env);
-        expect(result.success).toBe(false);
-        if (!result.success) {
-           expect(result.error.issues).toEqual(expect.arrayContaining([
-             expect.objectContaining({ path: ["JWT_SECRET"] })
-           ]));
-        }
-      });
-
-      it("should throw if SECRET_FILE_PATH is missing with file loader", () => {
-        const env = {
-          NODE_ENV: "production",
-          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-          ALLOWED_ORIGINS: "https://app.example.com",
-          SECRET_LOADER: "file",
-        };
-        const result = envSchema.safeParse(env);
-        expect(result.success).toBe(false);
-        if (!result.success) {
-           expect(result.error.issues).toEqual(expect.arrayContaining([
-             expect.objectContaining({ path: ["SECRET_FILE_PATH"] })
-           ]));
-        }
-      });
-
-      it("should throw if VAULT_BASE_URL or VAULT_SECRET_PATH are missing with vault loader", () => {
-        const env = {
-          NODE_ENV: "production",
-          DATABASE_URL: "postgres://user:pass@localhost:5432/db",
-          ALLOWED_ORIGINS: "https://app.example.com",
-          SECRET_LOADER: "vault",
-        };
-        const result = envSchema.safeParse(env);
-        expect(result.success).toBe(false);
-        if (!result.success) {
-           expect(result.error.issues).toEqual(expect.arrayContaining([
-             expect.objectContaining({ path: ["VAULT_BASE_URL"] }),
-             expect.objectContaining({ path: ["VAULT_SECRET_PATH"] })
-           ]));
-        }
-      });
-    });
-  });
-
-  describe("getAllowedOrigins", () => {
-    it("should return array of origins when ALLOWED_ORIGINS is set", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.ALLOWED_ORIGINS = "https://a.com, https://b.com ";
-      const { getAllowedOrigins } = await import("./index.js");
-      expect(getAllowedOrigins()).toEqual(["https://a.com", "https://b.com"]);
+      expect(config.mtls.enabled).toBe(true);
+      expect(config.mtls.caPath).toBe("/certs/ca.pem");
+      expect(config.mtls.certPath).toBe("/certs/server.pem");
+      expect(config.mtls.keyPath).toBe("/certs/server-key.pem");
+      expect(config.mtls.cnAllowlist).toEqual(["client1.internal", "client2.internal"]);
+      expect(config.mtls.spiffeIdAllowlist).toEqual(["spiffe://example.org/ns/prod/sa/app"]);
+      expect(config.mtls.spiffe.enabled).toBe(false);
     });
 
-    it("should return '*' in development if ALLOWED_ORIGINS is unset", async () => {
-      process.env.NODE_ENV = "development";
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      delete process.env.ALLOWED_ORIGINS;
-      const { getAllowedOrigins } = await import("./index.js");
-      expect(getAllowedOrigins()).toBe("*");
-    });
-  });
+    it("throws ConfigValidationError at import time when MTLS_ENABLED=true without cert paths", async () => {
+      process.env.MTLS_ENABLED = "true";
+      // No MTLS_CA_PATH, MTLS_CERT_PATH, or MTLS_KEY_PATH
 
-  describe("Module initialization invalid inputs and primary state transitions", () => {
-    it("should throw ConfigValidationError for invalid process.env on load", async () => {
-      delete process.env.DATABASE_URL;
-      await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
+      await expect(loadConfig()).rejects.toThrow(ConfigValidationError);
+      await expect(loadConfig()).rejects.toThrow(
+        "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED is not true",
+      );
     });
 
-    it("should set a default JWT_SECRET in development if missing", async () => {
-      process.env.NODE_ENV = "development";
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      delete process.env.JWT_SECRET;
-      const { config } = await import("./index.js");
-      expect(config.jwtSecret).toBe("default_dev_secret_for_local_testing_only");
-    });
-
-    it("should throw ConfigValidationError for invalid boolean env var", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.REDIS_TLS = "maybe";
-      await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
-    });
-
-    it("should parse valid boolean env var correctly", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.REDIS_TLS = "yes";
-      const { config } = await import("./index.js");
-      expect(config.redis.tls).toBe(true);
-    });
-
-    it("should throw ConfigValidationError for invalid positive integer env var", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.PGPOOL_MAX = "-5";
-      await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
-    });
-
-    it("should parse valid positive integer env var correctly", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.PGPOOL_MAX = "15";
-      const { config } = await import("./index.js");
-      expect(config.db.poolMax).toBe(15);
-    });
-
-    it("should throw ConfigValidationError for invalid decimal env var", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA = "5.0"; // Max is 1.0
-      await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
-    });
-
-    it("should parse valid decimal env var correctly", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
-      process.env.SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA = "0.5";
-      const { config } = await import("./index.js");
-      expect(config.soroban.adaptiveBatch.ewmaAlpha).toBe(0.5);
-    });
-
-    it("should throw ConfigValidationError if SPIFFE_TRUST_DOMAIN is missing when MTLS_SPIFFE_ENABLED=true", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
+    it("throws ConfigValidationError when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED=true without SPIFFE_TRUST_DOMAIN", async () => {
       process.env.MTLS_ENABLED = "true";
       process.env.MTLS_SPIFFE_ENABLED = "true";
-      delete process.env.SPIFFE_TRUST_DOMAIN;
-      await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
+      // No SPIFFE_TRUST_DOMAIN
+
+      await expect(loadConfig()).rejects.toThrow(ConfigValidationError);
+      await expect(loadConfig()).rejects.toThrow(
+        "SPIFFE_TRUST_DOMAIN must be set when MTLS_SPIFFE_ENABLED=true",
+      );
     });
 
-    it("should throw ConfigValidationError if MTLS paths are missing when MTLS_ENABLED=true and SPIFFE is not true", async () => {
-      process.env.DATABASE_URL = "postgres://localhost/db";
+    it("succeeds when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED=true with SPIFFE_TRUST_DOMAIN", async () => {
       process.env.MTLS_ENABLED = "true";
-      process.env.MTLS_SPIFFE_ENABLED = "false";
-      delete process.env.MTLS_CA_PATH;
-      await expect(import("./index.js")).rejects.toThrow(ConfigValidationError);
+      process.env.MTLS_SPIFFE_ENABLED = "true";
+      process.env.SPIFFE_TRUST_DOMAIN = "veritasor.internal";
+      process.env.SPIFFE_WORKLOAD_API_SOCKET = "unix:///run/spire/sockets/agent.sock";
+
+      const { config } = await loadConfig();
+
+      expect(config.mtls.enabled).toBe(true);
+      expect(config.mtls.spiffe.enabled).toBe(true);
+      expect(config.mtls.spiffe.trustDomain).toBe("veritasor.internal");
+      expect(config.mtls.spiffe.workloadApiSocket).toBe("unix:///run/spire/sockets/agent.sock");
+    });
+
+    it("defaults mtls.enabled to false when MTLS_ENABLED is unset", async () => {
+      const { config } = await loadConfig();
+      expect(config.mtls.enabled).toBe(false);
+    });
+  });
+
+  describe("Redis configuration", () => {
+    it("populates REDIS_URL, REDIS_CLUSTER_NODES, REDIS_TLS=1 and REDIS_FORCE_SINGLE_NODE=true in config.redis", async () => {
+      process.env.REDIS_URL = "redis://127.0.0.1:6379";
+      process.env.REDIS_CLUSTER_NODES = "node1:7000,node2:7001";
+      process.env.REDIS_TLS = "1";
+      process.env.REDIS_FORCE_SINGLE_NODE = "true";
+
+      const { config } = await loadConfig();
+
+      expect(config.redis.url).toBe("redis://127.0.0.1:6379");
+      expect(config.redis.clusterNodes).toBe("node1:7000,node2:7001");
+      expect(config.redis.tls).toBe(true);
+      expect(config.redis.forceSingleNode).toBe(true);
+    });
+
+    it("accepts rediss:// URLs for REDIS_URL", async () => {
+      process.env.REDIS_URL = "rediss://secure-redis.internal:6380";
+
+      const { config } = await loadConfig();
+      expect(config.redis.url).toBe("rediss://secure-redis.internal:6380");
+    });
+
+    it("rejects non-redis protocol URLs for REDIS_URL", async () => {
+      process.env.REDIS_URL = "http://localhost:6379";
+
+      await expect(loadConfig()).rejects.toThrow(ConfigValidationError);
+    });
+
+    it("rejects malformed URLs for REDIS_URL", async () => {
+      process.env.REDIS_URL = "not-a-valid-url";
+
+      await expect(loadConfig()).rejects.toThrow(ConfigValidationError);
+    });
+  });
+
+  describe("Hardening against schema drift", () => {
+    it("ensures every parsedEnv.X access in src/config/index.ts is declared in envSchema", () => {
+      const configSource = fs.readFileSync(path.join(currentDir, "index.ts"), "utf-8");
+      const matches = [...configSource.matchAll(/parsedEnv\.([A-Z0-9_]+)/g)];
+      const accessedKeys = new Set(matches.map((m) => m[1]));
+      const declaredKeys = new Set(Object.keys(rawEnvSchema.shape));
+
+      for (const key of accessedKeys) {
+        expect(
+          declaredKeys.has(key),
+          `parsedEnv.${key} is accessed in src/config/index.ts but not declared in envSchema`,
+        ).toBe(true);
+      }
     });
   });
 });

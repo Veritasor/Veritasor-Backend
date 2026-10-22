@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
 import { requirePermissions, requirePolicy } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
@@ -10,6 +10,11 @@ import { setOAuthState, consumeOAuthState } from '../services/integrations/strip
 import { generateAuthUrl } from '../services/integrations/oauth.js';
 
 const router = Router();
+
+// Integration records are keyed by UUID (see repositories/integration.ts).
+// Constraining the dynamic segment keeps provider paths such as `/razorpay`
+// and `/shopify` from being captured by the generic handlers below.
+const INTEGRATION_ID_PATTERN = '[0-9a-fA-F-]{36}';
 
 interface IntegrationType {
   name: string;

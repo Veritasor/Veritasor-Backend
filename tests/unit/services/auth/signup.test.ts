@@ -89,9 +89,10 @@ describe('SignupRequest — valid input', () => {
     expect(result).toBeDefined()
   })
 
-  it('accepts an email with plus-addressing', async () => {
+  it('accepts an email with plus-addressing and preserves the tag', async () => {
     const result = await signup(validRequest({ email: 'alice+tag@example.com' }), NO_DELAY)
     expect(result).toBeDefined()
+    expect(result.user.email).toBe('alice+tag@example.com')
   })
 
   it('accepts an email with a subdomain', async () => {

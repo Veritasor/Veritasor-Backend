@@ -14,7 +14,11 @@ import {
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { compressionMiddleware } from "./middleware/compression.js";
-import { mtlsMiddleware, registerMtlsServer } from "./middleware/mtls.js";
+import {
+  applyRotatedTlsMaterial,
+  mtlsMiddleware,
+  registerMtlsServer,
+} from "./middleware/mtls.js";
 import { createGrpcWorkloadApiClient } from "./spiffe/workloadApiClient.js";
 import { createSvidProvider, type SvidProvider } from "./spiffe/svidProvider.js";
 import { metricsRegistry } from "./metrics.js";
@@ -43,14 +47,14 @@ import {
 import { replayFailedSubmissions } from "./startup/replayFailedSubmissions.js";
 import { initializeOpenTelemetry } from "./tracing.js";
 import {
-  startIdempotencySweeper,
-  type IdempotencySweeperHandle,
   startIdempotencySweeperIfNeeded,
   stopIdempotencySweeper,
 } from "./middleware/idempotency.js";
 import {
   startPgBouncerScraperIfNeeded,
 } from "./services/pgbouncerScraper.js";
+
+export { stopIdempotencySweeper };
 
 /** Active SPIFFE SVID provider when mTLS uses the Workload API. */
 let activeSvidProvider: SvidProvider | undefined;
@@ -90,6 +94,7 @@ const securityHeadersMiddleware = (req: Request, res: Response, next: NextFuncti
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
 
+  app.set("trust proxy", config.trustProxy);
   app.use(requestLogger);
   app.use(securityHeaders);
   app.use(securityHeadersMiddleware);
@@ -123,10 +128,13 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/auth", authRouter);
   app.use("/api/businesses", businessRoutes);
   app.use("/api/health", healthRouter);
-  app.use("/api/integrations", integrationsRouter);
+  // Provider routers must be mounted before the generic integrations router.
+  // The generic router declares `/:integrationId`, which would otherwise
+  // shadow single-segment provider paths such as DELETE /api/integrations/razorpay.
   app.use("/api/integrations/razorpay", integrationsRazorpayRouter);
   app.use("/api/integrations/shopify", integrationsShopifyRouter);
   app.use("/api/integrations/stripe", integrationsStripeRouter);
+  app.use("/api/integrations", integrationsRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
@@ -227,13 +235,10 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
           }),
           refreshRatio: config.mtls.spiffe.refreshRatio,
           onRotate: (material) => {
-            httpsServerRef.current?.setSecureContext({
-              ca: material.ca,
-              cert: material.cert,
-              key: material.key,
-              requestCert: true,
-              rejectUnauthorized: false,
-            });
+            const httpsServer = httpsServerRef.current;
+            if (httpsServer) {
+              applyRotatedTlsMaterial(httpsServer, material);
+            }
           },
         });
         await svidProvider.start();
@@ -252,6 +257,7 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
           ca,
           cert,
           key,
+          // These server-level options persist across setSecureContext() calls.
           requestCert: true,
           rejectUnauthorized: false, // We handle rejection in middleware
         },
