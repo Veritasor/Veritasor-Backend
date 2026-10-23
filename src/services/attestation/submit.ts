@@ -3,7 +3,7 @@ import {
   fetchRazorpayRevenue,
   RevenueEntry,
 } from "../revenue/razorpayFetch.js";
-import { MerkleTree } from "../merkle.js";
+import { buildTree, getRoot } from "../merkle/index.js";
 import { attestationRepository } from "../../repositories/attestation.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
 import {
@@ -332,10 +332,10 @@ async function doSubmitAttestation(
 
     // 1. Fetch Revenue
     // Using Razorpay for now, as it's the only implemented fetch service.
-    // In a real scenario, this would loop over connected integrations from `integrationRepository`.
+    // Use the credentials belonging to the business submitting the attestation.
     let rawRevenue: RevenueEntry[];
     try {
-      rawRevenue = await fetchRazorpayRevenue(startDate, endDate);
+      rawRevenue = await fetchRazorpayRevenue(startDate, endDate, businessId);
     } catch (err: any) {
       throw new Error(`Failed to fetch revenue: ${err.message}`);
     }
@@ -355,8 +355,8 @@ async function doSubmitAttestation(
       .sort(([m1], [m2]) => m1.localeCompare(m2))
       .map(([month, amount]) => `${month}:${amount.toFixed(2)}`);
 
-    const tree = new MerkleTree(leaves);
-    const root = tree.getRoot();
+    const tree = buildTree(leaves);
+    const root = getRoot(tree);
 
     if (!root) {
       throw new Error("Failed to generate Merkle root from aggregated data.");
@@ -529,4 +529,3 @@ export async function submitAttestation(userId: string, businessId: string, peri
     enqueueTime: Date.now(),
   }).then((inner) => inner);
 }
-

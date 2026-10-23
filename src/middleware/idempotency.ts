@@ -25,6 +25,7 @@ import {
   idempotencyBatchSize,
 } from '../metrics.js';
 import { redisCircuitBreaker } from '../redis.js';
+import { ExternalServiceError } from '../types/errors.js';
 
 // ============================================================================
 // Constants
@@ -75,6 +76,14 @@ export interface IdempotencyStore {
    * @returns The cached entry or undefined if not found/expired
    */
   get(key: string): Promise<IdempotencyEntry | undefined>;
+
+  /**
+   * Reserve an idempotency key atomically for an in-flight request
+   * @param key - The idempotency key
+   * @param ttlMs - Time to live in milliseconds for the reservation
+   * @returns Promise<boolean> - True if reservation was acquired, false if already reserved/cached
+   */
+  reserve?(key: string, ttlMs: number): Promise<boolean>;
 
   /**
    * Store an idempotency entry
@@ -169,7 +178,7 @@ export interface IdempotencyOptions {
  */
 export interface RedisClientLike {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, px: 'PX', ms: number): Promise<unknown>;
+  set(key: string, value: string, ...args: unknown[]): Promise<unknown>;
   del(key: string): Promise<unknown>;
   scan?(cursor: string | number, ...args: unknown[]): Promise<unknown>;
   pipeline?(): any;
@@ -264,10 +273,23 @@ export class RedisIdempotencyStore implements IdempotencyStore {
     
     if (!raw) return undefined;
     try {
-      return JSON.parse(raw) as IdempotencyEntry;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && parsed.inFlight === true) {
+        return undefined;
+      }
+      return parsed as IdempotencyEntry;
     } catch {
       return undefined;
     }
+  }
+
+  async reserve(key: string, ttlMs: number): Promise<boolean> {
+    const reservationPayload = JSON.stringify({ inFlight: true, createdAt: Date.now() });
+    const result = await redisCircuitBreaker.execute(
+      () => this.client.set(key, reservationPayload, 'PX', ttlMs, 'NX'),
+      () => null
+    );
+    return result === 'OK' || result === true;
   }
 
   async set(key: string, entry: IdempotencyEntry, ttlMs: number): Promise<void> {
@@ -347,7 +369,7 @@ export class RedisIdempotencyStore implements IdempotencyStore {
  * Safety: Implements a basic size limit to prevent memory exhaustion.
  */
 const MAX_MEMORY_STORE_SIZE = 10000;
-const memoryStore = new Map<string, { entry: IdempotencyEntry; expiresAt: number }>();
+const memoryStore = new Map<string, { entry: IdempotencyEntry | null; inFlight?: boolean; expiresAt: number }>();
 
 /**
  * Internal helper: prune entries whose TTL has elapsed and return the
@@ -383,7 +405,36 @@ export const inMemoryIdempotencyStore: IdempotencyStore = {
       return undefined;
     }
 
+    if (row.inFlight || !row.entry) {
+      return undefined;
+    }
+
     return row.entry;
+  },
+
+  /**
+   * Reserve an idempotency key atomically for an in-flight request
+   */
+  async reserve(key: string, ttlMs: number): Promise<boolean> {
+    const now = Date.now();
+    const existing = memoryStore.get(key);
+    if (existing && existing.expiresAt > now) {
+      return false;
+    }
+
+    if (memoryStore.size >= MAX_MEMORY_STORE_SIZE) {
+      pruneExpiredMemoryStore(now);
+      if (memoryStore.size >= MAX_MEMORY_STORE_SIZE) {
+        return false;
+      }
+    }
+
+    memoryStore.set(key, {
+      entry: null,
+      inFlight: true,
+      expiresAt: now + ttlMs,
+    });
+    return true;
   },
 
   /**
@@ -408,6 +459,7 @@ export const inMemoryIdempotencyStore: IdempotencyStore = {
 
     memoryStore.set(key, {
       entry,
+      inFlight: false,
       expiresAt: Date.now() + ttlMs,
     });
   },
@@ -559,81 +611,132 @@ export function idempotencyMiddleware(options: IdempotencyOptions) {
         ? rawKey[0]?.trim() 
         : undefined;
 
-    // Validate key presence
-    if (!keyValue) {
-      res.status(400).json({
-        error: 'Bad Request',
-        message: `Missing ${IDEMPOTENCY_KEY_HEADER} header`,
-        code: 'IDEMPOTENCY_KEY_REQUIRED',
-      });
-      return;
-    }
-
-    // Validate key format
-    if (!validateKey(keyValue)) {
-      res.status(400).json({
-        error: 'Bad Request',
-        message: `Invalid ${IDEMPOTENCY_KEY_HEADER} format. Key must be between ${MIN_KEY_LENGTH} and ${MAX_KEY_LENGTH} characters${getStrictKeyFormatMessage(strictKeyFormat)}`,
-        code: 'IDEMPOTENCY_KEY_INVALID',
-      });
-      return;
-    }
-
-    // Generate unique key for this user + scope + key combination
-    const userKey = getUserKey(req);
-    const storeKey = generateStoreKey(scope, userKey, keyValue);
-    const currentRequestHash = generateRequestHash(req.body);
-
-    // Check for cached response
-    const cached = await store.get(storeKey);
-    if (cached) {
-      // Verify body integrity to prevent key collisions with different payloads
-      if (cached.requestHash !== currentRequestHash) {
-        logger.warn(`[idempotency] Key collision detected for key: ${keyValue}. Payloads do not match.`);
-        res.status(422).json({
-          error: 'Unprocessable Entity',
-          message: 'Idempotency key already used with a different request body',
-          code: 'IDEMPOTENCY_KEY_COLLISION',
+    try {
+      // Validate key presence
+      if (!keyValue) {
+        res.status(400).json({
+          error: 'Bad Request',
+          message: `Missing ${IDEMPOTENCY_KEY_HEADER} header`,
+          code: 'IDEMPOTENCY_KEY_REQUIRED',
         });
         return;
       }
 
-      logger.info(`[idempotency] Returning cached response for key: ${keyValue}`);
-      // Return cached response
-      res.status(cached.status).json(cached.body);
-      return;
-    }
-
-    // Store original methods
-    const originalJson = res.json.bind(res);
-    const originalStatus = res.status.bind(res);
-    let statusCode = 200;
-
-    // Override status to track the actual status code
-    res.status = function (code: number): Response {
-      statusCode = code;
-      return originalStatus(code);
-    };
-
-    // Override json to cache the response
-    res.json = function (body: unknown): Response {
-      // Only cache successful responses (2xx)
-      if (statusCode >= 200 && statusCode < 300) {
-        const entry: IdempotencyEntry = {
-          status: statusCode,
-          body,
-          requestHash: currentRequestHash,
-          createdAt: Date.now(),
-        };
-        store.set(storeKey, entry, ttlMs).catch((err) => {
-          logger.error('[idempotency] Failed to cache response:', err);
+      // Validate key format
+      if (!validateKey(keyValue)) {
+        res.status(400).json({
+          error: 'Bad Request',
+          message: `Invalid ${IDEMPOTENCY_KEY_HEADER} format. Key must be between ${MIN_KEY_LENGTH} and ${MAX_KEY_LENGTH} characters${getStrictKeyFormatMessage(strictKeyFormat)}`,
+          code: 'IDEMPOTENCY_KEY_INVALID',
         });
+        return;
       }
-      return originalJson(body);
-    };
 
-    // Continue to route handler
-    next();
+      // Generate unique key for this user + scope + key combination
+      const userKey = getUserKey(req);
+      const storeKey = generateStoreKey(scope, userKey, keyValue);
+      const currentRequestHash = generateRequestHash(req.body);
+
+      // Check for cached response
+      const cached = await store.get(storeKey);
+      if (cached) {
+        // Verify body integrity to prevent key collisions with different payloads
+        if (cached.requestHash !== currentRequestHash) {
+          logger.warn(`[idempotency] Key collision detected for key: ${keyValue}. Payloads do not match.`);
+          res.status(422).json({
+            error: 'Unprocessable Entity',
+            message: 'Idempotency key already used with a different request body',
+            code: 'IDEMPOTENCY_KEY_COLLISION',
+          });
+          return;
+        }
+
+        logger.info(`[idempotency] Returning cached response for key: ${keyValue}`);
+        // Return cached response
+        res.status(cached.status).json(cached.body);
+        return;
+      }
+
+      // If store supports atomic reservation, reserve the key for this in-flight request
+      if (typeof store.reserve === 'function') {
+        const acquired = await store.reserve(storeKey, ttlMs);
+        if (!acquired) {
+          // Another concurrent request holds the reservation or completed the request
+          logger.warn(`[idempotency] Concurrent duplicate request detected for key: ${keyValue}`);
+          res.setHeader('Retry-After', '1');
+          res.status(409).json({
+            error: 'Conflict',
+            message: 'A request with this idempotency key is currently in progress',
+            code: 'IDEMPOTENCY_IN_PROGRESS',
+          });
+          return;
+        }
+      }
+
+      // Store original methods
+      const originalJson = res.json.bind(res);
+      const originalStatus = res.status.bind(res);
+      let statusCode = 200;
+      let finalized = false;
+
+      // Safe release helper
+      const releaseReservation = () => {
+        if (finalized) return;
+        finalized = true;
+        if (typeof store.delete === 'function') {
+          store.delete(storeKey).catch((err) => {
+            logger.error('[idempotency] Failed to release reservation:', err);
+          });
+        }
+      };
+
+      // If the request closes or finishes prematurely without a successful 2xx response
+      res.once('close', () => {
+        if (!finalized && (res.statusCode < 200 || res.statusCode >= 300)) {
+          releaseReservation();
+        }
+      });
+
+      // Override status to track the actual status code
+      res.status = function (code: number): Response {
+        statusCode = code;
+        return originalStatus(code);
+      };
+
+      // Override json to cache or release the response
+      res.json = function (body: unknown): Response {
+        // Only cache successful responses (2xx)
+        if (statusCode >= 200 && statusCode < 300) {
+          finalized = true;
+          const entry: IdempotencyEntry = {
+            status: statusCode,
+            body,
+            requestHash: currentRequestHash,
+            createdAt: Date.now(),
+          };
+          store.set(storeKey, entry, ttlMs).catch((err) => {
+            logger.error('[idempotency] Failed to cache response:', err);
+          });
+        } else {
+          // Non-2xx response: release reservation so client can retry
+          releaseReservation();
+        }
+        return originalJson(body);
+      };
+
+      // Continue to route handler
+      next();
+    } catch (err) {
+      logger.error('[idempotency] Middleware store error, failing closed:', err);
+      // Fail closed with 503 ExternalServiceError
+      if (err instanceof ExternalServiceError) {
+        next(err);
+      } else {
+        next(new ExternalServiceError('Idempotency store error', 503, {
+          cause: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    }
   };
 }
 
@@ -833,6 +936,38 @@ export async function startIdempotencySweeper(): Promise<IdempotencySweeperHandl
     backend: 'memory',
     stop: () => sweeper.stop(),
   };
+}
+
+/** Module-scoped handle to the active background sweeper */
+let activeSweeperHandle: IdempotencySweeperHandle | null = null;
+
+/**
+ * Start the idempotency sweeper if not in test environment and not already running.
+ * Stores the returned IdempotencySweeperHandle in module scope.
+ * Subsequent calls while running are no-ops.
+ */
+export async function startIdempotencySweeperIfNeeded(): Promise<IdempotencySweeperHandle | null> {
+  if (process.env.NODE_ENV === 'test') {
+    return null;
+  }
+  if (activeSweeperHandle) {
+    return activeSweeperHandle;
+  }
+  activeSweeperHandle = await startIdempotencySweeper();
+  return activeSweeperHandle;
+}
+
+/**
+ * Stop the module-scoped idempotency sweeper handle and clear it.
+ * Calling it multiple times is idempotent (no-op when nothing is running).
+ */
+export async function stopIdempotencySweeper(): Promise<void> {
+  if (!activeSweeperHandle) {
+    return;
+  }
+  const handle = activeSweeperHandle;
+  activeSweeperHandle = null;
+  await handle.stop();
 }
 
 export class IdempotencySweeper {

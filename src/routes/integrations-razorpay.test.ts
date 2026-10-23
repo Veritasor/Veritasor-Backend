@@ -8,9 +8,10 @@ import {
 import * as jwt from '../utils/jwt.js'
 import * as userRepository from '../repositories/userRepository.js'
 import { businessRepository } from '../repositories/business.js'
-import { integrationRepository } from '../repositories/integrations.js'
+import * as integrationRepository from '../repositories/integration.js'
 import * as clientWrapper from '../services/integrations/clientWrapper.js'
 import { GlobalRetryBudgetExceededError } from '../services/integrations/retryBudget.js'
+import integrationsRouter from './integrations.js'
 
 // ─── Test Helpers & Fixtures ──────────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ function buildApp(): Express {
   const app = express()
   app.use(express.json())
   app.use('/api/integrations/razorpay', integrationsRazorpayRouter)
+  app.use('/api/integrations', integrationsRouter)
   return app
 }
 
@@ -100,13 +102,6 @@ function setupDefaultAuthMocks() {
   })
 }
 
-function clearIntegrationsForUser(userId: string) {
-  const records = integrationRepository.listByUser(userId)
-  for (const record of records) {
-    integrationRepository.deleteById(record.id)
-  }
-}
-
 // ─── Test Suite ───────────────────────────────────────────────────────────────
 
 describe('integrationsRazorpayRouter', () => {
@@ -119,13 +114,11 @@ describe('integrationsRazorpayRouter', () => {
     global.fetch = vi.fn().mockResolvedValue(
       jsonResponse(200, validRazorpayVerificationPayload()),
     )
-    clearIntegrationsForUser(TEST_USER.userId)
-    clearIntegrationsForUser(OTHER_USER.userId)
+    integrationRepository.clearAll()
   })
 
   afterEach(() => {
-    clearIntegrationsForUser(TEST_USER.userId)
-    clearIntegrationsForUser(OTHER_USER.userId)
+    integrationRepository.clearAll()
     global.fetch = originalFetch
     vi.restoreAllMocks()
   })
@@ -521,9 +514,39 @@ describe('integrationsRazorpayRouter', () => {
         )
 
         // Verify underlying storage contains raw secret
-        const stored = integrationRepository.findById(res.body.id)
+        const stored = await integrationRepository.getById(res.body.id)
         expect(stored).not.toBeNull()
-        expect(stored!.meta.apiKeySecret).toBe(VALID_API_KEY_SECRET)
+        expect(stored!.token.apiKeySecret).toBe(VALID_API_KEY_SECRET)
+        expect(stored!.metadata.apiKeySecret).toBeUndefined()
+        expect(res.body.token).toBeUndefined()
+        expect(JSON.stringify(res.body)).not.toContain(VALID_API_KEY_SECRET)
+      })
+
+      it('lists the connected Razorpay integration without exposing its API secret', async () => {
+        const connectRes = await request(app)
+          .post('/api/integrations/razorpay')
+          .set('Authorization', '******')
+          .set('x-business-id', TEST_BUSINESS.id)
+          .send({
+            apiKeyId: VALID_API_KEY_ID,
+            apiKeySecret: VALID_API_KEY_SECRET,
+          })
+        expect(connectRes.status).toBe(201)
+
+        const listRes = await request(app)
+          .get('/api/integrations/connected')
+          .set('Authorization', '******')
+          .set('x-business-id', TEST_BUSINESS.id)
+
+        expect(listRes.status).toBe(200)
+        expect(listRes.body.integrations).toEqual([
+          expect.objectContaining({
+            id: connectRes.body.id,
+            type: 'razorpay',
+          }),
+        ])
+        expect(JSON.stringify(listRes.body)).not.toContain(VALID_API_KEY_SECRET)
+        expect(JSON.stringify(listRes.body)).not.toContain('apiKeySecret')
       })
 
       it('returns 409 Conflict if Razorpay is already connected for this business', async () => {
@@ -576,8 +599,8 @@ describe('integrationsRazorpayRouter', () => {
           })
         expect(resB.status).toBe(201)
 
-        expect(integrationRepository.listByBusiness(TEST_BUSINESS.id)).toHaveLength(1)
-        expect(integrationRepository.listByBusiness(OTHER_BUSINESS.id)).toHaveLength(1)
+        expect(await integrationRepository.listByBusinessId(TEST_BUSINESS.id)).toHaveLength(1)
+        expect(await integrationRepository.listByBusinessId(OTHER_BUSINESS.id)).toHaveLength(1)
       })
 
       it('returns 400 when upstream Razorpay responds with 401 without leaking internal details', async () => {
@@ -729,11 +752,13 @@ describe('integrationsRazorpayRouter', () => {
       })
 
       it('returns 404 when integration belongs to a different provider (e.g. stripe)', async () => {
-        const stripeRecord = integrationRepository.create({
+        const stripeRecord = await integrationRepository.create({
           provider: 'stripe',
           userId: TEST_USER.userId,
           businessId: TEST_BUSINESS.id,
-          meta: { accountId: 'acct_123' },
+          externalId: 'acct_123',
+          token: {},
+          metadata: { accountId: 'acct_123' },
         })
 
         const res = await request(app)
@@ -744,15 +769,17 @@ describe('integrationsRazorpayRouter', () => {
 
         expect(res.status).toBe(404)
         expect(res.body).toEqual({ error: 'Integration not found' })
-        expect(integrationRepository.findById(stripeRecord.id)).not.toBeNull()
+        expect(await integrationRepository.getById(stripeRecord.id)).not.toBeNull()
       })
 
       it('returns 404 when integration belongs to a different business (cross-tenant isolation)', async () => {
-        const otherBizRecord = integrationRepository.create({
+        const otherBizRecord = await integrationRepository.create({
           provider: 'razorpay',
           userId: OTHER_USER.userId,
           businessId: OTHER_BUSINESS.id,
-          meta: { apiKeyId: 'other-key' },
+          externalId: 'other-key',
+          token: {},
+          metadata: { apiKeyId: 'other-key' },
         })
 
         // TEST_BUSINESS attempts to delete OTHER_BUSINESS's integration
@@ -764,17 +791,19 @@ describe('integrationsRazorpayRouter', () => {
 
         expect(res.status).toBe(404)
         expect(res.body).toEqual({ error: 'Integration not found' })
-        expect(integrationRepository.findById(otherBizRecord.id)).not.toBeNull()
+        expect(await integrationRepository.getById(otherBizRecord.id)).not.toBeNull()
       })
     })
 
     describe('primary state transitions & failure handling', () => {
       it('successfully disconnects an existing Razorpay integration (200)', async () => {
-        const created = integrationRepository.create({
+        const created = await integrationRepository.create({
           provider: 'razorpay',
           userId: TEST_USER.userId,
           businessId: TEST_BUSINESS.id,
-          meta: { apiKeyId: VALID_API_KEY_ID },
+          externalId: VALID_API_KEY_ID,
+          token: { apiKeyId: VALID_API_KEY_ID, apiKeySecret: VALID_API_KEY_SECRET },
+          metadata: { apiKeyId: VALID_API_KEY_ID },
         })
 
         const res = await request(app)
@@ -785,18 +814,20 @@ describe('integrationsRazorpayRouter', () => {
 
         expect(res.status).toBe(200)
         expect(res.body).toEqual({ message: 'ok' })
-        expect(integrationRepository.findById(created.id)).toBeNull()
+        expect(await integrationRepository.getById(created.id)).toBeNull()
       })
 
       it('returns 500 when repository deleteById returns false', async () => {
-        const created = integrationRepository.create({
+        const created = await integrationRepository.create({
           provider: 'razorpay',
           userId: TEST_USER.userId,
           businessId: TEST_BUSINESS.id,
-          meta: { apiKeyId: VALID_API_KEY_ID },
+          externalId: VALID_API_KEY_ID,
+          token: { apiKeyId: VALID_API_KEY_ID, apiKeySecret: VALID_API_KEY_SECRET },
+          metadata: { apiKeyId: VALID_API_KEY_ID },
         })
 
-        vi.spyOn(integrationRepository, 'deleteById').mockReturnValueOnce(false)
+        vi.spyOn(integrationRepository, 'deleteById').mockResolvedValueOnce(false)
 
         const res = await request(app)
           .delete('/api/integrations/razorpay')

@@ -14,9 +14,10 @@
  */
 
 import 'dotenv/config';
+import { config } from './config/index.js';
 import { startServer, stopIdempotencySweeper } from './app.js';
 import { stopPgBouncerScraperIfNeeded } from './services/pgbouncerScraper.js';
-import { pool } from './db/client.js';
+import { getPgClient } from './db/client.js';
 import { logger } from './utils/logger.js';
 import { secretLoader } from './utils/secret-loader.js';
 import { jwksManager } from './utils/jwks.js';
@@ -30,13 +31,27 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-async function bootstrap(): Promise<void> {
+export async function bootstrap(): Promise<void> {
   // Load secrets before the server starts accepting traffic
   await secretLoader.reload();
+
+  if (process.env.NODE_ENV === 'production' && config.secretLoader.source !== 'env') {
+    let jwtSecret: string | undefined;
+    try {
+      jwtSecret = await secretLoader.get('JWT_SECRET');
+    } catch {
+      jwtSecret = undefined;
+    }
+    if (!jwtSecret || jwtSecret.length < 32) {
+      throw new Error('JWT_SECRET resolved from secret loader must be at least 32 characters in production');
+    }
+  }
+
   await jwksManager.reload();
 
   // Start the HTTP server; `startServer` returns the `http.Server` instance
   const server = await startServer(PORT);
+  const { closeAttestationStream } = await import('./ws/attestationStream.js');
 
   // ── Kafka revenue consumer (opt-in via KAFKA_ENABLED=true) ──────────────
   const kafkaConsumer = createRevenueConsumer(async (entry) => {
@@ -56,16 +71,14 @@ async function bootstrap(): Promise<void> {
   // method attaches SIGTERM / SIGINT handlers.  The `timeoutMs` option can be
   // overridden via the `SHUTDOWN_TIMEOUT_MS` environment variable (default 15 s).
   //
-  // Shutdown order:
-  //   1. server.close()  — stop accepting new connections
-  //   2. pool.end()      — drain + close all PostgreSQL connections
-  //   3. process.exit(0) — clean exit
+  // Shutdown order: stop workers, close WebSockets and HTTP, then drain PostgreSQL.
   //
   // If the drain exceeds the deadline the process force-exits with code 1.
   // A repeated SIGTERM/SIGINT during an active shutdown triggers immediate exit.
 
   const shutdown = createShutdownOrchestrator({
-    pool,
+    pool: getPgClient(),
+    closeWebSockets: closeAttestationStream,
     onCleanup: async () => {
       if (kafkaConsumer) {
         try {
@@ -134,7 +147,7 @@ process.on('SIGHUP', async () => {
 // Start (skipped in test environments to avoid side-effects)
 // ---------------------------------------------------------------------------
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   bootstrap().catch((error) => {
     const message = error instanceof Error ? error.message : 'Unknown startup error';
     console.error(`[Startup] ${message}`);

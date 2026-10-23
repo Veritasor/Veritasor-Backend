@@ -81,7 +81,7 @@ const ACTIVE_BUSINESS = {
 /** Happy-path stubs: valid token, existing user, owned business. */
 function stubHappyPath(business: unknown = ACTIVE_BUSINESS) {
   vi.mocked(verifyToken).mockReturnValue({ userId: 'u1', email: 'user@example.com' } as never)
-  vi.mocked(findUserById).mockResolvedValue({ id: 'u1' } as never)
+  vi.mocked(findUserById).mockResolvedValue({ id: 'u1', role: 'user' } as never)
   vi.mocked(businessRepository.getById).mockResolvedValue(business as never)
 }
 
@@ -100,7 +100,7 @@ describe('requireBusinessAuth - successful authorization', () => {
 
     expect(next).toHaveBeenCalledTimes(1)
     expect(res.statusCode).toBe(0)
-    expect(req.user).toMatchObject({ id: 'u1', userId: 'u1', email: 'user@example.com' })
+    expect(req.user).toMatchObject({ id: 'u1', userId: 'u1', email: 'user@example.com', role: 'user' })
     expect(req.business).toMatchObject({ id: 'b1', userId: 'u1' })
     expect(vi.mocked(verifyToken)).toHaveBeenCalledWith('good-token')
     expect(vi.mocked(logger.info)).toHaveBeenCalledWith(expect.stringContaining('business_auth.success'))

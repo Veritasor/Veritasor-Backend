@@ -7,7 +7,7 @@
 import { consumeOAuthState } from './store.js'
 import { executeWithRetry } from '../clientWrapper.js'
 import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
-import { IntegrationRepository } from '../../../repositories/IntegrationRepository.js'
+import * as integrationRepository from '../../../repositories/integration.js'
 
 export interface CallbackParams {
   code: string
@@ -83,27 +83,17 @@ export async function handleCallback(
   
   let response: Response
   try {
-    response = await executeWithRetry(
-      () =>
-        fetch('https://connect.stripe.com/oauth/token', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: tokenRequestBody.toString(),
-        }),
-      {
-        provider: 'stripe',
-        operation: 'oauth_token',
-        maxRetries: 2,
+    response = await fetch('https://connect.stripe.com/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-    )
+      body: tokenRequestBody.toString(),
+    })
   } catch (error) {
     return {
       success: false,
-      error: error instanceof GlobalRetryBudgetExceededError
-        ? 'Global outbound retry budget exhausted'
-        : 'Failed to reach Stripe API',
+      error: 'Failed to reach Stripe API',
     }
   }
   
@@ -154,19 +144,19 @@ export async function handleCallback(
     metadata: {}
   }
 
-  const existingIntegrations = (await IntegrationRepository.listByBusinessId(businessId)) || []
+  const existingIntegrations = await integrationRepository.listByBusinessId(businessId)
   const existingStripeIntegration = existingIntegrations.find((integration) =>
     integration.provider === 'stripe' && integration.externalId === stripeUserId
   )
 
 
   if (existingStripeIntegration) {
-    await IntegrationRepository.update(businessId, existingStripeIntegration.id, {
+    await integrationRepository.update(businessId, existingStripeIntegration.id, {
       token: integrationData.token,
       metadata: integrationData.metadata
     })
   } else {
-    await IntegrationRepository.create(integrationData)
+    await integrationRepository.create(integrationData)
   }
   
   return {

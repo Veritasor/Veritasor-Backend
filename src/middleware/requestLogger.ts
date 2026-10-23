@@ -3,7 +3,13 @@ import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
 import { context, propagation } from "@opentelemetry/api";
 import { observeHttpRequestDuration } from "../metrics.js";
-import { startHttpRequestSpan } from "../tracing.js";
+import {
+  startHttpRequestSpan,
+  getNormalizedRoute,
+  UNMATCHED_ROUTE,
+} from "../tracing.js";
+
+export { getNormalizedRoute, UNMATCHED_ROUTE };
 
 /**
  * Extended Express Request with correlation ID for request tracing.
@@ -127,7 +133,7 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
         const durationMs = sec * 1e3 + nano / 1e6;
         const durationSec = sec + nano / 1e9;
 
-        const route = (req.route?.path as string | undefined) ?? req.path;
+        const route = getNormalizedRoute(req);
         observeHttpRequestDuration(
           { method: req.method, route, status_code: String(res.statusCode) },
           durationSec,

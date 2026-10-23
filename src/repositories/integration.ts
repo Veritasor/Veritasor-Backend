@@ -28,8 +28,8 @@ export interface CreateIntegrationData {
  * Data that can be updated on an existing integration
  */
 export interface UpdateIntegrationData {
-  token?: Record<string, any>
-  metadata?: Record<string, any>
+  token: Record<string, any>
+  metadata: Record<string, any>
 }
 
 // In-memory storage using Map data structure
@@ -89,6 +89,35 @@ export async function getById(id: string): Promise<Integration | null> {
   return integration ? cloneIntegration(integration) : null
 }
 
+/** Retrieve an integration for a provider within a business. */
+export async function getByBusinessIdAndProvider(
+  businessId: string,
+  provider: string,
+): Promise<Integration | null> {
+  for (const integration of integrations.values()) {
+    if (integration.businessId === businessId && integration.provider === provider) {
+      return cloneIntegration(integration)
+    }
+  }
+
+  return null
+}
+
+/** Load credentials for server-side Razorpay operations only. */
+export async function getRazorpayCredentials(
+  businessId: string,
+): Promise<{ apiKeyId: string; apiKeySecret: string } | null> {
+  const integration = await getByBusinessIdAndProvider(businessId, 'razorpay')
+  const apiKeyId = integration?.token.apiKeyId
+  const apiKeySecret = integration?.token.apiKeySecret
+
+  if (typeof apiKeyId !== 'string' || typeof apiKeySecret !== 'string') {
+    return null
+  }
+
+  return { apiKeyId, apiKeySecret }
+}
+
 /**
  * Create a new integration record
  * 
@@ -113,8 +142,6 @@ export async function create(data: CreateIntegrationData): Promise<Integration> 
   integrations.set(integration.id, integration)
   
   return cloneIntegration(integration)
-
-
 }
 
 /**
@@ -169,7 +196,7 @@ export async function deleteById(businessId: string, id: string): Promise<boolea
 }
 
 /**
- * Clear all integrations from storage (for testing purposes)
+ * Clear offsets from storage (for testing purposes)
  * @internal
  */
 export function clearAll(): void {

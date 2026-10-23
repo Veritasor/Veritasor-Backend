@@ -104,14 +104,14 @@ export const ROUTE_PERMISSIONS = {
   // POST /api/integrations/:provider/connect - Connect new integration
   'POST:/:provider/connect': [IntegrationPermission.CONNECT],
   
-  // DELETE /api/integrations/:id - Disconnect integration
-  'DELETE:/:id': [IntegrationPermission.DISCONNECT_OWN],
+  // DELETE /api/integrations/:integrationId - Disconnect integration
+  'DELETE:/:integrationId': [IntegrationPermission.DISCONNECT_OWN],
   
-  // PUT /api/integrations/:id - Update integration
-  'PUT:/:id': [IntegrationPermission.MANAGE_OWN],
+  // PUT /api/integrations/:integrationId - Update integration
+  'PUT:/:integrationId': [IntegrationPermission.MANAGE_OWN],
   
-  // GET /api/integrations/:id - Get specific integration
-  'GET:/:id': [IntegrationPermission.READ_OWN],
+  // GET /api/integrations/:integrationId - Get specific integration
+  'GET:/:integrationId': [IntegrationPermission.READ_OWN],
 } as const;
 
 /**

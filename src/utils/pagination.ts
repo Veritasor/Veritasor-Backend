@@ -5,6 +5,41 @@ export type PaginationParams = {
 }
 
 /**
+ * Result shape returned by {@link formatPaginatedResponse}.
+ */
+export type PaginatedResponse<T> = {
+  data: T[]
+  page: number
+  limit: number
+  total: number
+  totalPages: number
+}
+
+/**
+ * Wrap a page of data with envelope fields suitable for an API response.
+ *
+ * @param data      - Items on the current page.
+ * @param total     - Total count of matching items (across all pages).
+ * @param page      - 1-based current page number.
+ * @param limit     - Maximum items per page.
+ * @returns The paginated envelope.
+ */
+export function formatPaginatedResponse<T>(
+  data: T[],
+  total: number,
+  page: number,
+  limit: number,
+): PaginatedResponse<T> {
+  return {
+    data,
+    page,
+    limit,
+    total,
+    totalPages: limit > 0 ? Math.ceil(total / limit) : 0,
+  }
+}
+
+/**
  * Parse query params and return limit/offset for DB queries.
  * Accepts `{page, limit}` from req.query and applies sane defaults and caps.
  */

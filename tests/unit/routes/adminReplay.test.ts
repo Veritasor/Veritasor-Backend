@@ -36,6 +36,18 @@ import {
 } from '../../../src/services/webhooks/deadLetterQueue.js'
 import { handleRazorpayEvent } from '../../../src/services/webhooks/razorpayHandler.js'
 
+const mockDeadLetter = (payload_hash: string) => ({
+  id: 1,
+  provider: 'razorpay',
+  event_id: 'evt_123',
+  payload_hash,
+  error_code: 'test',
+  attempt_count: 1,
+  integration: 'razorpay',
+  created_at: new Date(0),
+  updated_at: new Date(0),
+})
+
 // Mock auth and permission middleware
 vi.mock('../../../src/middleware/requireAuth.js', () => ({
   requireAuth: (req: any, res: any, next: any) => {
@@ -67,7 +79,7 @@ describe('Admin Webhook Replay and Quarantine Routes', () => {
   describe('POST /api/v1/admin/webhooks/replay', () => {
     it('replays a failed webhook successfully', async () => {
       const mockPayload = { id: 'evt_123', event: 'payment.captured' }
-      vi.mocked(getDeadLetter).mockResolvedValueOnce({ payload_hash: 'matched_hash' })
+      vi.mocked(getDeadLetter).mockResolvedValueOnce(mockDeadLetter('matched_hash'))
       vi.mocked(computePayloadHash).mockReturnValueOnce('matched_hash')
       vi.mocked(handleRazorpayEvent).mockResolvedValueOnce({ status: 'ok', message: 'Success' })
       vi.mocked(deleteDeadLetter).mockResolvedValueOnce(undefined)
@@ -149,7 +161,7 @@ describe('Admin Webhook Replay and Quarantine Routes', () => {
     })
 
     it('returns 400 if payload is too large', async () => {
-      vi.mocked(getDeadLetter).mockResolvedValueOnce({ payload_hash: 'some_hash' })
+      vi.mocked(getDeadLetter).mockResolvedValueOnce(mockDeadLetter('some_hash'))
       vi.mocked(computePayloadHash).mockImplementationOnce(() => {
         throw new Error('Payload too large')
       })
@@ -167,7 +179,7 @@ describe('Admin Webhook Replay and Quarantine Routes', () => {
     })
 
     it('returns 400 if payload hash mismatches', async () => {
-      vi.mocked(getDeadLetter).mockResolvedValueOnce({ payload_hash: 'correct_hash' })
+      vi.mocked(getDeadLetter).mockResolvedValueOnce(mockDeadLetter('correct_hash'))
       vi.mocked(computePayloadHash).mockReturnValueOnce('mismatched_hash')
 
       const response = await request(app)
@@ -185,7 +197,7 @@ describe('Admin Webhook Replay and Quarantine Routes', () => {
     })
 
     it('does not delete dead-letter if handler throws, and returns 500', async () => {
-      vi.mocked(getDeadLetter).mockResolvedValueOnce({ payload_hash: 'correct_hash' })
+      vi.mocked(getDeadLetter).mockResolvedValueOnce(mockDeadLetter('correct_hash'))
       vi.mocked(computePayloadHash).mockReturnValueOnce('correct_hash')
       vi.mocked(handleRazorpayEvent).mockRejectedValueOnce(new Error('Processing failed'))
 

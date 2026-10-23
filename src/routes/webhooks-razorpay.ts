@@ -8,6 +8,7 @@ import {
 } from '../services/webhooks/razorpayHandler.js'
 import { logger } from '../utils/logger.js'
 import { secretLoader, SecretNotFoundError } from '../utils/secret-loader.js'
+import { hasForbiddenKeys } from '../middleware/prototypePollution.js'
 
 export const razorpayWebhookRouter = Router()
 
@@ -66,6 +67,21 @@ razorpayWebhookRouter.post('/', async (req: Request, res: Response) => {
         correlationId,
       }),
     )
+
+    let rawJson: unknown
+    try {
+      rawJson = JSON.parse(req.body.toString('utf8'))
+    } catch {
+      throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
+    }
+
+    if (hasForbiddenKeys(rawJson)) {
+      return res.status(400).json({
+        status: 'error',
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid body fields',
+      })
+    }
 
     const event = parseRazorpayEvent(req.body)
     const result = await handleRazorpayEvent(event)

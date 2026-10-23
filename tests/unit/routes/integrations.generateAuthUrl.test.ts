@@ -15,9 +15,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../../src/middleware/auth.js", () => ({
-  requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
-}));
 vi.mock("../../../src/middleware/requireBusinessAuth.js", () => ({
   requireBusinessAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
