@@ -341,8 +341,8 @@ describe('forgotPassword()', () => {
     expect(calledLink).toMatch(/token=[0-9a-f]{64}$/)
   })
 
-  it('returns resetLink in non-production environments', async () => {
-    process.env.NODE_ENV = 'development'
+  it('returns resetLink when NODE_ENV is test', async () => {
+    process.env.NODE_ENV = 'test'
     vi.mocked(findUserByEmail).mockResolvedValue(mockUser)
     mockEmailSuccess()
 
@@ -352,8 +352,32 @@ describe('forgotPassword()', () => {
     expect(result.resetLink).toContain('?token=')
   })
 
-  it('omits resetLink in production', async () => {
+  it('omits resetLink when NODE_ENV is development and EXPOSE_RESET_LINK_IN_RESPONSE is unset', async () => {
+    process.env.NODE_ENV = 'development'
+    delete process.env.EXPOSE_RESET_LINK_IN_RESPONSE
+    vi.mocked(findUserByEmail).mockResolvedValue(mockUser)
+    mockEmailSuccess()
+
+    const result = await forgotPassword({ email: mockUser.email })
+
+    expect(result.resetLink).toBeUndefined()
+  })
+
+  it('returns resetLink when EXPOSE_RESET_LINK_IN_RESPONSE is true outside production', async () => {
+    process.env.NODE_ENV = 'development'
+    process.env.EXPOSE_RESET_LINK_IN_RESPONSE = 'true'
+    vi.mocked(findUserByEmail).mockResolvedValue(mockUser)
+    mockEmailSuccess()
+
+    const result = await forgotPassword({ email: mockUser.email })
+
+    expect(result.resetLink).toBeDefined()
+    expect(result.resetLink).toContain('?token=')
+  })
+
+  it('omits resetLink in production even if EXPOSE_RESET_LINK_IN_RESPONSE is true', async () => {
     process.env.NODE_ENV = 'production'
+    process.env.EXPOSE_RESET_LINK_IN_RESPONSE = 'true'
     vi.mocked(findUserByEmail).mockResolvedValue(mockUser)
     mockEmailSuccess()
 
@@ -364,14 +388,16 @@ describe('forgotPassword()', () => {
 
   // ── Email — retryable failure ───────────────────────────────────────────
 
-  it('clears the token and throws 503 on retryable email failure', async () => {
+  it('clears the token and returns generic response on retryable email failure', async () => {
     vi.mocked(findUserByEmail).mockResolvedValue(mockUser)
     mockEmailRetryable()
 
-    await expect(forgotPassword({ email: mockUser.email })).rejects.toMatchObject({
-      status: 503,
-      code: 'RESET_EMAIL_RETRYABLE_FAILURE',
+    const result = await forgotPassword({ email: mockUser.email })
+
+    expect(result).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
     })
+    expect(result.resetLink).toBeUndefined()
 
     expect(updateUser).toHaveBeenCalledWith(mockUser.id, {
       resetToken: null,
@@ -381,14 +407,16 @@ describe('forgotPassword()', () => {
 
   // ── Email — permanent failure ───────────────────────────────────────────
 
-  it('clears the token and throws 500 on permanent email failure', async () => {
+  it('clears the token and returns generic response on permanent email failure', async () => {
     vi.mocked(findUserByEmail).mockResolvedValue(mockUser)
     mockEmailPermanent()
 
-    await expect(forgotPassword({ email: mockUser.email })).rejects.toMatchObject({
-      status: 500,
-      code: 'RESET_EMAIL_UNAVAILABLE',
+    const result = await forgotPassword({ email: mockUser.email })
+
+    expect(result).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
     })
+    expect(result.resetLink).toBeUndefined()
 
     expect(updateUser).toHaveBeenCalledWith(mockUser.id, {
       resetToken: null,
@@ -462,9 +490,7 @@ describe('forgotPassword()', () => {
     mockEmailRetryable()
     const logs: any[] = []
 
-    await expect(
-      forgotPassword({ email: mockUser.email }, (r) => logs.push(r)),
-    ).rejects.toThrow()
+    await forgotPassword({ email: mockUser.email }, (r) => logs.push(r))
 
     expect(logs.map((l) => l.event)).toContain(
       'forgot_password_email_retryable_failure',
@@ -476,9 +502,7 @@ describe('forgotPassword()', () => {
     mockEmailPermanent()
     const logs: any[] = []
 
-    await expect(
-      forgotPassword({ email: mockUser.email }, (r) => logs.push(r)),
-    ).rejects.toThrow()
+    await forgotPassword({ email: mockUser.email }, (r) => logs.push(r))
 
     expect(logs.map((l) => l.event)).toContain(
       'forgot_password_email_permanent_failure',

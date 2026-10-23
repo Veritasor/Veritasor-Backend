@@ -44,6 +44,13 @@ export const mtlsReloadsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const passwordResetEmailFailuresTotal = new Counter({
+  name: "password_reset_email_failures_total",
+  help: "Total number of failed password reset email delivery attempts",
+  labelNames: ["type"] as const,
+  registers: [metricsRegistry],
+});
+
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
   help: "Total number of requests rejected by the rate limiter (HTTP 429)",

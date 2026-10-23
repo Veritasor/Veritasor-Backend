@@ -99,7 +99,7 @@ describe('forgotPassword', () => {
     expect(mocks.setResetToken).not.toHaveBeenCalled()
   })
 
-  it('issues a hashed token, sends the reset link, and returns it outside production', async () => {
+  it('issues a hashed token, sends the reset link, and returns it when NODE_ENV=test', async () => {
     mocks.findUserByEmail.mockResolvedValue(user)
     vi.stubEnv('RESET_TOKEN_TTL_MINUTES', '30')
     vi.stubEnv('RESET_PASSWORD_URL', 'https://app.example.com/reset')
@@ -136,33 +136,74 @@ describe('forgotPassword', () => {
     expect(JSON.stringify(logger.mock.calls)).not.toContain(tokenHash)
   })
 
-  it('omits the reset link from the production response', async () => {
+  it('omits the reset link when NODE_ENV is unset (development default)', async () => {
     mocks.findUserByEmail.mockResolvedValue(user)
-    vi.stubEnv('NODE_ENV', 'production')
+    delete process.env.NODE_ENV
+    delete process.env.EXPOSE_RESET_LINK_IN_RESPONSE
 
     const response = await completeRequest({ email: user.email })
 
     expect(response).toEqual({
       message: 'If an account with this email exists, a reset link has been sent.',
     })
+    expect(response.resetLink).toBeUndefined()
+    expect(mocks.sendPasswordResetEmail).toHaveBeenCalledOnce()
+  })
+
+  it('omits the reset link when NODE_ENV is development and EXPOSE_RESET_LINK_IN_RESPONSE is unset', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', 'development')
+    delete process.env.EXPOSE_RESET_LINK_IN_RESPONSE
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
+    })
+    expect(response.resetLink).toBeUndefined()
+  })
+
+  it('includes the reset link when EXPOSE_RESET_LINK_IN_RESPONSE=true outside production', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', 'development')
+    vi.stubEnv('EXPOSE_RESET_LINK_IN_RESPONSE', 'true')
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response.resetLink).toBeDefined()
+    expect(response.resetLink).toContain('?token=')
+  })
+
+  it('omits the reset link from the production response even if EXPOSE_RESET_LINK_IN_RESPONSE=true', async () => {
+    mocks.findUserByEmail.mockResolvedValue(user)
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('EXPOSE_RESET_LINK_IN_RESPONSE', 'true')
+
+    const response = await completeRequest({ email: user.email })
+
+    expect(response).toEqual({
+      message: 'If an account with this email exists, a reset link has been sent.',
+    })
+    expect(response.resetLink).toBeUndefined()
     expect(mocks.sendPasswordResetEmail).toHaveBeenCalledOnce()
   })
 
   it.each([
-    ['retryable', true, 503, 'RESET_EMAIL_RETRYABLE_FAILURE', 'forgot_password_email_retryable_failure'],
-    ['permanent', false, 500, 'RESET_EMAIL_UNAVAILABLE', 'forgot_password_email_permanent_failure'],
+    ['retryable', true, 'forgot_password_email_retryable_failure'],
+    ['permanent', false, 'forgot_password_email_permanent_failure'],
   ] as const)(
-    'clears the token and reports a %s email failure',
-    async (_kind, retryable, status, vrtCode, failureEvent) => {
+    'clears the token and returns 200 with generic response on %s email failure',
+    async (_kind, retryable, failureEvent) => {
       mocks.findUserByEmail.mockResolvedValue(user)
       mocks.sendPasswordResetEmail.mockResolvedValue({ error: new Error('delivery failed'), retryable })
       const logger = vi.fn<ForgotPasswordLogger>()
 
-      await expect(completeRequest({ email: user.email }, logger)).rejects.toMatchObject({
-        name: 'AppError',
-        status,
-        vrtCode,
+      const response = await completeRequest({ email: user.email }, logger)
+
+      expect(response).toEqual({
+        message: 'If an account with this email exists, a reset link has been sent.',
       })
+      expect(response.resetLink).toBeUndefined()
       expect(mocks.updateUser).toHaveBeenCalledWith(user.id, {
         resetToken: null,
         resetTokenExpiry: null,
