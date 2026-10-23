@@ -157,4 +157,30 @@ describe('withBackoff', () => {
 
     expect(fn).not.toHaveBeenCalled()
   })
+
+  it('stops retrying immediately when shouldRetry returns false', async () => {
+    const nonRetryable = new Error('deterministic client error')
+    const fn = vi.fn().mockRejectedValue(nonRetryable)
+    const onRetry = vi.fn()
+    const shouldRetry = vi.fn().mockReturnValue(false)
+
+    try {
+      await withBackoff(
+        fn,
+        { ...DEFAULT_BACKOFF_OPTIONS, maxAttempts: 3, shouldRetry },
+        onRetry,
+        instantSleep,
+      )
+      expect.unreachable()
+    } catch (e) {
+      expect(e).toBeInstanceOf(BackoffError)
+      const be = e as BackoffError
+      expect(be.attemptCount).toBe(1)
+      expect(be.cause).toBe(nonRetryable)
+    }
+
+    expect(fn).toHaveBeenCalledTimes(1)
+    expect(shouldRetry).toHaveBeenCalledWith(nonRetryable)
+    expect(onRetry).not.toHaveBeenCalled()
+  })
 })

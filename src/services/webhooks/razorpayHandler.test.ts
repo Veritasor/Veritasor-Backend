@@ -169,32 +169,22 @@ describe('Razorpay Webhook Handler', () => {
       expect(result.message).toContain('failed')
     })
 
-    it('ignores duplicate events using in-memory store', async () => {
+    it('ignores duplicate events via idempotency module', async () => {
+      vi.mocked(idempotency.isEventProcessed).mockReturnValueOnce(false).mockReturnValue(true)
       const event = {
         id: 'evt_dup',
         event: 'payment.captured',
         payload: { payment: { entity: { id: 'pay_3', order_id: 'order_3', status: 'captured', amount: 1000, currency: 'INR' } } }
       }
       
-      await handleRazorpayEvent(event as any, { maxAttempts: 1 })
+      const result1 = await handleRazorpayEvent(event as any, { maxAttempts: 1 })
+      expect(result1.status).toBe('ok')
+
       const result2 = await handleRazorpayEvent(event as any, { maxAttempts: 1 })
-      
-      expect(result2.status).toBe('ok')
+      expect(result2.status).toBe('duplicate')
       expect(result2.message).toContain('already processed')
       // markEventProcessed should only be called once
       expect(idempotency.markEventProcessed).toHaveBeenCalledTimes(1)
-    })
-    
-    it('ignores duplicate events via idempotency module', async () => {
-      vi.mocked(idempotency.isEventProcessed).mockReturnValue(true)
-      const event = {
-        id: 'evt_dup_2',
-        event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_4', order_id: 'order_4', status: 'captured', amount: 1000, currency: 'INR' } } }
-      }
-      
-      const result = await handleRazorpayEvent(event as any, { maxAttempts: 1 })
-      expect(result.status).toBe('duplicate')
     })
 
     it('handles unhandled event types gracefully', async () => {
@@ -207,6 +197,108 @@ describe('Razorpay Webhook Handler', () => {
       const result = await handleRazorpayEvent(event as any, { maxAttempts: 1 })
       expect(result.status).toBe('ignored')
       expect(result.message).toContain('Unhandled event type')
+    })
+
+    it('an event with created_at 10 minutes in the future returns 400 invalid_timestamp, processRazorpayEvent runs at most once, and saveDeadLetter is not called', async () => {
+      vi.mocked(idempotency.checkTimestampTolerance).mockReturnValue({
+        valid: false,
+        reason: 'Event timestamp too far in future',
+      })
+      const event = {
+        id: 'evt_future_10m',
+        event: 'payment.captured',
+        created_at: Math.floor(Date.now() / 1000) + 600,
+        payload: { payment: { entity: { id: 'pay_1', order_id: 'ord_1', status: 'captured', amount: 1000, currency: 'INR' } } },
+      }
+
+      await expect(handleRazorpayEvent(event as any)).rejects.toMatchObject({
+        name: 'RazorpayWebhookError',
+        code: 'invalid_timestamp',
+        httpStatus: 400,
+      })
+
+      expect(deadLetterQueue.saveDeadLetter).not.toHaveBeenCalled()
+      expect(idempotency.markEventProcessed).not.toHaveBeenCalled()
+    })
+
+    it('with default config, an event created 2 hours ago with a valid signature is accepted', async () => {
+      const actualIdempotency = await vi.importActual<typeof idempotency>('./idempotency.js')
+      vi.mocked(idempotency.checkTimestampTolerance).mockImplementation(actualIdempotency.checkTimestampTolerance)
+
+      const twoHoursAgo = Math.floor(Date.now() / 1000) - 2 * 3600
+      const event = {
+        id: 'evt_2h_ago',
+        event: 'payment.captured',
+        created_at: twoHoursAgo,
+        payload: { payment: { entity: { id: 'pay_1', order_id: 'ord_1', status: 'captured', amount: 1000, currency: 'INR' } } },
+      }
+
+      const result = await handleRazorpayEvent(event as any, { maxAttempts: 1 })
+      expect(result.status).toBe('ok')
+      expect(idempotency.markEventProcessed).toHaveBeenCalledWith('evt_2h_ago')
+    })
+
+    it('processing throws on attempt 1 and succeeds on attempt 2, running work again on attempt 2 instead of returning duplicate', async () => {
+      let attempts = 0
+      const event = {
+        id: 'evt_retry_success',
+        event: 'payment.captured',
+        payload: {
+          payment: {
+            get entity() {
+              attempts++
+              if (attempts === 1) {
+                throw new Error('transient database error')
+              }
+              return { id: 'pay_retry', order_id: 'ord_retry', status: 'captured', amount: 1000, currency: 'INR' }
+            },
+          },
+        },
+      }
+
+      const result = await handleRazorpayEvent(event as any, {
+        maxAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+      })
+
+      expect(attempts).toBe(2)
+      expect(result.status).toBe('ok')
+      expect(result.message).toContain('captured successfully')
+      expect(idempotency.markEventProcessed).toHaveBeenCalledTimes(1)
+      expect(idempotency.markEventProcessed).toHaveBeenCalledWith('evt_retry_success')
+      expect(deadLetterQueue.saveDeadLetter).not.toHaveBeenCalled()
+    })
+
+    it('when every attempt fails, saveDeadLetter is called, event is not marked processed, and error is rethrown', async () => {
+      const event = {
+        id: 'evt_always_fails',
+        event: 'payment.captured',
+        payload: {
+          payment: {
+            get entity() {
+              throw new Error('persistent connection failure')
+            },
+          },
+        },
+      }
+
+      await expect(
+        handleRazorpayEvent(event as any, {
+          maxAttempts: 2,
+          baseDelayMs: 1,
+          maxDelayMs: 2,
+        }),
+      ).rejects.toThrow()
+
+      expect(deadLetterQueue.saveDeadLetter).toHaveBeenCalledWith(
+        'razorpay',
+        'evt_always_fails',
+        event,
+        expect.any(Error),
+        2,
+      )
+      expect(idempotency.markEventProcessed).not.toHaveBeenCalled()
     })
   })
 })

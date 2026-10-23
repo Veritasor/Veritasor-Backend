@@ -43,7 +43,7 @@ afterEach(() => {
 describe('idempotency – default constants', () => {
   it('exposes the documented retention and tolerance windows', () => {
     expect(DEFAULT_TTL_MS).toBe(24 * 60 * 60 * 1000)
-    expect(DEFAULT_MAX_AGE_MS).toBe(5 * 60 * 1000)
+    expect(DEFAULT_MAX_AGE_MS).toBe(24 * 60 * 60 * 1000)
     expect(DEFAULT_MAX_FUTURE_SKEW_MS).toBe(5 * 60 * 1000)
   })
 })
@@ -179,6 +179,16 @@ describe('checkTimestampTolerance – age window (inclusive lower bound)', () =>
 
     expect(checkTimestampTolerance(createdAt, 10_000).valid).toBe(true)
     expect(checkTimestampTolerance(createdAt, 9_999).valid).toBe(false)
+  })
+
+  it('honours RAZORPAY_WEBHOOK_MAX_AGE_MS environment variable', () => {
+    process.env.RAZORPAY_WEBHOOK_MAX_AGE_MS = '60000'
+    const createdAt = (NOW - 60_000) / 1000
+    expect(checkTimestampTolerance(createdAt).valid).toBe(true)
+
+    const olderCreatedAt = (NOW - 60_001) / 1000
+    expect(checkTimestampTolerance(olderCreatedAt).valid).toBe(false)
+    delete process.env.RAZORPAY_WEBHOOK_MAX_AGE_MS
   })
 })
 

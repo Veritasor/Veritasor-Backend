@@ -348,6 +348,45 @@ describe('razorpayWebhookRouter — event processing', () => {
     expect(res.body).toEqual({ error: 'Internal Server Error' })
   })
 
+  it('unwraps BackoffError.cause to return 4xx when handleRazorpayEvent throws BackoffError wrapping RazorpayWebhookError', async () => {
+    const { BackoffError } = await import('../utils/backoff.js')
+    mockParse.mockReturnValueOnce(PARSED_EVENT as any)
+    mockHandle.mockRejectedValueOnce(
+      new BackoffError(
+        'Operation failed: non-retryable error',
+        1,
+        new (RazorpayWebhookError as any)('invalid_timestamp', 400, 'Invalid webhook timestamp'),
+      ),
+    )
+
+    const app = buildApp()
+    const res = await postWebhook(app)
+
+    expect(res.status).toBe(400)
+    expect(res.body).toMatchObject({
+      code: 'invalid_timestamp',
+      error: 'Invalid webhook timestamp',
+    })
+  })
+
+  it('returns 500 when handleRazorpayEvent exhausts retries with BackoffError wrapping server error', async () => {
+    const { BackoffError } = await import('../utils/backoff.js')
+    mockParse.mockReturnValueOnce(PARSED_EVENT as any)
+    mockHandle.mockRejectedValueOnce(
+      new BackoffError(
+        'Operation failed after 3 attempts',
+        3,
+        new Error('database unavailable'),
+      ),
+    )
+
+    const app = buildApp()
+    const res = await postWebhook(app)
+
+    expect(res.status).toBe(500)
+    expect(res.body).toEqual({ error: 'Internal Server Error' })
+  })
+
   it('returns JSON content-type on success', async () => {
     mockParse.mockReturnValueOnce(PARSED_EVENT as any)
     mockHandle.mockResolvedValueOnce({ status: 'ok', message: 'done' })

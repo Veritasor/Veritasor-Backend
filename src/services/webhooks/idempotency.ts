@@ -1,6 +1,17 @@
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
-const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000
+const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const DEFAULT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
+
+function resolveMaxAgeMs(): number {
+  const envVal = process.env.RAZORPAY_WEBHOOK_MAX_AGE_MS
+  if (envVal) {
+    const parsed = Number.parseInt(envVal, 10)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed
+    }
+  }
+  return DEFAULT_MAX_AGE_MS
+}
 
 interface IdempotencyEntry {
   processedAt: number
@@ -15,6 +26,10 @@ setInterval(() => {
     if (entry.expiresAt < now) store.delete(key)
   }
 }, 60 * 60 * 1000).unref()
+
+export function resetIdempotencyStore(): void {
+  store.clear()
+}
 
 export function isEventProcessed(eventId: string): boolean {
   if (!eventId) return false
@@ -31,7 +46,7 @@ export function markEventProcessed(eventId: string, ttlMs = DEFAULT_TTL_MS): voi
 
 export function checkTimestampTolerance(
   createdAt: number | undefined,
-  maxAgeMs = DEFAULT_MAX_AGE_MS,
+  maxAgeMs = resolveMaxAgeMs(),
   maxFutureSkewMs = DEFAULT_MAX_FUTURE_SKEW_MS
 ): { valid: boolean; reason?: string } {
   if (createdAt === undefined) return { valid: true }
@@ -43,4 +58,4 @@ export function checkTimestampTolerance(
   return { valid: true }
 }
 
-export { DEFAULT_TTL_MS, DEFAULT_MAX_AGE_MS, DEFAULT_MAX_FUTURE_SKEW_MS }
+export { DEFAULT_TTL_MS, DEFAULT_MAX_AGE_MS, DEFAULT_MAX_FUTURE_SKEW_MS, resolveMaxAgeMs }

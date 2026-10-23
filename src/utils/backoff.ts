@@ -2,6 +2,7 @@ export type BackoffOptions = {
   baseDelayMs: number
   maxDelayMs: number
   maxAttempts: number
+  shouldRetry?: (error: unknown) => boolean
 }
 
 export const DEFAULT_BACKOFF_OPTIONS: BackoffOptions = {
@@ -40,9 +41,11 @@ export async function withBackoff<T>(
   onRetry?: (attempt: number, delayMs: number, error: unknown) => void,
   sleep?: SleepFn,
   random?: () => number,
+  shouldRetry?: (error: unknown) => boolean,
 ): Promise<T> {
   const sleepFn: SleepFn = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
   const randomFn = random ?? Math.random
+  const shouldRetryPredicate = shouldRetry ?? options.shouldRetry
   let lastError: unknown
 
   if (options.maxAttempts <= 0) {
@@ -54,6 +57,18 @@ export async function withBackoff<T>(
       return await fn(attempt)
     } catch (error) {
       lastError = error
+
+      if (shouldRetryPredicate && !shouldRetryPredicate(error)) {
+        if (options.maxAttempts <= 1) {
+          throw error
+        }
+        throw new BackoffError(
+          `Operation failed on attempt ${attempt}: non-retryable error`,
+          attempt,
+          error,
+        )
+      }
+
       if (attempt < options.maxAttempts) {
         const delayMs = calculateBackoffDelay(attempt, options, randomFn)
         onRetry?.(attempt, delayMs, error)
