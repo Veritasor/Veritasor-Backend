@@ -3,6 +3,9 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3
 import { KMSClient, EncryptCommand, DecryptCommand } from '@aws-sdk/client-kms';
 import { randomUUID, createHash } from 'crypto';
 import { Logger } from '../../utils/logger';
+import { webhookDeadLetterWriteFailuresTotal } from '../../metrics.js';
+
+const deadLetterLogger = new Logger('DLQ');
 
 export interface DeadLetter {
   id: number;
@@ -37,11 +40,13 @@ export interface DeadLetterShard {
 }
 
 interface DLQEntry {
-  id: string;
-  type: string;
-  payload: any;
-  error: string;
-  attempts: number;
+  id: number;
+  provider: string;
+  event_id: string;
+  payload_hash: string;
+  error_code: string;
+  attempt_count: number;
+  integration: string;
   created_at: Date;
   updated_at: Date;
   archived: boolean;
@@ -57,7 +62,6 @@ interface ArchiveOptions {
 }
 
 interface RestoreOptions {
-  entryId: string;
   restoreToQueue?: boolean;
 }
 
@@ -104,34 +108,26 @@ export class DeadLetterQueue {
     const { page = 1, pageSize = 50, type, archived, startDate, endDate } = options;
     const offset = (page - 1) * pageSize;
 
-    let query = db('dead_letter_queue')
-      .select('*');
-
-    if (type) {
-      query = query.where('type', type);
-    }
-
-    if (archived !== undefined) {
-      query = query.where('archived', archived);
-    }
-
-    if (startDate) {
-      query = query.where('created_at', '>=', startDate);
-    }
-
-    if (endDate) {
-      query = query.where('created_at', '<=', endDate);
-    }
-
-    const countResult = await query.clone().count('* as total').first();
-    const total = parseInt(countResult?.total || '0', 10);
-
-    const entries = await query
-      .orderBy('created_at', 'desc')
-      .limit(pageSize)
-      .offset(offset);
-
-    return { entries, total };
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const addCondition = (sql: string, value: unknown) => {
+      params.push(value);
+      conditions.push(sql.replace('?', `$${params.length}`));
+    };
+    if (type) addCondition('provider = ?', type);
+    if (archived !== undefined) addCondition('archived = ?', archived);
+    if (startDate) addCondition('created_at >= ?', startDate);
+    if (endDate) addCondition('created_at <= ?', endDate);
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const count = await db.query<{ total: string }>(
+      `SELECT COUNT(*) AS total FROM webhook_dead_letters ${where}`,
+      params,
+    );
+    const entries = await db.query<DLQEntry>(
+      `SELECT * FROM webhook_dead_letters ${where} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, pageSize, offset],
+    );
+    return { entries: entries.rows, total: Number(count.rows[0]?.total ?? 0) };
   }
 
   /**
@@ -157,10 +153,11 @@ export class DeadLetterQueue {
     let total = 0;
 
     // Get entries to archive
-    const entries = await db('dead_letter_queue')
-      .where('created_at', '<', cutoffDate)
-      .where('archived', false)
-      .limit(batchSize);
+    const entriesResult = await db.query<DLQEntry>(
+      'SELECT * FROM webhook_dead_letters WHERE created_at < $1 AND archived = FALSE LIMIT $2',
+      [cutoffDate, batchSize],
+    );
+    const entries = entriesResult.rows;
 
     total = entries.length;
 
@@ -171,14 +168,10 @@ export class DeadLetterQueue {
         const s3Url = await this.uploadToS3(archiveBucket, archiveKey, encryptedData);
 
         // Update database with archive location
-        await db('dead_letter_queue')
-          .where('id', entry.id)
-          .update({
-            archived: true,
-            archive_location: s3Url,
-            archive_encrypted: true,
-            updated_at: new Date(),
-          });
+        await db.query(
+          'UPDATE webhook_dead_letters SET archived = TRUE, archive_location = $1, archive_encrypted = TRUE, updated_at = NOW() WHERE id = $2',
+          [s3Url, entry.id],
+        );
 
         archived++;
         this.logger.debug(`Archived DLQ entry ${entry.id} to ${s3Url}`);
@@ -196,9 +189,8 @@ export class DeadLetterQueue {
    * Archive a single DLQ entry
    */
   async archiveEntry(entryId: string): Promise<string> {
-    const entry = await db('dead_letter_queue')
-      .where('id', entryId)
-      .first();
+    const result = await db.query<DLQEntry>('SELECT * FROM webhook_dead_letters WHERE id = $1::integer LIMIT 1', [entryId]);
+    const entry = result.rows[0];
 
     if (!entry) {
       throw new Error(`DLQ entry ${entryId} not found`);
@@ -212,14 +204,10 @@ export class DeadLetterQueue {
     const encryptedData = await this.encryptEntry(entry);
     const s3Url = await this.uploadToS3(this.config.bucket, archiveKey, encryptedData);
 
-    await db('dead_letter_queue')
-      .where('id', entryId)
-      .update({
-        archived: true,
-        archive_location: s3Url,
-        archive_encrypted: true,
-        updated_at: new Date(),
-      });
+    await db.query(
+      'UPDATE webhook_dead_letters SET archived = TRUE, archive_location = $1, archive_encrypted = TRUE, updated_at = NOW() WHERE id = $2::integer',
+      [s3Url, entryId],
+    );
 
     this.logger.info(`Archived DLQ entry ${entryId} to ${s3Url}`);
     return s3Url;
@@ -229,9 +217,8 @@ export class DeadLetterQueue {
    * Restore a DLQ entry from archive
    */
   async restoreEntry(entryId: string, options: RestoreOptions = {}): Promise<DLQEntry> {
-    const entry = await db('dead_letter_queue')
-      .where('id', entryId)
-      .first();
+    const result = await db.query<DLQEntry>('SELECT * FROM webhook_dead_letters WHERE id = $1::integer LIMIT 1', [entryId]);
+    const entry = result.rows[0];
 
     if (!entry) {
       throw new Error(`DLQ entry ${entryId} not found`);
@@ -258,17 +245,10 @@ export class DeadLetterQueue {
     };
 
     // Update database
-    await db('dead_letter_queue')
-      .where('id', entryId)
-      .update({
-        archived: false,
-        archive_location: null,
-        archive_encrypted: false,
-        payload: decrypted.payload,
-        error: decrypted.error,
-        attempts: decrypted.attempts || 0,
-        updated_at: new Date(),
-      });
+    await db.query(
+      'UPDATE webhook_dead_letters SET archived = FALSE, archive_location = NULL, archive_encrypted = FALSE, updated_at = NOW() WHERE id = $1::integer',
+      [entryId],
+    );
 
     // Optionally requeue
     if (options.restoreToQueue) {
@@ -289,30 +269,17 @@ export class DeadLetterQueue {
     oldestEntry: Date | null;
     newestEntry: Date | null;
   }> {
-    const [totalArchivedResult, totalActiveResult] = await Promise.all([
-      db('dead_letter_queue').where('archived', true).count('* as total').first(),
-      db('dead_letter_queue').where('archived', false).count('* as total').first(),
-    ]);
-
-    const [oldestResult, newestResult] = await Promise.all([
-      db('dead_letter_queue')
-        .where('archived', true)
-        .orderBy('created_at', 'asc')
-        .select('created_at')
-        .first(),
-      db('dead_letter_queue')
-        .where('archived', true)
-        .orderBy('created_at', 'desc')
-        .select('created_at')
-        .first(),
+    const [counts, dates] = await Promise.all([
+      db.query<{ archived: string; active: string }>("SELECT COUNT(*) FILTER (WHERE archived) AS archived, COUNT(*) FILTER (WHERE NOT archived) AS active FROM webhook_dead_letters"),
+      db.query<{ oldest: Date | null; newest: Date | null }>("SELECT MIN(created_at) FILTER (WHERE archived) AS oldest, MAX(created_at) FILTER (WHERE archived) AS newest FROM webhook_dead_letters"),
     ]);
 
     return {
-      totalArchived: parseInt(totalArchivedResult?.total || '0', 10),
-      totalActive: parseInt(totalActiveResult?.total || '0', 10),
+      totalArchived: Number(counts.rows[0]?.archived || 0),
+      totalActive: Number(counts.rows[0]?.active || 0),
       archiveSizeBytes: 0, // Would need to calculate from S3
-      oldestEntry: oldestResult?.created_at || null,
-      newestEntry: newestResult?.created_at || null,
+      oldestEntry: dates.rows[0]?.oldest || null,
+      newestEntry: dates.rows[0]?.newest || null,
     };
   }
 
@@ -329,10 +296,11 @@ export class DeadLetterQueue {
   private async encryptEntry(entry: any): Promise<Buffer> {
     const payload = JSON.stringify({
       id: entry.id,
-      type: entry.type,
-      payload: entry.payload,
-      error: entry.error,
-      attempts: entry.attempts,
+      provider: entry.provider,
+      event_id: entry.event_id,
+      payload_hash: entry.payload_hash,
+      error_code: entry.error_code,
+      attempt_count: entry.attempt_count,
       created_at: entry.created_at,
       updated_at: entry.updated_at,
     });
@@ -587,24 +555,21 @@ export async function saveDeadLetter(
         ? error.name
         : 'unknown';
 
-  await db('webhook_dead_letters')
-    .insert({
-      provider,
-      event_id: eventId,
-      payload_hash: payloadHash,
-      error_code: errorCode,
-      attempt_count: attempts,
-      integration: provider,
-    })
-    .onConflict(['provider', 'event_id'])
-    .merge({
-      provider,
-      payload_hash: payloadHash,
-      error_code: errorCode,
-      attempt_count: attempts,
-      integration: provider,
-      updated_at: new Date(),
-    });
+  try {
+    await db.query(
+      `INSERT INTO webhook_dead_letters (provider, event_id, payload_hash, error_code, attempt_count, integration)
+       VALUES ($1, $2, $3, $4, $5, $1)
+       ON CONFLICT (provider, event_id) DO UPDATE SET
+         attempt_count = webhook_dead_letters.attempt_count + EXCLUDED.attempt_count,
+         error_code = EXCLUDED.error_code,
+         updated_at = NOW()`,
+      [provider, eventId, payloadHash, errorCode, attempts],
+    );
+  } catch (error) {
+    webhookDeadLetterWriteFailuresTotal.inc();
+    deadLetterLogger.error('Failed to persist dead-letter event', error);
+    throw error;
+  }
 }
 
 export interface DeadLetterRecord {

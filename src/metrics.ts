@@ -44,10 +44,9 @@ export const mtlsReloadsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
-export const passwordResetEmailFailuresTotal = new Counter({
-  name: "password_reset_email_failures_total",
-  help: "Total number of failed password reset email delivery attempts",
-  labelNames: ["type"] as const,
+export const webhookDeadLetterWriteFailuresTotal = new Counter({
+  name: "webhook_dead_letter_write_failures_total",
+  help: "Total number of failed webhook dead-letter persistence attempts",
   registers: [metricsRegistry],
 });
 
