@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildLogEntry, runWithLoggerContext } from "../../../src/utils/logger.js";
+import {
+  buildLogEntry,
+  runWithLoggerContext,
+  SENSITIVE_LOG_FIELDS,
+} from "../../../src/utils/logger.js";
 
 describe("logger structured fields", () => {
   it("merges request-scoped correlation id into log entries", () => {
@@ -15,24 +19,74 @@ describe("logger structured fields", () => {
     });
   });
 
-  it("redacts sensitive fields from structured context", () => {
+  it("redacts every listed sensitive field at the top level", () => {
+    const context = Object.fromEntries(
+      [...SENSITIVE_LOG_FIELDS].map((key) => [key, `secret-${key}`]),
+    );
+    const entry = buildLogEntry("warn", ["sensitive_event", context]);
+
+    for (const key of SENSITIVE_LOG_FIELDS) {
+      expect(entry[key], `top-level ${key}`).toBe("[REDACTED]");
+    }
+  });
+
+  it("matches sensitive field names case-insensitively", () => {
     const entry = buildLogEntry("warn", [
-      "sensitive_event",
+      "case_insensitive_event",
       {
-        email: "user@example.com",
-        password: "super-secret",
-        nested: {
-          accessToken: "access-token",
-          safe: "kept",
-        },
+        PASSWORD: "secret",
+        AccessToken: "access-secret",
+        X_API_KEY: "api-secret",
+        safeField: "kept",
       },
     ]);
 
-    expect(entry.email).toBe("[REDACTED]");
-    expect(entry.password).toBe("[REDACTED]");
-    expect(entry.nested).toMatchObject({
-      accessToken: "[REDACTED]",
-      safe: "kept",
+    expect(entry.PASSWORD).toBe("[REDACTED]");
+    expect(entry.AccessToken).toBe("[REDACTED]");
+    expect(entry.X_API_KEY).toBe("[REDACTED]");
+    expect(entry.safeField).toBe("kept");
+  });
+
+  it("redacts nested objects and arrays of objects without touching safe fields", () => {
+    const entry = buildLogEntry("warn", [
+      "nested_sensitive_event",
+      {
+        request: {
+          password: "nested-secret",
+          safe: "nested-kept",
+        },
+        users: [
+          { email: "one@example.com", name: "One" },
+          { access_token: "array-secret", name: "Two" },
+        ],
+        safeTopLevel: "still-kept",
+      },
+    ]);
+
+    expect(entry.request).toMatchObject({
+      password: "[REDACTED]",
+      safe: "nested-kept",
+    });
+    expect(entry.users).toEqual([
+      { email: "[REDACTED]", name: "One" },
+      { access_token: "[REDACTED]", name: "Two" },
+    ]);
+    expect(entry.safeTopLevel).toBe("still-kept");
+  });
+
+  it("redacts sensitive properties on Error objects", () => {
+    const error = Object.assign(new Error("operation failed"), {
+      password: "error-secret",
+      safeDetail: "error-kept",
+    });
+
+    const entry = buildLogEntry("error", ["error_event", error]);
+
+    expect(entry.err).toMatchObject({
+      name: "Error",
+      message: "operation failed",
+      password: "[REDACTED]",
+      safeDetail: "error-kept",
     });
   });
 
