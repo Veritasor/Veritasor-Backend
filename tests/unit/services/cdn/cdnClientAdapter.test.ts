@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import https from "node:https";
 import { EventEmitter } from "node:events";
 import { CdnClient, cdnClient } from "../../../../src/services/cdn/cdnClientAdapter.js";
-import { FastlyClient, resetFastlyClient } from "../../../../src/services/cdn/fastlyClient.js";
+import {
+  FastlyClient,
+  FastlyPurgeError,
+  fastlyClient,
+  resetFastlyClient,
+} from "../../../../src/services/cdn/fastlyClient.js";
 import { logger } from "../../../../src/utils/logger.js";
 
 // Mock logger to verify error logging
@@ -154,6 +159,14 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
   // 2. cdnClient Singleton Export & Adapter Delegation
   // =========================================================================
   describe("cdnClient Singleton Export & Delegation", () => {
+    it("keeps public exports (FastlyClient, resetFastlyClient, fastlyClient) unchanged", () => {
+      expect(typeof FastlyClient).toBe("function");
+      expect(typeof resetFastlyClient).toBe("function");
+      expect(fastlyClient).toBeDefined();
+      expect(fastlyClient).toBeInstanceOf(FastlyClient);
+      expect(cdnClient).toBe(fastlyClient);
+    });
+
     it("exports cdnClient as an instance backed by FastlyClient", () => {
       expect(cdnClient).toBeInstanceOf(FastlyClient);
     });
@@ -400,6 +413,24 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
 
       expect(recordedCalls).toHaveLength(1);
     });
+
+    it("throws FastlyPurgeError with transient: false for 4xx responses", async () => {
+      responseQueue.push({ statusCode: 400, body: "Bad request" });
+
+      let caught: unknown;
+      try {
+        await cdnClient.purge(["https://example.com/4xx"]);
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(FastlyPurgeError);
+      const purgeErr = caught as FastlyPurgeError;
+      expect(purgeErr.status).toBe(400);
+      expect(purgeErr.transient).toBe(false);
+      expect(purgeErr.name).toBe("FastlyPurgeError");
+      expect(recordedCalls).toHaveLength(1);
+    });
   });
 
   // =========================================================================
@@ -502,6 +533,9 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
       expect(logger.error).toHaveBeenLastCalledWith(
         expect.stringContaining("Fastly purge attempt 5 failed: Fastly purge failed with status 503"),
       );
+      expect(rejectedError).toBeInstanceOf(FastlyPurgeError);
+      expect((rejectedError as FastlyPurgeError).status).toBe(503);
+      expect((rejectedError as FastlyPurgeError).transient).toBe(true);
     });
 
     it("caps backoff delay at 16000ms as per backoff calculation", () => {
