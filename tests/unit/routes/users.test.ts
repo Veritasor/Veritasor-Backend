@@ -11,9 +11,11 @@
  *   GET   /api/users/me/export/:exportId/status            – poll export status
  *
  * `requireAuth` is mocked to inject a deterministic `req.user`; every other
- * collaborator is mocked so the tests are hermetic (no DB/Redis/network). The
- * validation schema, `validateBody` middleware and `errorHandler` are the real
- * implementations, so the 400/`VRT-0002` contract is exercised end to end.
+ * collaborator (including `userRepository`) is mocked so the tests are
+ * hermetic (no DB/Redis/network). The validation schema, `validateBody`
+ * middleware and `errorHandler` are the real implementations, so the
+ * 400/`VRT-0002` contract is exercised end to end, while the real
+ * `updateProfile` service runs on top of the mocked repository.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import request from 'supertest'
@@ -25,11 +27,12 @@ import { errorHandler } from '../../../src/middleware/errorHandler.js'
 const USER_ID = 'user-1'
 
 const mocks = vi.hoisted(() => ({
-  updateProfile: vi.fn(),
+  updateUserProfile: vi.fn(),
   initiateDataExport: vi.fn(),
   getExportStatus: vi.fn(),
   getExportArchive: vi.fn(),
   consumeDownloadToken: vi.fn(),
+  peekDownloadToken: vi.fn(),
 }))
 
 vi.mock('../../../src/middleware/requireAuth.js', () => ({
@@ -39,8 +42,8 @@ vi.mock('../../../src/middleware/requireAuth.js', () => ({
   },
 }))
 
-vi.mock('../../../src/services/user/updateProfile.js', () => ({
-  default: mocks.updateProfile,
+vi.mock('../../../src/repositories/userRepository.js', () => ({
+  updateUserProfile: mocks.updateUserProfile,
 }))
 
 vi.mock('../../../src/services/user/dataExportService.js', () => ({
@@ -51,6 +54,7 @@ vi.mock('../../../src/services/user/dataExportService.js', () => ({
 
 vi.mock('../../../src/repositories/dataExportRepository.js', () => ({
   consumeDownloadToken: mocks.consumeDownloadToken,
+  peekDownloadToken: mocks.peekDownloadToken,
 }))
 
 vi.mock('../../../src/utils/logger.js', () => ({
@@ -82,8 +86,15 @@ afterEach(() => {
 // ── PATCH /api/users/me ─────────────────────────────────────────────────────
 
 describe('PATCH /api/users/me', () => {
-  it('forwards the authenticated user id and the patch to updateProfile', async () => {
-    mocks.updateProfile.mockResolvedValue({ id: USER_ID, name: 'New Name' })
+  it('passes validated fields to updateUserProfile and returns the sanitized user', async () => {
+    mocks.updateUserProfile.mockResolvedValue({
+      id: USER_ID,
+      email: 'user@example.com',
+      name: 'New Name',
+      role: 'user',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-02T00:00:00.000Z'),
+    })
 
     const res = await request(app)
       .patch('/api/users/me')
@@ -91,12 +102,20 @@ describe('PATCH /api/users/me', () => {
       .send({ name: 'New Name' })
 
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ id: USER_ID, name: 'New Name' })
-    expect(mocks.updateProfile).toHaveBeenCalledWith(USER_ID, { name: 'New Name' })
+    expect(mocks.updateUserProfile).toHaveBeenCalledWith(USER_ID, { name: 'New Name' })
+    expect(res.body.id).toBe(USER_ID)
+    expect(res.body.name).toBe('New Name')
   })
 
-  it('accepts a profile object', async () => {
-    mocks.updateProfile.mockResolvedValue({ id: USER_ID, profile: { theme: 'dark' } })
+  it('passes profile updates to updateUserProfile and returns the profile', async () => {
+    mocks.updateUserProfile.mockResolvedValue({
+      id: USER_ID,
+      email: 'user@example.com',
+      role: 'user',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      profile: { theme: 'dark' },
+    })
 
     const res = await request(app)
       .patch('/api/users/me')
@@ -104,15 +123,56 @@ describe('PATCH /api/users/me', () => {
       .send({ profile: { theme: 'dark' } })
 
     expect(res.status).toBe(200)
-    expect(mocks.updateProfile).toHaveBeenCalledWith(USER_ID, { profile: { theme: 'dark' } })
+    expect(mocks.updateUserProfile).toHaveBeenCalledWith(USER_ID, { profile: { theme: 'dark' } })
+    expect(res.body.profile).toEqual({ theme: 'dark' })
   })
 
-  it('rejects an empty body with 400 and does not call the service', async () => {
+  it('returns 404 when updateUserProfile returns null for an unknown user', async () => {
+    mocks.updateUserProfile.mockResolvedValue(null)
+
+    const res = await request(app)
+      .patch('/api/users/me')
+      .set('Authorization', AUTH)
+      .send({ name: 'Alice' })
+
+    expect(res.status).toBe(404)
+    expect(res.body.vrtCode).toBe('VRT-0004')
+    expect(mocks.updateUserProfile).toHaveBeenCalledWith(USER_ID, { name: 'Alice' })
+  })
+
+  it('never returns passwordHash or tokens in the response payload', async () => {
+    mocks.updateUserProfile.mockResolvedValue({
+      id: USER_ID,
+      email: 'user@example.com',
+      name: 'Alice',
+      role: 'user',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+      passwordHash: 'super-secret-hash',
+      resetToken: 'reset-token',
+      resetTokenExpiry: new Date('2027-01-01T00:00:00.000Z'),
+    })
+
+    const res = await request(app)
+      .patch('/api/users/me')
+      .set('Authorization', AUTH)
+      .send({ name: 'Alice' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.passwordHash).toBeUndefined()
+    expect(res.body.resetToken).toBeUndefined()
+    expect(res.body.resetTokenExpiry).toBeUndefined()
+    const body = JSON.stringify(res.body)
+    expect(body).not.toContain('super-secret-hash')
+    expect(body).not.toContain('reset-token')
+  })
+
+  it('rejects an empty body with 400 and does not call the repository', async () => {
     const res = await request(app).patch('/api/users/me').set('Authorization', AUTH).send({})
 
     expect(res.status).toBe(400)
     expect(res.body.message).toBe('No updatable fields provided')
-    expect(mocks.updateProfile).not.toHaveBeenCalled()
+    expect(mocks.updateUserProfile).not.toHaveBeenCalled()
   })
 
   it('rejects unknown fields through the strict schema (VRT-0002)', async () => {
@@ -124,7 +184,7 @@ describe('PATCH /api/users/me', () => {
     expect(res.status).toBe(400)
     expect(res.body.vrtCode).toBe('VRT-0002')
     expect(Array.isArray(res.body.details)).toBe(true)
-    expect(mocks.updateProfile).not.toHaveBeenCalled()
+    expect(mocks.updateUserProfile).not.toHaveBeenCalled()
   })
 
   it('rejects a name longer than 100 characters', async () => {
@@ -135,7 +195,7 @@ describe('PATCH /api/users/me', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.vrtCode).toBe('VRT-0002')
-    expect(mocks.updateProfile).not.toHaveBeenCalled()
+    expect(mocks.updateUserProfile).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -147,7 +207,7 @@ describe('PATCH /api/users/me', () => {
 
     expect(res.status).toBe(400)
     expect(res.body.vrtCode).toBe('VRT-0002')
-    expect(mocks.updateProfile).not.toHaveBeenCalled()
+    expect(mocks.updateUserProfile).not.toHaveBeenCalled()
   })
 
   it('rejects an array body (not an object)', async () => {
@@ -157,31 +217,7 @@ describe('PATCH /api/users/me', () => {
       .send([{ name: 'Alice' }])
 
     expect(res.status).toBe(400)
-    expect(mocks.updateProfile).not.toHaveBeenCalled()
-  })
-
-  it('maps a service rejection to 400 with the service message', async () => {
-    mocks.updateProfile.mockRejectedValue(new Error('name must be a string'))
-
-    const res = await request(app)
-      .patch('/api/users/me')
-      .set('Authorization', AUTH)
-      .send({ name: 'Alice' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.message).toBe('name must be a string')
-  })
-
-  it('falls back to a generic message when the service rejects without one', async () => {
-    mocks.updateProfile.mockRejectedValue(undefined)
-
-    const res = await request(app)
-      .patch('/api/users/me')
-      .set('Authorization', AUTH)
-      .send({ name: 'Alice' })
-
-    expect(res.status).toBe(400)
-    expect(res.body.message).toBe('Invalid input')
+    expect(mocks.updateUserProfile).not.toHaveBeenCalled()
   })
 })
 
@@ -227,6 +263,7 @@ describe('GET /api/users/me/export/:token', () => {
   })
 
   it('returns 410 when the token is unknown, consumed or expired', async () => {
+    mocks.peekDownloadToken.mockResolvedValue(null)
     mocks.consumeDownloadToken.mockResolvedValue(null)
 
     const res = await request(app)
@@ -238,6 +275,7 @@ describe('GET /api/users/me/export/:token', () => {
   })
 
   it('returns 404 when the consumed token resolves to a missing export', async () => {
+    mocks.peekDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.consumeDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.getExportStatus.mockResolvedValue(null)
 
@@ -250,6 +288,7 @@ describe('GET /api/users/me/export/:token', () => {
   })
 
   it('returns 202 while the export is still processing', async () => {
+    mocks.peekDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.consumeDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.getExportStatus.mockResolvedValue({ exportId: VALID_EXPORT_ID, status: 'processing' })
 
@@ -263,6 +302,7 @@ describe('GET /api/users/me/export/:token', () => {
   })
 
   it('returns 404 when a completed export has no archive', async () => {
+    mocks.peekDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.consumeDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.getExportStatus.mockResolvedValue({ exportId: VALID_EXPORT_ID, status: 'completed' })
     mocks.getExportArchive.mockResolvedValue(null)
@@ -277,6 +317,7 @@ describe('GET /api/users/me/export/:token', () => {
 
   it('streams a completed archive as an attachment', async () => {
     const archive = Buffer.from('encrypted-archive')
+    mocks.peekDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.consumeDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
     mocks.getExportStatus.mockResolvedValue({ exportId: VALID_EXPORT_ID, status: 'completed' })
     mocks.getExportArchive.mockResolvedValue(archive)
@@ -294,6 +335,8 @@ describe('GET /api/users/me/export/:token', () => {
   })
 
   it('returns 500 when the download pipeline throws', async () => {
+    mocks.peekDownloadToken.mockResolvedValue(VALID_EXPORT_ID)
+    mocks.getExportStatus.mockResolvedValue({ exportId: VALID_EXPORT_ID, status: 'completed' })
     mocks.consumeDownloadToken.mockRejectedValue(new Error('redis down'))
 
     const res = await request(app)
