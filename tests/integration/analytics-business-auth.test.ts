@@ -23,11 +23,26 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
-import { app } from '../../src/app.js';
+import express from 'express';
+import { analyticsRouter } from '../../src/routes/analytics.js';
 import * as jwt from '../../src/utils/jwt.js';
 import * as userRepository from '../../src/repositories/userRepository.js';
 import * as businessRepo from '../../src/repositories/business.js';
 import * as analyticsService from '../../src/services/analytics/periods.js';
+import * as attestationRepository from '../../src/repositories/attestationRepository.js';
+vi.mock('../../src/repositories/attestationRepository.js', () => ({ listPeriods: vi.fn(), listByBusiness: vi.fn() }));
+vi.mock('../../src/db/client.js', () => ({ db: {} }));
+vi.mock('../../src/utils/jwt.js', () => ({ verifyToken: vi.fn() }));
+vi.mock('../../src/utils/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('../../src/middleware/rateLimiter.js', () => ({
+  rateLimiter: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+}));
+
+// Exercise the real analytics router and authentication middleware without
+// unrelated app startup, Redis, or external-service initialization.
+const app = express();
+app.use(express.json());
+app.use('/api/analytics', analyticsRouter);
 
 // ─── Test Fixtures ────────────────────────────────────────────────────────────
 
@@ -88,7 +103,14 @@ function setupMocksForOwner() {
   });
   vi.spyOn(userRepository, 'findUserById').mockResolvedValue(OWNER_USER as any);
   vi.spyOn(businessRepo.businessRepository, 'getById').mockResolvedValue(OWNER_BUSINESS as any);
-  vi.spyOn(analyticsService, 'listAttestedPeriodsForBusiness').mockReturnValue([]);
+  vi.mocked(attestationRepository.listPeriods).mockResolvedValue(['2025-01', '2024-12']);
+  vi.mocked(attestationRepository.listByBusiness).mockResolvedValue(
+    ['2025-01', '2024-12'].map(period => ({
+      id: `att-${period}`, businessId: OWNER_BUSINESS.id, period,
+      merkleRoot: 'root', txHash: 'tx', status: 'confirmed' as const, version: 1,
+      createdAt: new Date('2025-02-01T00:00:00Z'), updatedAt: new Date('2025-02-01T00:00:00Z'),
+    })),
+  );
 }
 
 function setupMocksForOtherUser() {

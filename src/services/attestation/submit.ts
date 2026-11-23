@@ -4,7 +4,8 @@ import {
   RevenueEntry,
 } from "../revenue/razorpayFetch.js";
 import { buildTree, getRoot } from "../merkle/index.js";
-import { attestationRepository } from "../../repositories/attestation.js";
+import * as attestationRepository from "../../repositories/attestationRepository.js";
+import { db } from "../../db/client.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
 import {
   BatchingQueue,
@@ -378,9 +379,12 @@ async function doSubmitAttestation(
     }
 
     // 6. Save Attestation Record
-    const attestation = attestationRepository.create({
+    const attestation = await attestationRepository.create(db, {
       businessId,
       period,
+      merkleRoot: root,
+      txHash,
+      status: 'submitted',
     });
 
     return {

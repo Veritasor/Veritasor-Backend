@@ -15,7 +15,8 @@
  *    user-controllable.
  */
 
-import { attestationRepository } from '../../repositories/attestation.js'
+import { listByBusiness } from '../../repositories/attestationRepository.js'
+import { db } from '../../db/client.js'
 import { revenueReportQuerySchema } from './revenueReportSchema.js'
 
 // ---------------------------------------------------------------------------
@@ -142,12 +143,12 @@ const validateQuery = (period?: string, from?: string, to?: string): void => {
  * @throws {TimeWindowError} When parameters are missing, malformed, logically
  *   invalid (from > to), or exceed the 24-month range cap.
  */
-export const getRevenueReport = (
+export const getRevenueReport = async (
   businessId: string,
   period?: string,
   from?: string,
   to?: string,
-): RevenueReport | null => {
+): Promise<RevenueReport | null> => {
   // --- Guard: schema-level validation of the public query contract ---
   validateQuery(period, from, to)
 
@@ -158,14 +159,12 @@ export const getRevenueReport = (
     )
   }
 
-  let attestations = attestationRepository.listByBusiness(businessId)
   let resolvedPeriod: string
 
   if (period) {
     // Validate format even though Zod already does it — service is self-defending.
     parsePeriod(period, 'period')
 
-    attestations = attestations.filter((a) => a.period === period)
     resolvedPeriod = period
   } else {
     // from and to are guaranteed non-undefined here (guarded above).
@@ -190,9 +189,13 @@ export const getRevenueReport = (
       )
     }
 
-    attestations = attestations.filter((a) => a.period >= from! && a.period <= to!)
     resolvedPeriod = `${from} to ${to}`
   }
+
+  const records = await listByBusiness(db, businessId)
+  const attestations = records.filter((a) => period
+    ? a.period === period
+    : a.period >= from! && a.period <= to!)
 
   if (attestations.length === 0) return null
 
@@ -206,7 +209,7 @@ export const getRevenueReport = (
     currency: 'USD',
     breakdown: attestations.map((a) => ({
       attestationId: a.id,
-      attestedAt: a.attestedAt,
+      attestedAt: a.createdAt.toISOString(),
     })),
   }
 }

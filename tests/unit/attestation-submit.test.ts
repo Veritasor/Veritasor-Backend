@@ -5,13 +5,16 @@
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { submitAttestation, SorobanErrorCode } from '../../src/services/attestation/submit.js';
 import { fetchRazorpayRevenue } from '../../src/services/revenue/razorpayFetch.js';
-import { attestationRepository } from '../../src/repositories/attestation.js';
+import * as attestationRepository from '../../src/repositories/attestationRepository.js';
 import * as CryptoUtils from '../../src/services/merkle.js';
 import { AppError, ExternalServiceError } from '../../src/types/errors.js';
 
+import { db } from '../../src/db/client.js';
+vi.mock('../../src/db/client.js', () => ({ db: {} }));
+
 // Mock dependencies
 vi.mock('../../src/services/revenue/razorpayFetch.js');
-vi.mock('../../src/repositories/attestation.js');
+vi.mock('../../src/repositories/attestationRepository.js');
 vi.mock('../../src/services/merkle.js', async (importOriginal) => { const mod = await importOriginal(); return { ...mod, generateMerkleRoot: vi.fn() }; });
 
 const mockFetchRazorpayRevenue = vi.mocked(fetchRazorpayRevenue);
@@ -39,13 +42,18 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     id: 'att_789',
     businessId,
     period,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date('2024-04-01T00:00:00Z'),
+    updatedAt: new Date('2024-04-01T00:00:00Z'),
+    merkleRoot: 'root',
+    txHash: 'tx',
+    status: 'submitted' as const,
+    version: 1,
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
-    mockAttestationRepository.create = vi.fn().mockResolvedValue(mockAttestation);
+    mockAttestationRepository.create.mockResolvedValue(mockAttestation);
     vi.spyOn(CryptoUtils, "generateMerkleRoot").mockReturnValue("0xmockedmerkleroothashstring");
   });
 
@@ -64,10 +72,10 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     });
 
     expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(businessId, startDate, endDate);
-    expect(mockAttestationRepository.create).toHaveBeenCalledWith({
+    expect(mockAttestationRepository.create).toHaveBeenCalledWith(db, expect.objectContaining({
       businessId,
       period,
-    });
+    }));
 
     // Verify structured logging
     expect(mockConsoleLog).toHaveBeenCalledWith(
@@ -207,7 +215,7 @@ describe('submitAttestation - Enhanced with retry logic', () => {
 
   it('handles repository save errors', async () => {
     const repoError = new Error('Database connection failed');
-    mockAttestationRepository.create = vi.fn().mockRejectedValue(repoError);
+    mockAttestationRepository.create.mockRejectedValue(repoError);
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({

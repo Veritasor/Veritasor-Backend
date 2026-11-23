@@ -732,3 +732,21 @@ export async function listAll(client: DbClient): Promise<Attestation[]> {
   const result = await client.query<AttestationRow>(sql);
   return result.rows.map(mapRowToAttestation);
 }
+
+/** Lists a business's attestations newest first without pagination truncation. */
+export async function listByBusiness(client: DbClient, businessId: string): Promise<Attestation[]> {
+  const result = await client.query<AttestationRow>(
+    'SELECT * FROM attestations WHERE business_id = $1 ORDER BY created_at DESC, id DESC',
+    [businessId],
+  );
+  return result.rows.map(mapRowToAttestation);
+}
+
+/** Returns distinct persisted period labels, newest first, for one business. */
+export async function listPeriods(client: DbClient, businessId: string): Promise<string[]> {
+  const result = await client.query<{ period: string }>(
+    'SELECT DISTINCT period FROM attestations WHERE business_id = $1 ORDER BY period DESC',
+    [businessId],
+  );
+  return result.rows.map(row => row.period);
+}

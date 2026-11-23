@@ -28,7 +28,7 @@
  */
 
 
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { validateQuery } from '../middleware/validate.js'
@@ -69,7 +69,7 @@ analyticsRouter.get(
   requireBusinessAuth,
   setBusinessLocals,
 
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const businessId = res.locals.businessId as string
 
     logger.info(JSON.stringify({
@@ -78,15 +78,19 @@ analyticsRouter.get(
       path: req.path,
     }))
 
-    const periods = listAttestedPeriodsForBusiness(businessId)
+    try {
+      const periods = await listAttestedPeriodsForBusiness(businessId)
 
-    logger.info(JSON.stringify({
-      event: 'analytics.periods.response',
-      businessId,
-      count: periods.length,
-    }))
+      logger.info(JSON.stringify({
+        event: 'analytics.periods.response',
+        businessId,
+        count: periods.length,
+      }))
 
-    res.json({ periods })
+      res.json({ periods })
+    } catch (err) {
+      next(err)
+    }
   },
 
 )
@@ -120,7 +124,7 @@ analyticsRouter.get(
   setBusinessLocals,
   validateQuery(revenueReportQuerySchema),
 
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const businessId = res.locals.businessId as string
     const { period, from, to } = req.query as Record<string, string | undefined>
 
@@ -140,7 +144,7 @@ analyticsRouter.get(
     }
 
     try {
-      const report = getRevenueReport(businessId, period, from, to)
+      const report = await getRevenueReport(businessId, period, from, to)
 
       if (!report) {
         logger.info(JSON.stringify({
@@ -170,7 +174,7 @@ analyticsRouter.get(
         }))
         return res.status(400).json({ error: err.message })
       }
-      throw err
+      next(err)
     }
   },
 
