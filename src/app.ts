@@ -1,7 +1,7 @@
 import express, { type Express } from "express";
 import type { Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
@@ -12,6 +12,7 @@ import {
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
+import { prototypePollutionGuard } from "./middleware/prototypePollution.js";
 import { compressionMiddleware } from "./middleware/compression.js";
 import { mtlsMiddleware } from "./middleware/mtls.js";
 import { metricsRegistry } from "./metrics.js";
@@ -73,37 +74,11 @@ export async function stopIdempotencySweeper(): Promise<void> {
 
 export const telemetryReady = initializeOpenTelemetry();
 
-// Security middleware to reject prototype pollution attempts
-const securityHeadersMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  if (req.query && Object.keys(req.query).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
-    res.status(400).json({
-      status: 'error',
-      code: 'VALIDATION_ERROR',
-      message: 'Invalid query parameters'
-    });
-    return;
-  }
-
-  if (req.body && typeof req.body === 'object') {
-    if (Object.keys(req.body).some(key => key === '__proto__' || key === 'constructor' || key === 'prototype')) {
-      res.status(400).json({
-        status: 'error',
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid body fields'
-      });
-      return;
-    }
-  }
-
-  next();
-};
-
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
 
   app.use(requestLogger);
   app.use(securityHeaders);
-  app.use(securityHeadersMiddleware);
   app.use(mtlsMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
@@ -112,6 +87,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
 
   // 3. Body Parsing
   app.use(express.json());
+  app.use(prototypePollutionGuard);
   app.use(createCorsMiddleware());
 
   // Response compression (brotli preferred, gzip fallback) with a BREACH guard
