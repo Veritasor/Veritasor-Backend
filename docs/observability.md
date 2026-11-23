@@ -1,5 +1,33 @@
 # Observability and Tracing
 
+## OpenTelemetry setup
+
+`initializeOpenTelemetry()` is exported from `src/tracing.ts` and called once at
+boot from `src/app.ts` (`telemetryReady`). Its implementation is split into
+focused modules under `src/tracing/`:
+
+| File | Responsibility |
+| --- | --- |
+| `protocol.ts` | `OTEL_EXPORTER_PROTOCOL` / `OTEL_GRPC_MTLS_ENABLED` resolution |
+| `resource.ts` | AWS, GCP and Kubernetes resource attribute detection |
+| `exporter-config.ts` | OTLP endpoint derivation and exporter options |
+| `trace-exporter.ts` | Trace exporter and route-aware sampler construction |
+| `log-exporter.ts` | Log exporter construction |
+| `mtls.ts` | gRPC mTLS credentials and certificate rotation |
+| `initialize.ts` | SDK initialization |
+| `shutdown.ts` | SDK shutdown |
+| `sampler.ts` / `sanitizer.ts` | Per-route sampling and PII redaction |
+
+Exporter packages are imported lazily: only the protocol selected by
+`OTEL_EXPORTER_PROTOCOL` is loaded. The supported environment variables are:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: enabling setting; tracing is disabled when unset.
+- `OTEL_EXPORTER_PROTOCOL`: `http` (default) or `grpc`; unknown values fall back to `http`.
+- `OTEL_SERVICE_NAME`: service name reported to the collector (default `veritasor-backend`).
+- `OTEL_GRPC_MTLS_ENABLED` plus `OTEL_MTLS_CA`/`OTEL_MTLS_CERT`/`OTEL_MTLS_KEY` (secret loader) or `OTEL_MTLS_CA_PATH`/`OTEL_MTLS_CERT_PATH`/`OTEL_MTLS_KEY_PATH` (files): gRPC mutual TLS.
+- `CLOUD_RESOURCE_DETECTOR_TIMEOUT_MS`: per-detector timeout in milliseconds (default 1000, clamped to 100–5000).
+- `OTEL_SAMPLING_DEFAULT_RATE`, `OTEL_SAMPLING_HOT_ROUTES`, `OTEL_SAMPLING_RARE_ROUTES`: route-aware sampler configuration.
+
 ## Attestation Submissions
 
 Batch-flush deadlines and queue waits are traced with dedicated OpenTelemetry spans. This allows developers to debug batch-window delays and trace errors related to batch composition.
