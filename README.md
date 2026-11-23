@@ -45,6 +45,8 @@ Routers are mounted in `src/app.ts`. Some are also reachable under `/api/v1/...`
 
 Authentication: JWT bearer tokens; business-scoped operations also take `x-business-id`. See [docs/business-authorization-boundary-checks.md](docs/business-authorization-boundary-checks.md) and [docs/rbac-policy-engine.md](docs/rbac-policy-engine.md). Errors follow a standard envelope: [docs/errors.md](docs/errors.md).
 
+WebSocket authentication (`/api/v1/ws/attestations`): send the JWT with `Authorization: Bearer <token>`. Passing it via `?token=` is deprecated and gated by `WS_ALLOW_QUERY_TOKEN` — default `false` in production (query token ignored, upgrade closed with code `1008`) and `true` in development/test (accepted but logs a deprecation warning).
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Variables defined there:
