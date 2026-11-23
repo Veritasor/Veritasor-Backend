@@ -30,6 +30,20 @@ export class FastlyPurgeError extends Error {
 const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTCONN"]);
 
 /**
+ * Typed error thrown when a Fastly purge request fails with a non-2xx HTTP status.
+ */
+export class FastlyPurgeError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly transient = false,
+  ) {
+    super(message);
+    this.name = "FastlyPurgeError";
+  }
+}
+
+/**
  * Fastly CDN client implementation.
  * Purges URLs via Fastly API using an API key header.
  */
@@ -88,6 +102,12 @@ export class FastlyClient implements CdnClient {
               if (status >= 200 && status < 300) {
                 resolve();
               } else {
+                const isTransient = Boolean(res.statusCode && res.statusCode >= 500);
+                reject(
+                  new FastlyPurgeError(
+                    `Fastly purge failed with status ${res.statusCode}: ${data}`,
+                    res.statusCode,
+                    isTransient,
                 // 429 Too Many Requests is transient; all other 4xx are not.
                 const transient = status >= 500 || status === 429;
                 reject(
@@ -117,6 +137,11 @@ export class FastlyClient implements CdnClient {
         // Success — exit retry loop.
         return;
       } catch (err) {
+        const isTransient = err instanceof FastlyPurgeError ? err.transient : false;
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(`Fastly purge attempt ${attempt} failed: ${message}`);
+        if (!isTransient || attempt >= maxAttempts) {
+          throw err;
         const purgeErr = err instanceof FastlyPurgeError
           ? err
           : new FastlyPurgeError((err as Error).message, false);
@@ -139,22 +164,24 @@ export function resetFastlyClient(): void {
   _instance = undefined;
 }
 
-export const fastlyClient: FastlyClient = new Proxy(
-  Object.create(FastlyClient.prototype),
+export const fastlyClient: FastlyClient = new Proxy<FastlyClient>(
+  Object.create(FastlyClient.prototype) as FastlyClient,
   {
-    get(_target, prop, receiver) {
+    get(_target: FastlyClient, prop: string | symbol, receiver: unknown): unknown {
       if (prop === "purge") {
-        return async (...args: any[]) => {
+        return async (
+          ...args: Parameters<FastlyClient["purge"]>
+        ): ReturnType<FastlyClient["purge"]> => {
           if (!_instance) {
             _instance = new FastlyClient();
           }
-          return _instance.purge(...(args as [string[]]));
+          return _instance.purge(...args);
         };
       }
       if (!_instance) {
         _instance = new FastlyClient();
       }
-      const val = Reflect.get(_instance, prop, receiver);
+      const val: unknown = Reflect.get(_instance, prop, receiver);
       return typeof val === "function" ? val.bind(_instance) : val;
     },
   },
