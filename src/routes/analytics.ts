@@ -12,8 +12,11 @@
  *
  * Security:
  *  - All routes require business authentication via `requireBusinessAuth`.
- *  - A dedicated rate-limit bucket (`analytics`) isolates this group so
- *    burst traffic here does not consume the budget of other endpoints.
+ *  - A lenient pre-auth limiter (`analytics:auth`) protects the auth lookup
+ *    from unauthenticated floods; authenticated requests then consume a
+ *    per-business `analytics:<businessId>` quota (30 req / 15 min).
+ *  - Per-business keying happens after auth so businesses behind a shared
+ *    NAT do not collide, while a single business cannot fan out across IPs.
  *  - `res.locals.businessId` is set from `req.business.id` after auth so
  *    downstream handlers never read user-controlled input directly.
  *
@@ -28,7 +31,7 @@
  */
 
 
-import { Router, Request, Response } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js'
 import { rateLimiter } from '../middleware/rateLimiter.js'
 import { validateQuery } from '../middleware/validate.js'
@@ -40,11 +43,16 @@ import { logger } from '../utils/logger.js'
 
 export const analyticsRouter = Router()
 
-/** Shared rate-limit bucket for all analytics endpoints (30 req / 15 min). */
+const analyticsAuthLookupRateLimiter = rateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  bucket: 'analytics:auth',
+})
+
 const analyticsRateLimiter = rateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  bucket: 'analytics',
+  bucket: (req) => `analytics:${req.business?.id ?? 'unknown'}`,
 })
 
 
@@ -65,8 +73,9 @@ function setBusinessLocals(req: Request, res: Response, next: () => void): void 
 
 analyticsRouter.get(
   '/periods',
-  analyticsRateLimiter,
+  analyticsAuthLookupRateLimiter,
   requireBusinessAuth,
+  analyticsRateLimiter,
   setBusinessLocals,
 
   (req: Request, res: Response) => {
@@ -115,12 +124,13 @@ analyticsRouter.get(
 
 analyticsRouter.get(
   '/revenue',
-  analyticsRateLimiter,
+  analyticsAuthLookupRateLimiter,
   requireBusinessAuth,
+  analyticsRateLimiter,
   setBusinessLocals,
   validateQuery(revenueReportQuerySchema),
 
-  async (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const businessId = res.locals.businessId as string
     const { period, from, to } = req.query as Record<string, string | undefined>
 
@@ -170,7 +180,7 @@ analyticsRouter.get(
         }))
         return res.status(400).json({ error: err.message })
       }
-      throw err
+      next(err)
     }
   },
 
