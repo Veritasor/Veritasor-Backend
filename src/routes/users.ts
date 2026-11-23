@@ -86,10 +86,6 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
       })
     }
 
-    if (await consumeDownloadToken(token) !== exportId) {
-      return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
-    }
-
     // Get the encrypted archive
     const archiveData = await getExportArchive(exportId)
 
