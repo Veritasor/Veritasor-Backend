@@ -120,7 +120,7 @@ analyticsRouter.get(
   setBusinessLocals,
   validateQuery(revenueReportQuerySchema),
 
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     const businessId = res.locals.businessId as string
     const { period, from, to } = req.query as Record<string, string | undefined>
 
@@ -140,7 +140,7 @@ analyticsRouter.get(
     }
 
     try {
-      const report = getRevenueReport(businessId, period, from, to)
+      const report = await getRevenueReport(businessId, period, from, to)
 
       if (!report) {
         logger.info(JSON.stringify({
