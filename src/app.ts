@@ -41,6 +41,7 @@ import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import { webhookSubscriptionsRouter } from "./routes/webhook-subscriptions.js";
 import adminRouter from "./routes/admin.js";
+import dlqRouter from "./routes/dlqRoutes.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
@@ -122,6 +123,8 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/integrations/stripe", integrationsStripeRouter);
   app.use("/api/integrations", integrationsRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/v1/admin/dlq", dlqRouter);
+  app.use("/api/admin/dlq", dlqRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
 
