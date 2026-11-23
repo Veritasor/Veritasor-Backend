@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { NextFunction, Request, Response, Router } from 'express';
 import { z } from 'zod';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 import { idempotencyMiddleware } from '../middleware/idempotency.js';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import * as attestationRepository from '../repositories/attestationRepository.js';
@@ -20,11 +20,16 @@ import {
   type AttestationRevenueSummary,
   type RawRevenueInput,
 } from '../services/attestation/integrateRevenueChecks.js';
+import {
+  enqueueQueuedAttestation,
+  isSorobanQueueEnabled,
+} from '../services/soroban/submitAttestation.js';
 import { AppError } from '../types/errors.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
 import { broadcaster } from '../ws/attestationStream.js';
+import { observeAttestationSubmitLatency } from '../metrics.js';
 
 type RouteAttestation = {
   id: string;
@@ -35,7 +40,7 @@ type RouteAttestation = {
   timestamp?: number;
   version?: string;
   txHash?: string;
-  status?: 'submitted' | 'revoked';
+  status?: 'submitted' | 'revoked' | 'queued';
   revokedAt?: string | null;
 };
 
@@ -198,8 +203,60 @@ async function resolveBusinessIdForUser(userId: string): Promise<string | null> 
   return null;
 }
 
-async function listByBusinessId(businessId: string, page: number, limit: number): Promise<{ items: RouteAttestation[], total: number }> {
-  const result = await attestationRepository.list(db, { businessId }, { limit, offset: (page - 1) * limit });
+async function resolveAuthorizedBusinessId(
+  req: Request,
+  requestedId?: string | null,
+): Promise<string> {
+  const userId = req.user!.id;
+  const userBusinessId = await resolveBusinessIdForUser(userId);
+  const role = req.user?.role;
+
+  if (role === 'admin') {
+    if (requestedId) {
+      const repo = businessRepository as Record<string, unknown>;
+      if (typeof repo.getById === 'function') {
+        const business = await (repo.getById as (id: string) => Promise<{ id: string } | null>)(requestedId);
+        if (!business) {
+          throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found');
+        }
+        return requestedId;
+      }
+      return requestedId;
+    }
+    if (!userBusinessId) {
+      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+    }
+    return userBusinessId;
+  }
+
+  if (requestedId) {
+    if (!userBusinessId) {
+      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+    }
+    if (requestedId !== userBusinessId) {
+      throw createHttpError(403, 'FORBIDDEN', 'Cannot access attestation for another business');
+    }
+    return userBusinessId;
+  }
+
+  if (!userBusinessId) {
+    throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
+  }
+
+  return userBusinessId;
+}
+
+async function listByBusinessId(
+  businessId: string,
+  page: number,
+  limit: number,
+  filters: { period?: string; status?: 'submitted' | 'revoked' } = {},
+): Promise<{ items: RouteAttestation[], total: number }> {
+  const result = await attestationRepository.list(
+    db,
+    { businessId, period: filters.period, status: filters.status },
+    { limit, offset: (page - 1) * limit },
+  );
 
   const items = result.items.map((item: Attestation) => ({
     id: item.id,
@@ -276,44 +333,49 @@ async function revokeAttestation(id: string, reason?: string): Promise<RouteAtte
 async function submitOnChain(
   params: SubmitAttestationParams & { userId?: string; businessId?: string },
 ): Promise<SubmitAttestationResult> {
-  const shouldSubmit = params.submit ?? true;
-  const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === 'true';
-
-  if (shouldSubmit && !submissionEnabled) {
-    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
-  }
-
-  const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
-  if (!sourcePublicKey) {
-    throw createHttpError(503, 'SOROBAN_NOT_CONFIGURED', 'Soroban submission is not available right now.');
-  }
-
-  const modulePath = '../services/soroban/submitAttestation.js';
-  let module: {
-    submitAttestation?: (value: SorobanSubmitAttestationParams) => Promise<SorobanSubmitAttestationResult>;
-  };
-
+  const startTime = process.hrtime.bigint();
+  let statusForMetric = 'success';
   try {
-    module = (await import(modulePath)) as typeof module;
-  } catch (_error) {
-    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
-  }
+    const shouldSubmit = params.submit ?? true;
+    const submissionEnabled = process.env.SOROBAN_SUBMIT_ENABLED === 'true';
 
-  if (typeof module.submitAttestation !== 'function') {
-    return { txHash: `pending_${randomUUID()}`, status: 'pending' };
-  }
+    if (shouldSubmit && !submissionEnabled) {
+      return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
 
-  try {
+    const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY;
+    if (!sourcePublicKey) {
+      throw createHttpError(503, 'SOROBAN_NOT_CONFIGURED', 'Soroban submission is not available right now.');
+    }
+
+    const modulePath = '../services/soroban/submitAttestation.js';
+    let module: {
+      submitAttestation?: (value: SorobanSubmitAttestationParams) => Promise<SorobanSubmitAttestationResult>;
+    };
+
+    try {
+      module = (await import(modulePath)) as typeof module;
+    } catch (_error) {
+      return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
+
+    if (typeof module.submitAttestation !== 'function') {
+      return { txHash: `pending_${randomUUID()}`, status: 'pending' };
+    }
+
     return await module.submitAttestation({ ...params, sourcePublicKey, submit: shouldSubmit });
   } catch (error) {
+    statusForMetric = 'error';
     const sorobanError = error as SorobanServiceError;
     const code = sorobanError?.code;
 
     if (code === 'VALIDATION_ERROR') {
+      statusForMetric = 'rejected';
       throw createHttpError(400, code, sorobanError.message);
     }
 
     if (code === 'MISSING_SIGNER' || code === 'SIGNER_MISMATCH') {
+      statusForMetric = 'rejected';
       throw createHttpError(503, code, 'Soroban submission is not available right now.');
     }
 
@@ -347,7 +409,34 @@ async function submitOnChain(
       throw createHttpError(502, code, 'Soroban RPC request failed after applying the retry policy.');
     }
 
+    if (code === 'SOROBAN_CIRCUIT_BREAKER_OPEN' || error instanceof Error && error.name === 'SorobanCircuitBreakerError') {
+      if (isSorobanQueueEnabled()) {
+        const queued = enqueueQueuedAttestation({
+          business: params.business,
+          period: params.period,
+          merkleRoot: params.merkleRoot,
+          timestamp: params.timestamp,
+          version: params.version,
+          submit: params.submit ?? true,
+          userId: params.userId,
+        }, { idempotencyKey: params.userId ? `${params.business}:${params.period}:${params.userId}` : undefined });
+
+        if (queued.queued && queued.item) {
+          return {
+            txHash: `queued_${randomUUID()}`,
+            status: 'queued',
+            unsignedXdr: undefined,
+          };
+        }
+      }
+
+      throw createHttpError(503, 'SOROBAN_DEGRADED', 'Soroban is temporarily degraded; the attestation is queued for retry.');
+    }
+
     throw error;
+  } finally {
+    const durationSec = Number(process.hrtime.bigint() - startTime) / 1e9;
+    observeAttestationSubmitLatency(statusForMetric, durationSec);
   }
 }
 
@@ -357,26 +446,15 @@ attestationsRouter.get(
   validateQuery(listQuerySchema),
   asyncHandler(async (req, res) => {
     const query = req.query as unknown as z.infer<typeof listQuerySchema>;
-    const businessId = query.businessId ?? (await resolveBusinessIdForUser(req.user!.id));
-
-    if (!businessId) {
-      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
-    }
+    const businessId = await resolveAuthorizedBusinessId(req, query.businessId);
 
     const { page, limit } = getPagination({ page: query.page, limit: query.limit });
-    const { items, total } = await listByBusinessId(businessId, page, limit);
+    const { items, total } = await listByBusinessId(businessId, page, limit, {
+      period: query.period,
+      status: query.status,
+    });
 
-    // Filter server-side if query params present (repository list handles businessId but not period/status yet)
-    let filteredItems = items;
-    if (query.period || query.status) {
-      filteredItems = items.filter(item => {
-        if (query.period && item.period !== query.period) return false;
-        if (query.status && (item.status ?? 'submitted') !== query.status) return false;
-        return true;
-      });
-    }
-
-    const paginated = formatPaginatedResponse(filteredItems, total, page, limit);
+    const paginated = formatPaginatedResponse(items, total, page, limit);
 
     res.status(200).json({
       status: 'success',
@@ -396,11 +474,7 @@ attestationsRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const id = parseIdParam(req.params.id);
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-
-    if (!businessId) {
-      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
-    }
+    const businessId = await resolveAuthorizedBusinessId(req);
 
     const attestation = await getById(id, businessId);
     if (!attestation) {
@@ -421,10 +495,7 @@ attestationsRouter.get(
     const query = req.query as unknown as z.infer<typeof proofQuerySchema>;
     const { leaves, leafIndex } = query;
 
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-    if (!businessId) {
-      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
-    }
+    const businessId = await resolveAuthorizedBusinessId(req);
 
     const attestation = await getById(id, businessId);
     if (!attestation || attestation.status === 'revoked') {
@@ -467,16 +538,7 @@ attestationsRouter.post(
   validateBody(submitBodySchema),
   asyncHandler(async (req, res) => {
     const payload = req.body as z.infer<typeof submitBodySchema>;
-    const userBusinessId = await resolveBusinessIdForUser(req.user!.id);
-    const businessId = payload.businessId ?? userBusinessId;
-
-    if (!businessId) {
-      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
-    }
-
-    if (payload.businessId && userBusinessId && payload.businessId !== userBusinessId) {
-      throw createHttpError(403, 'FORBIDDEN', 'Cannot submit attestation for another business');
-    }
+    const businessId = await resolveAuthorizedBusinessId(req, payload.businessId);
 
     let merkleRoot = payload.merkleRoot;
     let attestationSummary: AttestationRevenueSummary | undefined;
@@ -535,6 +597,26 @@ attestationsRouter.post(
       ...(onChain.resultTimestamp !== undefined ? { resultTimestamp: onChain.resultTimestamp } : {}),
     };
 
+    if (onChain.status === 'queued') {
+      res.status(202).json({
+        status: 'success',
+        data: {
+          businessId,
+          period: payload.period,
+          merkleRoot: merkleRoot!,
+          timestamp: payload.timestamp ?? Date.now(),
+          version: payload.version,
+          txHash: onChain.txHash,
+          status: 'queued',
+          attestedAt: new Date().toISOString(),
+          revokedAt: null,
+        },
+        txHash: onChain.txHash,
+        submission,
+      });
+      return;
+    }
+
     const now = new Date().toISOString();
     const record: Omit<RouteAttestation, 'id' | 'attestedAt' | 'revokedAt'> = {
       businessId,
@@ -577,11 +659,7 @@ attestationsRouter.post(
 async function handleRevoke(req: Request, res: Response): Promise<void> {
   try {
     const id = parseIdParam(req.params.id);
-    const businessId = await resolveBusinessIdForUser(req.user!.id);
-
-    if (!businessId) {
-      throw createHttpError(404, 'BUSINESS_NOT_FOUND', 'Business not found for user');
-    }
+    const businessId = await resolveAuthorizedBusinessId(req);
 
     const attestation = await getById(id, businessId);
     if (!attestation) {

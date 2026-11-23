@@ -28,6 +28,7 @@ describe("normalizeEmail edge cases", () => {
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   normalizeEmail,
+  normalizeStoredEmail,
   extractEmailDomain,
   isDisposableDomain,
   validateEmail,
@@ -60,6 +61,20 @@ describe("normalizeEmail", () => {
 
   it("should handle empty string", () => {
     expect(normalizeEmail("")).toBe("");
+  });
+});
+
+describe("normalizeStoredEmail", () => {
+  it("trims and lowercases but preserves plus tags", () => {
+    expect(normalizeStoredEmail("  User+Tag@Example.COM  ")).toBe(
+      "user+tag@example.com",
+    );
+  });
+
+  it("preserves Gmail dots in the stored form", () => {
+    expect(normalizeStoredEmail("User.Name+Tag@Gmail.com")).toBe(
+      "user.name+tag@gmail.com",
+    );
   });
 });
 

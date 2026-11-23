@@ -31,12 +31,15 @@ export interface UsedTokenStore {
 
   /**
    * Marks a JTI as consumed.
+   * Returns true only when this call inserted the row (i.e. this caller won
+   * the race). Returns false when the JTI was already consumed, which the
+   * caller must treat as a replay attempt.
    * @param jti      - The unique JWT ID to consume.
    * @param userId   - Owner of the token (stored for audit purposes).
    * @param expiresAt - When the token would have expired; used as the TTL so
    *                    the row is eligible for cleanup after the token lifetime.
    */
-  mark(jti: string, userId: string, expiresAt: Date): Promise<void>
+  mark(jti: string, userId: string, expiresAt: Date): Promise<boolean>
 
   /**
    * Removes all entries. Intended for test isolation only.
@@ -59,8 +62,8 @@ export class InMemoryUsedTokenStore implements UsedTokenStore {
     return this.store.has(jti)
   }
 
-  async mark(jti: string, _userId: string, _expiresAt: Date): Promise<void> {
-    this.store.add(jti)
+  async mark(jti: string, _userId: string, _expiresAt: Date): Promise<boolean> {
+    return this.store.add(jti) === undefined ? false : true
   }
 
   clear(): void {
@@ -76,8 +79,9 @@ export class InMemoryUsedTokenStore implements UsedTokenStore {
  * Persistent store backed by the `used_refresh_tokens` table.
  *
  * Replay protection is enforced at the DB level via a PRIMARY KEY on `jti`.
- * A concurrent INSERT of the same JTI will throw a unique-violation (23505),
- * which mark() re-throws so the caller can treat it as a replay attempt.
+ * mark() uses INSERT ... ON CONFLICT DO NOTHING RETURNING jti and reports
+ * whether this call inserted the row, so concurrent callers racing on the
+ * same JTI resolve to exactly one winner.
  *
  * TTL cleanup: rows with expires_at < NOW() are stale and can be deleted by a
  * periodic job. They do not affect correctness because an expired JWT is
@@ -92,23 +96,20 @@ export class DbUsedTokenStore implements UsedTokenStore {
     return (result.rowCount ?? 0) > 0
   }
 
-  async mark(jti: string, userId: string, expiresAt: Date): Promise<void> {
+  async mark(jti: string, userId: string, expiresAt: Date): Promise<boolean> {
     try {
-      await db.query(
+      const result = await db.query(
         `INSERT INTO used_refresh_tokens (jti, user_id, expires_at)
          VALUES ($1, $2, $3)
-         ON CONFLICT (jti) DO NOTHING`,
+         ON CONFLICT (jti) DO NOTHING
+         RETURNING jti`,
         [jti, userId, expiresAt]
       )
+      return (result.rowCount ?? 0) === 1
     } catch (err: unknown) {
-      // Unique violation (23505) means a concurrent request already consumed
-      // this JTI — treat it as a replay attempt by re-throwing.
-      const pgCode = (err as { code?: string }).code
-      if (pgCode === '23505') {
-        throw err
-      }
-      // For other DB errors, log and re-throw so the caller can decide whether
-      // to fail open or closed (refresh.ts fails closed).
+      // Any DB error is re-thrown so the caller can fail closed (refresh.ts
+      // fails closed). A unique violation cannot occur here because of
+      // ON CONFLICT DO NOTHING; conflicts are reported via the return value.
       logger.error('DbUsedTokenStore.mark failed', { jti, userId, error: err })
       throw err
     }

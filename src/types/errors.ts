@@ -49,7 +49,11 @@ export class AppError extends Error {
     this.status = status;
     this.vrtCode = vrtCode;
     this.context = context;
-    Object.setPrototypeOf(this, AppError.prototype);
+    // Restore the concrete prototype (`new.target`), not the base one: setting
+    // it to `AppError.prototype` here made every subclass (UnauthorizedError,
+    // NotFoundError, ConflictError, …) fail `instanceof` checks, so callers
+    // could not branch on the error taxonomy.
+    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -143,12 +147,17 @@ export class ConflictError extends AppError {
  * RateLimitError - Used when rate limit is exceeded (429)
  */
 export class RateLimitError extends AppError {
+  public retryAfterMs?: number;
+
   constructor(
     message: string = "Rate limit exceeded",
-    context?: Record<string, unknown>
+    context?: Record<string, unknown>,
+    retryAfterMs?: number
   ) {
     super(message, 429, VRTErrorCodes.VRT_0006, context);
     this.name = "RateLimitError";
+    this.retryAfterMs =
+      retryAfterMs ?? (typeof context?.retryAfterMs === "number" ? context.retryAfterMs : undefined);
   }
 }
 

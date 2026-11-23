@@ -1,0 +1,315 @@
+{
+  "consumer": {
+    "name": "Veritasor-Frontend"
+  },
+  "interactions": [
+    {
+      "description": "a request for a revoked attestation",
+      "providerState": "an attestation exists with hash \"revoked123\" and status \"revoked\"",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/revoked123"
+      },
+      "response": {
+        "body": {
+          "code": "GONE",
+          "message": "Attestation has been revoked",
+          "status": "error"
+        },
+        "headers": {
+          "Age": "0",
+          "Cache-Control": "public, max-age=15, stale-while-revalidate=60, stale-if-error=3600",
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "status": 410
+      }
+    },
+    {
+      "description": "a request for an attestation by non-existent hash",
+      "providerState": "no attestation exists with hash \"nonexistent\"",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/nonexistent"
+      },
+      "response": {
+        "body": {
+          "code": "NOT_FOUND",
+          "message": "Attestation not found",
+          "status": "error"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "status": 404
+      }
+    },
+    {
+      "description": "a request for an attestation by valid hash",
+      "providerState": "an attestation exists with hash \"abc123\"",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/abc123"
+      },
+      "response": {
+        "body": {
+          "data": {
+            "attestedAt": "2026-07-29T10:30:00.000Z",
+            "businessId": "bus_12345",
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "merkleRoot": "0xabc123def456",
+            "period": "2026-Q2",
+            "status": "confirmed",
+            "txHash": "0xtxhash789012"
+          },
+          "status": "success"
+        },
+        "headers": {
+          "Age": "0",
+          "Cache-Control": "public, max-age=60, stale-while-revalidate=60, stale-if-error=86400",
+          "Content-Type": "application/json; charset=utf-8",
+          "ETag": "\"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY=\"",
+          "Last-Modified": "Wed, 29 Jul 2026 10:30:00 GMT"
+        },
+        "matchingRules": {
+          "$.body.data.attestedAt": {
+            "match": "regex",
+            "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          },
+          "$.body.data.businessId": {
+            "match": "type"
+          },
+          "$.body.data.id": {
+            "match": "regex",
+            "regex": "^[a-f0-9-]+$"
+          },
+          "$.body.data.merkleRoot": {
+            "match": "type"
+          },
+          "$.body.data.period": {
+            "match": "type"
+          },
+          "$.body.data.txHash": {
+            "match": "type"
+          }
+        },
+        "status": 200
+      }
+    },
+    {
+      "description": "a request for the health check",
+      "providerState": "server is healthy",
+      "request": {
+        "method": "GET",
+        "path": "/api/health"
+      },
+      "response": {
+        "body": {
+          "service": "veritasor-backend",
+          "status": "ok",
+          "timestamp": "2026-07-29T12:15:15.000Z"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.service": {
+            "match": "type"
+          },
+          "$.body.status": {
+            "match": "type"
+          },
+          "$.body.timestamp": {
+            "match": "type"
+          }
+        },
+        "status": 200
+      }
+    },
+    {
+      "description": "a request to create a webhook subscription",
+      "providerState": "a business has room for another webhook subscription",
+      "request": {
+        "body": {
+          "eventFilters": {
+            "attestation.created": true
+          },
+          "secret": "pact-webhook-secret-0123456789abcd",
+          "url": "https://example.com/webhooks/pact"
+        },
+        "headers": {
+          "Authorization": "Bearer pact-test-access-token",
+          "Content-Type": "application/json",
+          "x-business-id": "pact-business-1"
+        },
+        "method": "POST",
+        "path": "/api/v1/webhook-subscriptions"
+      },
+      "response": {
+        "body": {
+          "data": {
+            "businessId": "pact-business-1",
+            "createdAt": "2026-11-20T10:00:00.000Z",
+            "enabled": true,
+            "eventFilters": {
+              "attestation.created": true
+            },
+            "id": "whsub_pact_created",
+            "maxPayloadSize": null,
+            "mtlsConfig": null,
+            "secret": "pact-webhook-secret-0123456789abcd",
+            "secretLast4": "abcd",
+            "secretVersion": 1,
+            "updatedAt": "2026-11-20T10:00:00.000Z",
+            "url": "https://example.com/webhooks/pact"
+          },
+          "status": "success"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.data": {
+            "match": "type"
+          }
+        },
+        "status": 201
+      }
+    },
+    {
+      "description": "a request to list webhook subscriptions",
+      "providerState": "a business has at least one webhook subscription",
+      "request": {
+        "headers": {
+          "Authorization": "Bearer pact-test-access-token",
+          "x-business-id": "pact-business-1"
+        },
+        "method": "GET",
+        "path": "/api/v1/webhook-subscriptions"
+      },
+      "response": {
+        "body": {
+          "data": [
+            {
+              "businessId": "pact-business-1",
+              "createdAt": "2026-11-20T10:00:00.000Z",
+              "enabled": true,
+              "eventFilters": {
+                "attestation.created": true
+              },
+              "id": "whsub_pact_1",
+              "maxPayloadSize": null,
+              "mtlsConfig": null,
+              "secretLast4": "abcd",
+              "secretVersion": 1,
+              "updatedAt": "2026-11-20T10:00:00.000Z",
+              "url": "https://example.com/webhooks/pact"
+            }
+          ],
+          "status": "success"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.data": {
+            "match": "type",
+            "min": 1
+          }
+        },
+        "status": 200
+      }
+    },
+    {
+      "description": "a request to update the current user profile",
+      "providerState": "an authenticated user exists",
+      "request": {
+        "body": {
+          "name": "Pact User"
+        },
+        "headers": {
+          "Authorization": "Bearer pact-test-access-token",
+          "Content-Type": "application/json"
+        },
+        "method": "PATCH",
+        "path": "/api/users/me"
+      },
+      "response": {
+        "body": {
+          "email": "user@example.com",
+          "id": "pact-user-1",
+          "name": "Pact User",
+          "profile": {}
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.email": {
+            "match": "type"
+          },
+          "$.body.name": {
+            "match": "type"
+          },
+          "$.body.profile": {
+            "match": "type"
+          }
+        },
+        "status": 200
+      }
+    },
+    {
+      "description": "a request with a hash exceeding maximum length",
+      "providerState": "server is healthy",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/public/attestations/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "response": {
+        "body": {
+          "message": "Invalid attestation identifier",
+          "status": "error",
+          "timestamp": "2026-07-29T12:15:15.000Z",
+          "vrtCode": "VRT-0002"
+        },
+        "headers": {
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        "matchingRules": {
+          "$.body.timestamp": {
+            "match": "type"
+          }
+        },
+        "status": 400
+      }
+    },
+    {
+      "description": "a request with matching If-None-Match header",
+      "providerState": "an attestation exists with hash \"abc123\" and the request has a matching ETag",
+      "request": {
+        "headers": {
+          "If-None-Match": "\"LHhRKkd446BzEj48D+eXBu90be2WetQXTVwgGKLREPY=\""
+        },
+        "method": "GET",
+        "path": "/api/v1/public/attestations/abc123"
+      },
+      "response": {
+        "status": 304
+      }
+    }
+  ],
+  "metadata": {
+    "pact-js": {
+      "version": "13.2.0"
+    },
+    "pactRust": {
+      "ffi": "0.4.22",
+      "models": "1.2.3"
+    },
+    "pactSpecification": {
+      "version": "2.0.0"
+    }
+  },
+  "provider": {
+    "name": "Veritasor-Backend"
+  }
+}

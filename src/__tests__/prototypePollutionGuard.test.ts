@@ -1,68 +1,168 @@
-import express from "express";
-import type { Request, Response } from "express";
+import { describe, it, expect } from "vitest";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
-import { prototypePollutionGuard } from "../middleware/prototypePollution.js";
+import { createApp } from "../app.js";
+import { hasForbiddenKeys } from "../middleware/prototypePollution.js";
+import type { StartupReadinessReport } from "../startup/readiness.js";
 
-function createResponseMock() {
-  return {
-    status: vi.fn().mockReturnThis(),
-    json: vi.fn().mockReturnThis(),
-  };
-}
+const READY_REPORT: StartupReadinessReport = { ready: true, checks: [] };
 
-describe("prototypePollutionGuard", () => {
-  it("calls next exactly once for a safe request", () => {
-    const req = { query: { search: "safe" }, body: { name: "safe" } } as unknown as Request;
-    const res = createResponseMock();
-    const next = vi.fn();
+describe("Prototype Pollution Guard", () => {
+  const app = createApp(READY_REPORT);
 
-    prototypePollutionGuard(req, res as unknown as Response, next);
+  describe("JSON body pollution protection", () => {
+    it("returns 400 VALIDATION_ERROR for top-level __proto__ in JSON body", async () => {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send('{"__proto__":{"isAdmin":true},"email":"a@b.c","password":"x"}');
 
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(res.status).not.toHaveBeenCalled();
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+    });
+
+    it("returns 400 VALIDATION_ERROR for nested constructor key", async () => {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send('{"a":{"b":{"constructor":{}}},"email":"a@b.c","password":"x"}');
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+    });
+
+    it("returns 400 VALIDATION_ERROR for nested prototype key", async () => {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send('{"a":{"prototype":{"polluted":true}},"email":"a@b.c","password":"x"}');
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+    });
+
+    it("returns 400 VALIDATION_ERROR for forbidden key inside array elements", async () => {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send('[{"__proto__":{"polluted":true}}]');
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+    });
+
+    it("accepts legitimate body containing the string value 'constructor' as a value", async () => {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send({
+          email: "constructor@example.com",
+          password: "my_constructor_pass",
+          note: "constructor",
+        });
+
+      // Must not be rejected by the prototype pollution guard
+      expect(res.body?.message).not.toBe("Invalid body fields");
+      expect(res.status).not.toBe(500);
+    });
+
+    it("accepts arrays containing forbidden strings as values rather than keys", async () => {
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send({
+          email: "valid@example.com",
+          password: "password123",
+          tags: ["constructor", "__proto__", "prototype"],
+        });
+
+      expect(res.body?.message).not.toBe("Invalid body fields");
+      expect(res.status).not.toBe(500);
+    });
   });
 
-  it("rejects prohibited query keys", () => {
-    const req = { query: { constructor: "polluted" }, body: undefined } as unknown as Request;
-    const res = createResponseMock();
-    const next = vi.fn();
+  describe("Query string pollution protection", () => {
+    it("returns 400 VALIDATION_ERROR for nested query ?a[__proto__][x]=1", async () => {
+      const res = await request(app).get("/api/health/live?a[__proto__][x]=1");
 
-    prototypePollutionGuard(req, res as unknown as Response, next);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid query parameters",
+      });
+    });
 
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ code: "VALIDATION_ERROR", message: "Invalid query parameters" }),
-    );
-    expect(next).not.toHaveBeenCalled();
+    it("returns 400 VALIDATION_ERROR for top-level query ?prototype=1", async () => {
+      const res = await request(app).get("/api/health/live?prototype=1");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid query parameters",
+      });
+    });
+
+    it("returns 400 VALIDATION_ERROR for query ?constructor=1", async () => {
+      const res = await request(app).get("/api/health/live?constructor=1");
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid query parameters",
+      });
+    });
+
+    it("accepts query containing forbidden words as values rather than keys", async () => {
+      const res = await request(app).get("/api/health/live?search=constructor");
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        status: "ok",
+        service: "veritasor-backend",
+        timestamp: expect.any(String),
+      });
+    });
   });
 
-  it("rejects prohibited nested body keys after JSON parsing", async () => {
-    const app = express();
-    app.use(express.json());
-    app.use(prototypePollutionGuard);
-    app.post("/test", (_req, res) => res.sendStatus(204));
+  describe("hasForbiddenKeys unit validation", () => {
+    it("detects forbidden keys in arbitrary objects and arrays", () => {
+      expect(hasForbiddenKeys({ __proto__: {} })).toBe(true);
+      expect(hasForbiddenKeys({ a: { b: { constructor: 1 } } })).toBe(true);
+      expect(hasForbiddenKeys({ a: [{ prototype: {} }] })).toBe(true);
+      expect(hasForbiddenKeys({ validKey: "constructor" })).toBe(false);
+      expect(hasForbiddenKeys(["constructor", "prototype"])).toBe(false);
+      expect(hasForbiddenKeys(null)).toBe(false);
+      expect(hasForbiddenKeys(undefined)).toBe(false);
+      expect(hasForbiddenKeys("string")).toBe(false);
+      expect(hasForbiddenKeys(123)).toBe(false);
+    });
 
-    const response = await request(app)
-      .post("/test")
-      .set("Content-Type", "application/json")
-      .send('{"safe":{"prototype":"polluted"}}');
+    it("safely handles circular object references without crashing", () => {
+      const circular: Record<string, unknown> = { normal: "data" };
+      circular.self = circular;
 
-    expect(response.status).toBe(400);
-    expect(response.body).toEqual(
-      expect.objectContaining({ code: "VALIDATION_ERROR", message: "Invalid body fields" }),
-    );
-  });
+      expect(hasForbiddenKeys(circular)).toBe(false);
 
-  it("rejects prohibited query keys through the application middleware", async () => {
-    const app = express();
-    app.use(express.json());
-    app.use(prototypePollutionGuard);
-    app.get("/test", (_req, res) => res.sendStatus(204));
-
-    const response = await request(app).get("/test?constructor=polluted");
-
-    expect(response.status).toBe(400);
-    expect(response.body.code).toBe("VALIDATION_ERROR");
+      circular.constructor_prop = { constructor: "bad" };
+      expect(hasForbiddenKeys(circular)).toBe(true);
+    });
   });
 });

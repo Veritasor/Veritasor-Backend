@@ -88,13 +88,13 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
 
       // Mock integration repository
-      vi.mocked(integrationRepository.listByUserId).mockResolvedValue([])
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
       vi.mocked(integrationRepository.create).mockResolvedValue({
         id: 'integration-1',
         userId: 'user-1',
@@ -142,16 +142,16 @@ describe('Shopify OAuth Callback', () => {
       const expiresAt = now + 10 * 60 * 1000
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
-      // Advance time but stay within TTL
+      // Advance time but stay within TTH
       vi.advanceTimersByTime(5 * 60 * 1000)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
 
-      vi.mocked(integrationRepository.listByUserId).mockResolvedValue([])
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
       vi.mocked(integrationRepository.create).mockResolvedValue({
         id: 'integration-1',
         userId: 'user-1',
@@ -181,12 +181,12 @@ describe('Shopify OAuth Callback', () => {
       // Advance time to exactly expiry time
       vi.advanceTimersByTime(10 * 60 * 1000)
 
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
 
-      vi.mocked(integrationRepository.listByUserId).mockResolvedValue([])
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
       vi.mocked(integrationRepository.create).mockResolvedValue({
         id: 'integration-1',
         userId: 'user-1',
@@ -280,6 +280,155 @@ describe('Shopify OAuth Callback', () => {
     })
   })
 
+  describe('Tenant-scoped integration replacement', () => {
+    it('should leave another business Shopify integration and token untouched', async () => {
+      const state = 'business-b-state'
+      store.setOAuthState(
+        state,
+        'shop-b',
+        'user-1',
+        'business-b',
+        Date.now() + 10 * 60 * 1000,
+      )
+      store.saveToken('business-a', 'shop-a', 'token-a')
+      mockFetch.mockResolvedOnce({
+        ok: true,
+        json: async () => ({ access_token: 'token-b' }),
+      })
+      vi.mocked(integrationRepository.listByUserId).mockResolvedValue([
+        {
+          id: 'integration-a',
+          userId: 'user-1',
+          businessId: 'business-a',
+          provider: 'shopify',
+          externalId: 'shop-a.myshopify.com',
+          token: { accessToken: 'token-a' },
+          metadata: { shop: 'shop-a.myshopify.com' },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ])
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
+      vi.mocked(integrationRepository.create).mockResolvedValue({
+        id: 'integration-b',
+        userId: 'user-1',
+        businessId: 'business-b',
+        provider: 'shopify',
+        externalId: 'shop-b.myshopify.com',
+        token: { accessToken: 'token-b' },
+        metadata: { shop: 'shop-b.myshopify.com' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+
+      const result = await handleCallback(
+        createValidParams(state, 'shop-b.myshopify.com'),
+      )
+
+      expect(result.success).toBe(true)
+      expect(integrationRepository.listByBusinessId).toHaveBeenCalledWith(
+        'business-b',
+      )
+      expect(integrationRepository.listByUserId).not.toHaveBeenCalled()
+      expect(integrationRepository.deleteById).not.toHaveBeenCalled()
+      expect(store.getToken('business-a', 'shop-a')).toBe('token-a')
+      expect(store.getToken('business-b', 'shop-b')).toBe('token-b')
+    })
+
+    it('should replace a different shop for the same business', async () => {
+      const state = 'replace-shop-state'
+      store.setOAuthState(
+        state,
+        'shop-b',
+        'user-1',
+        'business-1',
+        Date.now() + 10 * 60 * 1000,
+      )
+      store.saveToken('business-1', 'shop-a', 'token-a')
+      mockFetch.mockResolvedOnce({
+        ok: true,
+        json: async () => ({ access_token: 'token-b' }),
+      })
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([
+        {
+          id: 'integration-a',
+          userId: 'user-1',
+          businessId: 'business-1',
+          provider: 'shopify',
+          externalId: 'shop-a.myshopify.com',
+          token: { accessToken: 'token-a' },
+          metadata: { shop: 'shop-a.myshopify.com' },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ])
+      vi.mocked(integrationRepository.deleteById).mockResolvedValue(true)
+      vi.mocked(integrationRepository.create).mockResolvedValue({
+        id: 'integration-b',
+        userId: 'user-1',
+        businessId: 'business-1',
+        provider: 'shopify',
+        externalId: 'shop-b.myshopify.com',
+        token: { accessToken: 'token-b' },
+        metadata: { shop: 'shop-b.myshopify.com' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+
+      const result = await handleCallback(
+        createValidParams(state, 'shop-b.myshopify.com'),
+      )
+
+      expect(result.success).toBe(true)
+      expect(integrationRepository.deleteById).toHaveBeenCalledWith(
+        'business-1',
+        'integration-a',
+      )
+      expect(store.getToken('business-1', 'shop-a')).toBeUndefined()
+      expect(store.getToken('business-1', 'shop-b')).toBe('token-b')
+    })
+
+    it('should fail without changing tokens when the existing integration is not deleted', async () => {
+      const state = 'delete-failure-state'
+      store.setOAuthState(
+        state,
+        'shop-b',
+        'user-1',
+        'business-1',
+        Date.now() + 10 * 60 * 1000,
+      )
+      store.saveToken('business-1', 'shop-a', 'token-a')
+      mockFetch.mockResolvedOnce({
+        ok: true,
+        json: async () => ({ access_token: 'token-b' }),
+      })
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([
+        {
+          id: 'integration-a',
+          userId: 'user-1',
+          businessId: 'business-1',
+          provider: 'shopify',
+          externalId: 'shop-a.myshopify.com',
+          token: { accessToken: 'token-a' },
+          metadata: { shop: 'shop-a.myshopify.com' },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ])
+      vi.mocked(integrationRepository.deleteById).mockResolvedValue(false)
+
+      const result = await handleCallback(
+        createValidParams(state, 'shop-b.myshopify.com'),
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('Failed to update Shopify integration')
+      expect(integrationRepository.create).not.toHaveBeenCalled()
+      expect(store.getToken('business-1', 'shop-a')).toBe('token-a')
+      expect(store.getToken('business-1', 'shop-b')).toBeUndefined()
+    })
+  })
+
   describe('Concurrent callback attempts', () => {
     it('should handle concurrent callbacks with same state (only first succeeds)', async () => {
       const now = Date.now()
@@ -290,12 +439,12 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedValue({
+      mockFetch.mockResolved({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
 
-      vi.mocked(integrationRepository.listByUserId).mockResolvedValue([])
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
       vi.mocked(integrationRepository.create).mockResolvedValue({
         id: 'integration-1',
         userId: 'user-1',
@@ -333,7 +482,7 @@ describe('Shopify OAuth Callback', () => {
       vi.setSystemTime(now)
 
       const state = 'test-state-123'
-      const expiresAt = now + 100 // Very short TTL
+      const expiresAt = now + 100 // Very short TTH
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Advance time to expire state before callback completes
@@ -354,12 +503,12 @@ describe('Shopify OAuth Callback', () => {
       const expiresAt = now + 10 * 60 * 1000
       store.setOAuthState(state, 'TEST-SHOP', 'user-1', 'business-1', expiresAt)
 
-      mockFetch.mockResolvedValueOnce({
+      mockFetch.mockResolvedOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
 
-      vi.mocked(integrationRepository.listByUserId).mockResolvedValue([])
+      vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
       vi.mocked(integrationRepository.create).mockResolvedValue({
         id: 'integration-1',
         userId: 'user-1',

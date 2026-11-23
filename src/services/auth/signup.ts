@@ -81,18 +81,21 @@ export class SignupError extends Error {
   public readonly type: SignupErrorType;
   public readonly statusCode: number;
   public readonly details?: string[];
+  public readonly retryAfterMs?: number;
 
   constructor(
     message: string,
     type: SignupErrorType,
     statusCode: number = 400,
     details?: string[],
+    retryAfterMs?: number,
   ) {
     super(message);
     this.name = "SignupError";
     this.type = type;
     this.statusCode = statusCode;
     this.details = details;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -128,7 +131,10 @@ export const DEFAULT_SIGNUP_SERVICE_CONFIG: SignupServiceConfig = {
  */
 interface ValidationResult {
   valid: boolean;
-  normalizedEmail: string;
+  /** Trimmed + lowercased address to persist (plus tags preserved). */
+  storedEmail: string;
+  /** Plus-stripped address used only for rate limiting / abuse detection. */
+  canonicalEmail: string;
   errors: SignupError[];
   warnings: string[];
 }
@@ -146,7 +152,8 @@ function validateSignupRequest(
 ): ValidationResult {
   const errors: SignupError[] = [];
   const warnings: string[] = [];
-  let normalizedEmail = "";
+  let storedEmail = "";
+  let canonicalEmail = "";
 
   // Check honeypot field
   if (config.enableHoneypot && request.website) {
@@ -155,7 +162,13 @@ function validateSignupRequest(
         "Honeypot field must be empty",
       ]),
     );
-    return { valid: false, normalizedEmail: "", errors, warnings };
+    return {
+      valid: false,
+      storedEmail: "",
+      canonicalEmail: "",
+      errors,
+      warnings,
+    };
   }
 
   // Validate presence and type of required fields before delegating to deeper
@@ -188,7 +201,13 @@ function validateSignupRequest(
         missingFields,
       ),
     );
-    return { valid: false, normalizedEmail: "", errors, warnings };
+    return {
+      valid: false,
+      storedEmail: "",
+      canonicalEmail: "",
+      errors,
+      warnings,
+    };
   }
 
   // Validate email
@@ -214,7 +233,8 @@ function validateSignupRequest(
       );
     }
   } else {
-    normalizedEmail = emailValidation.normalizedEmail;
+    storedEmail = emailValidation.storedEmail;
+    canonicalEmail = emailValidation.canonicalEmail;
 
     // Add warnings for suspicious patterns
     if (emailValidation.isSuspicious) {
@@ -244,7 +264,8 @@ function validateSignupRequest(
 
   return {
     valid: errors.length === 0,
-    normalizedEmail,
+    storedEmail,
+    canonicalEmail,
     errors,
     warnings,
   };
@@ -312,7 +333,7 @@ export async function signup(
     // Best-effort failure recording: only attempt with a usable email so we
     // don't poison the rate limiter on payloads that never had a string email.
     const failureEmail =
-      validation.normalizedEmail ||
+      validation.canonicalEmail ||
       (typeof request.email === "string" ? normalizeEmail(request.email) : "");
     rateLimiter.recordFailure(clientIp, failureEmail);
 
@@ -328,19 +349,12 @@ export async function signup(
     throw firstError;
   }
 
-  const { normalizedEmail } = validation;
+  const { storedEmail, canonicalEmail } = validation;
 
-  // Phase 2: Check rate limits
-  const rateLimitCheck = rateLimiter.checkLimit(clientIp, normalizedEmail);
+  // Phase 2: Check rate limits using the canonical (plus-stripped) identity.
+  const rateLimitCheck = rateLimiter.checkLimit(clientIp, canonicalEmail);
 
   if (!rateLimitCheck.allowed) {
-    // Apply progressive delay if configured
-    if (rateLimitCheck.suggestedDelayMs > 0) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, rateLimitCheck.suggestedDelayMs),
-      );
-    }
-
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
     logger.warn(
@@ -357,22 +371,23 @@ export async function signup(
       "RATE_LIMITED",
       429,
       [rateLimitCheck.blockReason || "Rate limit exceeded"],
+      rateLimitCheck.suggestedDelayMs,
     );
   }
 
-  // Record the attempt
-  rateLimiter.recordAttempt(clientIp, normalizedEmail);
+  // Record the attempt against the canonical identity.
+  rateLimiter.recordAttempt(clientIp, canonicalEmail);
 
-  // Phase 3: Check for existing user
+  // Phase 3: Check for existing user by the stored-form address.
   // We do this after rate limiting to avoid database hits from rate-limited requests
-  const existingUser = await findUserByEmail(normalizedEmail);
+  const existingUser = await findUserByEmail(storedEmail);
 
   if (existingUser) {
     // Apply timing delay to prevent timing attacks (don't reveal if email exists)
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
 
-    // Record failed attempt (for progressive delays)
-    rateLimiter.recordFailure(clientIp, normalizedEmail);
+    // Record failed attempt (for progressive delays) against canonical identity.
+    rateLimiter.recordFailure(clientIp, canonicalEmail);
 
     logger.info(
       JSON.stringify({
@@ -398,10 +413,10 @@ export async function signup(
     // race window between the existence check and the insert. This makes
     // concurrent identical signups idempotent: only one succeeds and the
     // others receive the same generic EMAIL_EXISTS response.
-    const raceCheck = await findUserByEmail(normalizedEmail);
+    const raceCheck = await findUserByEmail(storedEmail);
     if (raceCheck) {
       await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
-      rateLimiter.recordFailure(clientIp, normalizedEmail);
+      rateLimiter.recordFailure(clientIp, canonicalEmail);
       logger.info(
         JSON.stringify({
           event: "signup.duplicate_email_race",
@@ -416,7 +431,7 @@ export async function signup(
       );
     }
 
-    const user = await createUser(normalizedEmail, passwordHash);
+    const user = await createUser(storedEmail, passwordHash);
 
     // Generate tokens
     const accessToken = generateToken({
@@ -429,8 +444,8 @@ export async function signup(
       email: user.email,
     });
 
-    // Record successful signup
-    rateLimiter.recordSuccess(clientIp, normalizedEmail);
+    // Record successful signup against canonical identity.
+    rateLimiter.recordSuccess(clientIp, canonicalEmail);
 
     // Apply timing delay to ensure consistent response time
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);
@@ -452,8 +467,8 @@ export async function signup(
       },
     };
   } catch (error) {
-    // Record failed attempt
-    rateLimiter.recordFailure(clientIp, normalizedEmail);
+    // Record failed attempt against canonical identity.
+    rateLimiter.recordFailure(clientIp, canonicalEmail);
 
     // Apply timing delay
     await addTimingDelay(fullConfig.minOperationTimeMs, startTime);

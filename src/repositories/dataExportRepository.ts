@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { getRedisClient, type RedisClient } from '../redis.js'
+import { getRedisClient, redisCircuitBreaker, type RedisClient } from '../redis.js'
 
 export interface DataExport {
   id: string
@@ -42,11 +42,11 @@ export async function createDataExport(userId: string): Promise<DataExport> {
   const client = getRedisClient()
   const key = `${EXPORT_KEY_PREFIX}${exportId}`
 
-  await client.setex(
+  await redisCircuitBreaker.execute(() => client.setex(
     key,
     EXPORT_TTL_SECONDS,
     JSON.stringify(exportRecord)
-  )
+  ))
 
   return exportRecord
 }
@@ -58,10 +58,20 @@ export async function getDataExport(exportId: string): Promise<DataExport | null
   const client = getRedisClient()
   const key = `${EXPORT_KEY_PREFIX}${exportId}`
 
-  const data = await client.get(key)
+  const data = await redisCircuitBreaker.execute(() => client.get(key))
   if (!data) return null
 
   return JSON.parse(data)
+}
+
+/**
+ * Get export by ID, only if it belongs to the given user
+ */
+export async function getExportForUser(exportId: string, userId: string): Promise<DataExport | null> {
+  const exportRecord = await getDataExport(exportId)
+  if (!exportRecord) return null
+  if (exportRecord.userId !== userId) return null
+  return exportRecord
 }
 
 /**
@@ -85,11 +95,11 @@ export async function updateDataExportStatus(
     completedAt: status === 'completed' || status === 'failed' ? new Date() : existing.completedAt,
   }
 
-  await client.setex(
+  await redisCircuitBreaker.execute(() => client.setex(
     key,
     EXPORT_TTL_SECONDS,
     JSON.stringify(updated)
-  )
+  ))
 
   return updated
 }
@@ -103,13 +113,29 @@ export async function createDownloadToken(exportId: string): Promise<string> {
   const tokenKey = `${TOKEN_KEY_PREFIX}${token}`
 
   // Token expires after 24 hours or on first download
-  await client.setex(
+  await redisCircuitBreaker.execute(() => client.setex(
     tokenKey,
     24 * 60 * 60,
     JSON.stringify({ exportId, downloaded: false })
-  )
+  ))
 
   return token
+}
+
+/**
+ * Read the export id behind a download token without consuming it.
+ */
+export async function peekDownloadToken(token: string): Promise<string | null> {
+  const client = getRedisClient()
+  const tokenKey = `${TOKEN_KEY_PREFIX}${token}`
+
+  const data = await redisCircuitBreaker.execute(() => client.get(tokenKey))
+  if (!data) return null
+
+  const tokenData = JSON.parse(data)
+  if (tokenData.downloaded) return null
+
+  return tokenData.exportId
 }
 
 /**
@@ -119,21 +145,9 @@ export async function consumeDownloadToken(token: string): Promise<string | null
   const client = getRedisClient()
   const tokenKey = `${TOKEN_KEY_PREFIX}${token}`
 
-  const data = await client.get(tokenKey)
-  if (!data) return null
-
-  const tokenData = JSON.parse(data)
-
-  // Check if already downloaded
-  if (tokenData.downloaded) {
-    return null
-  }
-
-  // Mark as downloaded
-  tokenData.downloaded = true
-  await client.set(tokenKey, JSON.stringify(tokenData))
-
-  return tokenData.exportId
+  const script = `local value = redis.call('GET', KEYS[1]); if not value then return nil end; local data = cjson.decode(value); if data.downloaded then return nil end; data.downloaded = true; redis.call('SET', KEYS[1], cjson.encode(data), 'KEEPTTL'); return data.exportId`
+  const result = await redisCircuitBreaker.execute(() => client.eval(script, 1, tokenKey))
+  return typeof result === 'string' ? result : null
 }
 
 /**
@@ -157,6 +171,6 @@ export async function deleteDataExport(exportId: string): Promise<boolean> {
   const client = getRedisClient()
   const key = `${EXPORT_KEY_PREFIX}${exportId}`
 
-  const result = await client.del(key)
+  const result = await redisCircuitBreaker.execute(() => client.del(key))
   return result > 0
 }

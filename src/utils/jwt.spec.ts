@@ -19,6 +19,7 @@ function restoreEnv() {
 describe('JWT secret rotation', () => {
   beforeEach(() => {
     restoreEnv()
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/test'
     delete process.env.JWT_SECRET
     delete process.env.JWT_REFRESH_SECRET
   })

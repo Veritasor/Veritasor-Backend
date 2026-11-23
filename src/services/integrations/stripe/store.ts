@@ -138,7 +138,7 @@ function cleanupExpiredStates(): void {
 }
 
 // Run cleanup every 5 minutes
-setInterval(cleanupExpiredStates, 5 * 60 * 1000)
+setInterval(cleanupExpiredStates, 5 * 60 * 1000).unref()
 
 /**
  * Clears all integration records and OAuth state tokens.

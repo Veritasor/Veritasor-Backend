@@ -13,7 +13,7 @@ import {
 } from "../../src/services/webhooks/razorpayHandler.js";
 import { IntegrationPermission, ROLE_PERMISSIONS } from "../../src/types/permissions.js";
 import { clearAll } from "../../src/repositories/integration.js";
-import { integrationRepository } from "../../src/repositories/integrations.js";
+import * as integrationRepository from "../../src/repositories/integration.js";
 import { logger } from "../../src/utils/logger.js";
 import { clearTenants, createIsolatedTenant, getAuthHeaders, getTenantByToken } from "../fixtures/tenant.js";
 import * as shopifyStore from "../../src/services/integrations/shopify/store.js";
@@ -162,9 +162,9 @@ describe("Razorpay Connect Credential Integrity Checks", () => {
     expect(response.body.meta.credentialFingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(response.body.meta.verifiedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
-    const storedRecords = integrationRepository.listByUser(tenant.userId);
+    const storedRecords = await integrationRepository.listByUserId(tenant.userId);
     expect(storedRecords).toHaveLength(1);
-    expect(storedRecords[0]?.meta.apiKeySecret).toBe("secret_1234567890abcdef");
+    expect(storedRecords[0]?.token.apiKeySecret).toBe("secret_1234567890abcdef");
   });
 
   it("rejects padded credentials before calling Razorpay", async () => {
@@ -534,7 +534,9 @@ describe.skip("Integrations Granular Permission System", () => {
         provider: 'stripe',
         userId: 'user_123',
         businessId: 'business_123',
-        meta: { externalId: 'acct_business_a' }
+        externalId: 'acct_business_a',
+        token: {},
+        metadata: { externalId: 'acct_business_a' }
       });
 
       // Try to access it with business_biz token (different business)
@@ -552,7 +554,9 @@ describe.skip("Integrations Granular Permission System", () => {
         provider: 'razorpay',
         userId: 'user_123',
         businessId: 'business_123',
-        meta: { externalId: 'acct_business_own' }
+        externalId: 'acct_business_own',
+        token: {},
+        metadata: { externalId: 'acct_business_own' }
       });
 
       // Access it with the correct business token
@@ -571,7 +575,9 @@ describe.skip("Integrations Granular Permission System", () => {
         provider: 'shopify',
         userId: 'user_123',
         businessId: 'business_123',
-        meta: { externalId: 'shop_business_a' }
+        externalId: 'shop_business_a',
+        token: {},
+        metadata: { externalId: 'shop_business_a' }
       });
 
       // Try to delete it with different business token
@@ -583,7 +589,7 @@ describe.skip("Integrations Granular Permission System", () => {
       expect(response.body.message).toMatch(/not found or access denied/i);
 
       // Verify integration still exists
-      const stillExists = integrationRepository.findById(integration.id);
+      const stillExists = await integrationRepository.getById(integration.id);
       expect(stillExists).toBeTruthy();
     });
 
@@ -593,7 +599,9 @@ describe.skip("Integrations Granular Permission System", () => {
         provider: 'stripe',
         userId: 'user_123',
         businessId: 'business_123',
-        meta: { externalId: 'stripe_business_own' }
+        externalId: 'stripe_business_own',
+        token: {},
+        metadata: { externalId: 'stripe_business_own' }
       });
 
       // Delete it with correct business token
@@ -605,7 +613,7 @@ describe.skip("Integrations Granular Permission System", () => {
       expect(response.body.message).toMatch(/disconnected successfully/i);
 
       // Verify integration is deleted
-      const deleted = integrationRepository.findById(integration.id);
+      const deleted = await integrationRepository.getById(integration.id);
       expect(deleted).toBeNull();
     });
 
@@ -616,14 +624,18 @@ describe.skip("Integrations Granular Permission System", () => {
         provider: 'stripe',
         userId: 'user_123',
         businessId: 'business_123',
-        meta: { externalId: 'stripe_biz_a' }
+        externalId: 'stripe_biz_a',
+        token: {},
+        metadata: { externalId: 'stripe_biz_a' }
       });
 
       await integrationRepository.create({
         provider: 'razorpay',
         userId: 'biz_admin_123',
         businessId: 'business_biz',
-        meta: { externalId: 'razorpay_biz_b' }
+        externalId: 'razorpay_biz_b',
+        token: {},
+        metadata: { externalId: 'razorpay_biz_b' }
       });
 
       // Request with business_123 token should only see their integration

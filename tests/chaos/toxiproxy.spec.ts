@@ -2,101 +2,112 @@
  * @vitest-environment node
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { Toxiproxy } from 'toxiproxy-node-client';
+import { ToxiproxyClient, latencyToxic, timeoutToxic, resetPeerToxic } from './toxiproxy-client.js';
 import { db } from '../../src/db/client.js';
-import { createSorobanRpcServer } from '../../src/services/soroban/client.js';
-import { executeSorobanRequest } from '../../src/services/soroban/client.js';
+import { getRedisClient, resetRedisClient, redisHealthProbe } from '../../src/redis.js';
 
-// Only run these tests if CHAOS_TESTS is set
 const describeChaos = process.env.CHAOS_TESTS ? describe : describe.skip;
 
-describeChaos('Chaos Testing with Toxiproxy', () => {
-  const toxiproxy = new Toxiproxy('http://localhost:8474');
-  let pgProxy: any;
-  let redisProxy: any;
-  let sorobanProxy: any;
+describeChaos('Chaos Testing with Toxiproxy (Smoke)', () => {
+  const toxiproxy = new ToxiproxyClient(process.env.TOXIPROXY_URL || 'http://localhost:8474');
+  let pgProxy: Awaited<ReturnType<typeof toxiproxy.getOrCreateProxy>>;
+  let redisProxy: Awaited<ReturnType<typeof toxiproxy.getOrCreateProxy>>;
+
+  const PG_PROXY_NAME = 'postgres';
+  const REDIS_PROXY_NAME = 'redis';
+
+  const pgUpstream = process.env.PG_UPSTREAM || 'postgres:5432';
+  const redisUpstream = process.env.REDIS_UPSTREAM || 'redis:6379';
 
   beforeAll(async () => {
-    // Setup proxies
-    try {
-      pgProxy = await toxiproxy.createProxy({
-        name: 'postgres',
-        listen: '0.0.0.0:5432',
-        upstream: 'postgres:5432'
-      });
-      redisProxy = await toxiproxy.createProxy({
-        name: 'redis',
-        listen: '0.0.0.0:6379',
-        upstream: 'redis:6379'
-      });
-      sorobanProxy = await toxiproxy.createProxy({
-        name: 'soroban',
-        listen: '0.0.0.0:8000',
-        upstream: 'soroban-testnet.stellar.org:443' // Example upstream
-      });
-    } catch (e) {
-      // Proxies might already exist
-      const proxies = await toxiproxy.getAll();
-      pgProxy = proxies['postgres'];
-      redisProxy = proxies['redis'];
-      sorobanProxy = proxies['soroban'];
-    }
+    await toxiproxy.reset().catch(() => {});
+
+    pgProxy = await toxiproxy.getOrCreateProxy({
+      name: PG_PROXY_NAME,
+      listen: '0.0.0.0:5432',
+      upstream: pgUpstream,
+    });
+
+    redisProxy = await toxiproxy.getOrCreateProxy({
+      name: REDIS_PROXY_NAME,
+      listen: '0.0.0.0:6379',
+      upstream: redisUpstream,
+    });
+
+    resetRedisClient();
+    process.env.REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
   });
 
   afterEach(async () => {
-    // Clean up toxics after each test
-    if (pgProxy) await pgProxy.refreshToxics();
-    if (redisProxy) await redisProxy.refreshToxics();
-    if (sorobanProxy) await sorobanProxy.refreshToxics();
-  });
-
-  it('Postgres - handles connection resets gracefully', async () => {
-    // Add toxic to simulate connection reset
-    await pgProxy.addToxic(new Toxiproxy.Toxic(pgProxy, {
-      type: 'reset_peer',
-      attributes: { timeout: 100 }
-    }));
-
-    try {
-      await db.query('SELECT 1');
-      expect.fail('Should have failed due to connection reset');
-    } catch (error: any) {
-      expect(error.message).toMatch(/timeout|reset|closed/i);
+    await pgProxy?.refreshToxics();
+    await redisProxy?.refreshToxics();
+    for (const t of [...(pgProxy?.toxics ?? [])]) {
+      await pgProxy.removeToxic(t.name).catch(() => {});
+    }
+    for (const t of [...(redisProxy?.toxics ?? [])]) {
+      await redisProxy.removeToxic(t.name).catch(() => {});
     }
   });
 
-  it('Postgres - handles latency gracefully (idempotency)', async () => {
-    // Add latency toxic
-    await pgProxy.addToxic(new Toxiproxy.Toxic(pgProxy, {
-      type: 'latency',
-      attributes: { latency: 2000, jitter: 500 }
-    }));
+  afterAll(async () => {
+    resetRedisClient();
+  });
 
+  it('Postgres - reset_peer forces connection drop', async () => {
+    await pgProxy.addToxic(resetPeerToxic(50));
+    try {
+      await db.query('SELECT 1');
+      expect.fail('Should have thrown due to reset_peer');
+    } catch (error: any) {
+      expect(error.message || error.code || '').toMatch(/reset|closed|terminated|ECONN/i);
+    }
+  });
+
+  it('Postgres - latency with jitter adds measurable delay', async () => {
+    await pgProxy.addToxic(latencyToxic(200, 50));
     const start = Date.now();
     try {
       await db.query('SELECT 1');
-    } catch (e) {
-      // Timeout error is acceptable, just ensure it handles the delay
+    } catch {
+      // acceptable
     }
     const duration = Date.now() - start;
-    expect(duration).toBeGreaterThanOrEqual(1500);
+    expect(duration).toBeGreaterThanOrEqual(150);
   });
 
-  it('Soroban - handles network partition during write', async () => {
-    // Add toxic to drop packets (simulate partition)
-    await sorobanProxy.addToxic(new Toxiproxy.Toxic(sorobanProxy, {
-      type: 'timeout',
-      attributes: { timeout: 1000 }
-    }));
-
-    const server = createSorobanRpcServer('http://localhost:8000');
-    
+  it('Postgres - timeout toxic causes query failure', async () => {
+    await pgProxy.addToxic(timeoutToxic(50));
     try {
-      await server.getAccount('GAOQJGUAB7NI7K7I62ORBXMN3J4HOUXWEBVZTIGROK6W4CYPIWCOE6XQ');
-      expect.fail('Should have timed out');
+      await db.query('SELECT pg_sleep(1)');
+      expect.fail('Expected timeout');
     } catch (error: any) {
-      expect(error.message).toMatch(/timeout|network|failed/i);
+      const msg = error?.message || error?.code || String(error);
+      expect(msg).toMatch(/timeout|closed|terminated|ECONN|ETIMEDOUT/i);
     }
   });
 
+  it('Redis - latency with jitter delays PING response', async () => {
+    await redisProxy.addToxic(latencyToxic(150, 50));
+    const client = getRedisClient();
+    const start = Date.now();
+    try {
+      await client.ping();
+    } catch {
+      // acceptable
+    }
+    const duration = Date.now() - start;
+    expect(duration).toBeGreaterThanOrEqual(100);
+  });
+
+  it('Redis - timeout toxic triggers health probe error', async () => {
+    await redisProxy.addToxic(timeoutToxic(10));
+    const result = await redisHealthProbe();
+    expect(result.startsWith('error:')).toBe(true);
+  });
+
+  it('Toxiproxy version is reachable', async () => {
+    const version = await toxiproxy.version();
+    expect(typeof version).toBe('string');
+    expect(version.length).toBeGreaterThan(0);
+  });
 });

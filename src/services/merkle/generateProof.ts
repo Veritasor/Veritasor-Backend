@@ -1,10 +1,18 @@
-import { hash } from "./buildTree.js";
+import {
+  hash as hashLeaf,
+  hashNode,
+  hashV1,
+  hashV2,
+  type MerkleAlgorithmVersion,
+} from "./buildTree.js";
+
+export type MerkleProofVersion = MerkleAlgorithmVersion;
 
 /**
  * Proof format:
  * An array of { sibling: string, position: 'left' | 'right' } objects.
- * To verify: starting from the hashed leaf, repeatedly hash(sibling + current)
- * or hash(current + sibling) depending on position, until you reach the root.
+ * To verify: starting from the hashed leaf, repeatedly hash(sibling || current)
+ * or hash(current || sibling) depending on position, until you reach the root.
  */
 export interface ProofStep {
   sibling: string;
@@ -67,7 +75,11 @@ export function isProof(value: unknown): value is Proof {
  * @notice Generate a Merkle proof for a leaf at a specific index.
  * @dev Guards validate inputs to prevent malformed proofs.
  */
-export function generateProof(leaves: string[], leafIndex: number): Proof {
+export function generateProof(
+  leaves: string[],
+  leafIndex: number,
+  version: MerkleAlgorithmVersion = 2
+): Proof {
   if (!Array.isArray(leaves) || leaves.length === 0) {
     throw new Error("leaves must be a non-empty array of strings");
   }
@@ -83,26 +95,27 @@ export function generateProof(leaves: string[], leafIndex: number): Proof {
     throw new Error("leafIndex out of range");
   }
 
-  let level: string[] = leaves.map((l) => hash(l));
+  let level: string[] = leaves.map((l) => hashLeaf(l, version));
   let index = leafIndex;
   const proof: Proof = [];
 
   while (level.length > 1) {
     const siblingIndex = index % 2 === 0 ? index + 1 : index - 1;
-    const sibling =
-      siblingIndex < level.length ? level[siblingIndex] : level[index]; // duplicate if odd
+    if (siblingIndex >= 0 && siblingIndex < level.length) {
+      proof.push({
+        sibling: level[siblingIndex],
+        position: index % 2 === 0 ? "right" : "left",
+      });
+    }
 
-    proof.push({
-      sibling,
-      position: index % 2 === 0 ? "right" : "left",
-    });
-
-    // Move up to next level
     const next: string[] = [];
     for (let i = 0; i < level.length; i += 2) {
       const left = level[i];
-      const right = i + 1 < level.length ? level[i + 1] : left;
-      next.push(hash(left + right));
+      if (i + 1 < level.length) {
+        next.push(hashNode(left, level[i + 1], version));
+      } else {
+        next.push(left);
+      }
     }
     level = next;
     index = Math.floor(index / 2);
@@ -111,28 +124,98 @@ export function generateProof(leaves: string[], leafIndex: number): Proof {
   return proof;
 }
 
+export function generateProofV1(leaves: string[], leafIndex: number): Proof {
+  return generateProof(leaves, leafIndex, 1);
+}
+
+export function generateProofV2(leaves: string[], leafIndex: number): Proof {
+  return generateProof(leaves, leafIndex, 2);
+}
+
+function expectedProofLength(leafIndex: number, treeSize: number): number {
+  if (!Number.isInteger(leafIndex) || !Number.isInteger(treeSize)) return -1;
+  if (leafIndex < 0 || treeSize <= 0 || leafIndex >= treeSize) return -1;
+
+  let currentIndex = leafIndex;
+  let currentSize = treeSize;
+  let length = 0;
+
+  while (currentSize > 1) {
+    if (currentIndex % 2 === 0) {
+      if (currentIndex + 1 < currentSize) {
+        length += 1;
+      }
+    } else {
+      length += 1;
+    }
+
+    currentIndex = Math.floor(currentIndex / 2);
+    currentSize = Math.ceil(currentSize / 2);
+  }
+
+  return length;
+}
+
 /**
  * @notice Verify a Merkle proof against a known root.
  * @dev Returns false on guard failures (invalid inputs, malformed proof, bad root).
+ * When leafIndex and treeSize are provided, the proof length must match the exact
+ * path expected for that leaf in a tree of that size.
  */
-export function verifyProof(leaf: string, proof: Proof, root: string): boolean {
+export function verifyProof(
+  leaf: string,
+  proof: Proof,
+  root: string,
+  leafIndex?: number,
+  treeSize?: number,
+  version: MerkleAlgorithmVersion = 2
+): boolean {
   if (typeof leaf !== "string") return false;
   const normalizedRoot = normalizeHashHex(root);
   if (!normalizedRoot) return false;
   if (!isProof(proof)) return false;
 
-  let current = hash(leaf);
+  if (typeof leafIndex === "number" && typeof treeSize === "number") {
+    const expectedLength = expectedProofLength(leafIndex, treeSize);
+    if (expectedLength < 0 || proof.length !== expectedLength) return false;
+  }
+
+  let current = hashLeaf(leaf, version);
 
   for (const step of proof) {
     const sibling = normalizeHashHex(step.sibling);
     if (!sibling) return false;
 
     if (step.position === "right") {
-      current = hash(current + sibling);
+      current = hashNode(current, sibling, version);
     } else {
-      current = hash(sibling + current);
+      current = hashNode(sibling, current, version);
     }
   }
 
   return current === normalizedRoot;
 }
+
+export function verifyProofV1(
+  leaf: string,
+  proof: Proof,
+  root: string,
+  leafIndex?: number,
+  treeSize?: number
+): boolean {
+  return verifyProof(leaf, proof, root, leafIndex, treeSize, 1);
+}
+
+export function verifyProofV2(
+  leaf: string,
+  proof: Proof,
+  root: string,
+  leafIndex?: number,
+  treeSize?: number
+): boolean {
+  return verifyProof(leaf, proof, root, leafIndex, treeSize, 2);
+}
+
+export { hashV1, hashV2 };
+export const hash = hashV2;
+export const hashLegacy = hashV1;

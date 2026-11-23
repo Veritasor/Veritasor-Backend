@@ -669,14 +669,51 @@ consumed on first use.
 
 ## JWT Rotation Notes
 
-- Refresh tokens are treated as single-use in rotation flows.
-- Reuse of a consumed refresh token must be handled as a theft signal and rejected.
-- Clock skew is tolerated by verifier configuration; tests should use expirations beyond skew tolerance.
+The rotation-aware token family API in `src/utils/jwt.ts` (the `generateAccessToken`,
+`generateRefreshTokenWithFamily`, `generateTokenPair`, `verifyAccessToken`,
+`verifyRefreshTokenRotationAware`, `refreshTokenPair` family) implements the
+following single-use/rotation contract:
 
-Environment variables used by JWT tests and auth flows:
+- **Single use, by construction**: `refreshTokenPair` consumes the presented
+  refresh-token `jti` (moving it into the family's `blacklistedJtis`) *before*
+  minting a replacement, so a replayed token can never re-rotate.
+- **Reuse = theft**: any replay of a consumed refresh token raises `TOKEN_REUSED`
+  and revokes the WHOLE family — the sibling access token and the current
+  refresh token are added to the global blacklist immediately, and the family is
+  marked `concurrentRefreshDetected` (persistent compromise marker). Freshly
+  minted tokens for that family are then rejected with `FAMILY_COMPROMISED`.
+  This response is asserted end-to-end in `tests/security/jwt-reuse-detection.spec.ts`.
+- **Concurrent refresh is serialised** per family with an async mutex
+  (`withFamilyLock`), so two requests presenting the same refresh token cannot
+  both succeed: exactly one rotation wins, the peers are rejected as reusers.
+  Covered by `tests/unit/utils/jwt.test.ts` ("serialises concurrent refresh...").
+- **Claim binding**: family tokens embed `jti`, `familyId`, and a `type` claim
+  plus distinct audiences (`JWT_AUDIENCE` for access, `JWT_REFRESH_AUDIENCE` for
+  refresh). Verification enforces `iss`, the correct `aud` for the token role,
+  and `alg: HS256`, so access tokens can never be redeemed as refresh tokens and
+  vice-versa (algorithm-confusion is blocked).
+- **Clock skew** is tolerated by verifier configuration; tests should use
+  expirations beyond skew tolerance.
 
+### In-memory scope caveat
+
+The family store is process-local. Multi-instance deployments must use the
+durable `usedTokenStore` replay detection (`src/services/auth/usedTokenStore.js`),
+which already backs the deployed `/auth/refresh` route.
+
+### Async `refreshTokenPair` migration note
+
+`refreshTokenPair` is **async** (per-family mutex). There are no in-repo callers
+yet; callers awaiting a synchronous return must `await` it.
+
+### Environment variables used by JWT tests and auth flows
+
+- `JWT_ISSUER` (default `veritasor-api`)
+- `JWT_AUDIENCE` (default `veritasor-client`) — access token audience
+- `JWT_REFRESH_AUDIENCE` (default `veritasor-refresh`) — refresh token audience
 - `JWT_SECRET` (access token secret)
-- `JWT_REFRESH_SECRET` (refresh token secret)
+- `JWT_REFRESH_SECRET` (refresh token secret — falls back to the primary secret
+  in production with a logged warning)
 - `JWT_CLOCK_SKEW_SECONDS` (default `10`)
 - `JWT_ACCESS_TOKEN_TTL` (default `3600`)
 - `JWT_REFRESH_TOKEN_TTL` (default `604800`)

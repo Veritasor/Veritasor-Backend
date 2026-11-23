@@ -92,20 +92,15 @@ export async function update(id: string, data: UpdateUserData): Promise<User> {
     fields.push(`updated_at = now()`)
     values.push(id)
 
+    let result: { rows: any[] }
     try {
-        const result = await db.query(
+        result = await db.query(
             `UPDATE users
        SET ${fields.join(', ')}
        WHERE id = $${placeholderIndex}
        RETURNING id, email, name, created_at as "createdAt", updated_at as "updatedAt"`,
             values
         )
-
-        if (result.rows.length === 0) {
-            throw new AppError('User not found', 404, 'USER_NOT_FOUND')
-        }
-
-        return result.rows[0]
     } catch (error: any) {
         console.error('Error in update user:', error)
         if (error.code === '23505') {
@@ -113,4 +108,13 @@ export async function update(id: string, data: UpdateUserData): Promise<User> {
         }
         throw new AppError('Failed to update user', 500, 'DB_ERROR')
     }
+
+    // Kept outside the try: a zero-row UPDATE is a "not found", not a database
+    // failure. Throwing it inside the try made the catch below re-wrap it as a
+    // generic 500 instead of surfacing the 404 the caller expects.
+    if (result.rows.length === 0) {
+        throw new AppError('User not found', 404, 'USER_NOT_FOUND')
+    }
+
+    return result.rows[0]
 }

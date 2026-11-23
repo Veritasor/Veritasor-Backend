@@ -300,6 +300,20 @@ describe('Attestation Repository - Basic CRUD Operations', () => {
       expect(error.type).toBe(ConflictErrorType.CONFLICT_TYPE_FOREIGN_KEY);
       expect(error.details.businessId).toBe(input.businessId);
     });
+
+    it('should throw an error if no rows are returned during creation', async () => {
+      const emptyClient: DbClient = {
+        query: async () => ({ rows: [] })
+      };
+      const input: CreateAttestationInput = {
+        businessId: 'business-123',
+        period: '2025-02',
+        merkleRoot: '0x' + 'c'.repeat(64),
+        txHash: '0x' + 'd'.repeat(64),
+        status: 'pending',
+      };
+      await expect(create(emptyClient, input)).rejects.toThrow('Failed to create attestation: no rows returned');
+    });
   });
 
   describe('getById function', () => {

@@ -185,11 +185,17 @@ describe('createShutdownOrchestrator', () => {
       expect(exitCalls).toEqual([0]);
     });
 
-    it('invokes onCleanup hook after pool closes', async () => {
+    it('stops workers before server close and pool end', async () => {
       const { server, triggerClose } = makeServer();
       const { pool } = makePool();
       const { proc, exitCalls, emit } = makeProc();
-      const onCleanup = vi.fn().mockResolvedValue(undefined);
+      const order: string[] = [];
+      const onCleanup = vi.fn(async () => { order.push('workers stop'); });
+      const close = (server as unknown as { close: (cb: (err?: Error) => void) => void }).close;
+      (server as unknown as { close: (cb: (err?: Error) => void) => void }).close = (cb) => {
+        order.push('server close'); close(cb);
+      };
+      vi.mocked(pool.end).mockImplementation(async () => { order.push('pool end'); });
 
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 5_000, onCleanup });
       orchestrator.register(server, proc);
@@ -200,6 +206,7 @@ describe('createShutdownOrchestrator', () => {
       await flush();
 
       expect(onCleanup).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(['workers stop', 'server close', 'pool end']);
       expect(exitCalls).toEqual([0]);
     });
 

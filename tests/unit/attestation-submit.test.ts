@@ -63,7 +63,7 @@ describe('submitAttestation - Enhanced with retry logic', () => {
       txHash: expect.stringMatching(/^tx_[a-f0-9]{8}_\d+$/),
     });
 
-    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(startDate, endDate);
+    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(businessId, startDate, endDate);
     expect(mockAttestationRepository.create).toHaveBeenCalledWith({
       businessId,
       period,

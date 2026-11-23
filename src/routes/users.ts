@@ -1,34 +1,40 @@
-import { Router } from 'express'
+import { Router, type NextFunction } from 'express'
 import { requireAuth } from '../middleware/requireAuth.js'
 import updateProfile from '../services/user/updateProfile.js'
 import { validateBody } from '../middleware/validate.js'
+import { AppError, VRTErrorCodes } from '../types/errors.js'
 import { updateUserProfileSchema } from './users.schema.js'
 import {
   initiateDataExport,
   getExportStatus,
   getExportArchive,
 } from '../services/user/dataExportService.js'
-import { consumeDownloadToken } from '../repositories/dataExportRepository.js'
+import { consumeDownloadToken, peekDownloadToken } from '../repositories/dataExportRepository.js'
 import { logger } from '../utils/logger.js'
+import { CachePolicies, setCacheControl } from '../utils/cacheControl.js'
 
 export const usersRouter = Router()
 
 // PATCH /api/users/me - update current user's profile
-usersRouter.patch('/me', requireAuth, validateBody(updateUserProfileSchema), async (req: any, res: any) => {
-  try {
-    const updates = req.body
+usersRouter.patch(
+  '/me',
+  requireAuth,
+  validateBody(updateUserProfileSchema),
+  async (req: any, res: any, next: NextFunction) => {
+    try {
+      const updates = req.body
 
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ message: 'No updatable fields provided' })
+      if (!updates || Object.keys(updates).length === 0) {
+        throw new AppError('No updatable fields provided', 400, VRTErrorCodes.VRT_0002)
+      }
+
+      const updated = await updateProfile(req.user.id, updates)
+      return res.json(updated)
+    } catch (err: any) {
+      next(err)
     }
-
-    const userId = req.user.id
-    const updated = await updateProfile(userId, updates)
-    return res.json(updated)
-  } catch (err: any) {
-    return res.status(400).json({ message: err?.message ?? 'Invalid input' })
-  }
-})
+  },
+)
 
 // POST /api/users/me/export - initiate GDPR data export
 usersRouter.post('/me/export', requireAuth, async (req: any, res: any) => {
@@ -60,29 +66,33 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
       return res.status(400).json({ message: 'Invalid export token' })
     }
 
-    // Verify and consume the token (one-time use)
-    const exportId = await consumeDownloadToken(token)
+    // Look up the export behind the token without consuming it, so owner
+    // checks can fail closed without burning the caller's token.
+    const exportId = await peekDownloadToken(token)
 
     if (!exportId) {
       // Token doesn't exist, already used, or expired
       return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
     }
 
-    // Get the export status
-    const exportStatus = await getExportStatus(exportId)
+    // Get the export status for the authenticated user only.
+    // Returns null for other users' exports so ids cannot be enumerated.
+    const exportStatus = await getExportStatus(exportId, userId)
 
     if (!exportStatus) {
       return res.status(404).json({ message: 'Export not found' })
     }
 
-    // Verify export belongs to the authenticated user
-    // Note: In production, we'd check the userId from the export metadata
     if (exportStatus.status !== 'completed') {
       return res.status(202).json({
         exportId,
         status: exportStatus.status,
         message: 'Export is still being processed',
       })
+    }
+
+    if (await consumeDownloadToken(token) !== exportId) {
+      return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
     }
 
     // Get the encrypted archive
@@ -92,11 +102,18 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
       return res.status(404).json({ message: 'Export archive not found' })
     }
 
+    // Only now that the caller is confirmed to be the owner do we consume
+    // the one-time token.
+    const consumedExportId = await consumeDownloadToken(token)
+    if (!consumedExportId || consumedExportId !== exportId) {
+      return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
+    }
+
     // Return as downloadable file
     res.setHeader('Content-Type', 'application/octet-stream')
     res.setHeader('Content-Disposition', `attachment; filename="gdpr-export-${exportId}.enc"`)
     res.setHeader('Content-Length', archiveData.length)
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    setCacheControl(res, CachePolicies.DATA_EXPORT_DOWNLOAD)
 
     return res.send(archiveData)
   } catch (err: any) {
@@ -109,12 +126,13 @@ usersRouter.get('/me/export/:token', requireAuth, async (req: any, res: any) => 
 usersRouter.get('/me/export/:exportId/status', requireAuth, async (req: any, res: any) => {
   try {
     const { exportId } = req.params
+    const userId = req.user.id
 
     if (!exportId || typeof exportId !== 'string' || exportId.length < 32) {
       return res.status(400).json({ message: 'Invalid export ID' })
     }
 
-    const exportStatus = await getExportStatus(exportId)
+    const exportStatus = await getExportStatus(exportId, userId)
 
     if (!exportStatus) {
       return res.status(404).json({ message: 'Export not found' })

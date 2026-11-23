@@ -1,8 +1,15 @@
 import { Request, Response, NextFunction } from "express";
 import { logger, runWithLoggerContext } from "../utils/logger.js";
 import { randomUUID } from "crypto";
-import { httpRequestDuration } from "../metrics.js";
-import { startHttpRequestSpan } from "../tracing.js";
+import { context, propagation } from "@opentelemetry/api";
+import { observeHttpRequestDuration } from "../metrics.js";
+import {
+  startHttpRequestSpan,
+  getNormalizedRoute,
+  UNMATCHED_ROUTE,
+} from "../tracing.js";
+
+export { getNormalizedRoute, UNMATCHED_ROUTE };
 
 /**
  * Extended Express Request with correlation ID for request tracing.
@@ -105,9 +112,13 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       res,
       correlationId,
       () => {
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
+
         logger.info({
           type: "request",
           correlationId,
+          tenantId,
           method: req.method,
           path: req.path,
           query: redactQuery(req.query as Record<string, unknown>),
@@ -122,15 +133,19 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
         const durationMs = sec * 1e3 + nano / 1e6;
         const durationSec = sec + nano / 1e9;
 
-        const route = (req.route?.path as string | undefined) ?? req.path;
-        httpRequestDuration.observe(
+        const route = getNormalizedRoute(req);
+        observeHttpRequestDuration(
           { method: req.method, route, status_code: String(res.statusCode) },
           durationSec,
         );
 
+        const activeBaggage = propagation.getBaggage(context.active());
+        const tenantId = activeBaggage?.getEntry("tenant.id")?.value;
+
         logger.info({
           type: "response",
           correlationId,
+          tenantId,
           method: req.method,
           path: req.path,
           statusCode: res.statusCode,

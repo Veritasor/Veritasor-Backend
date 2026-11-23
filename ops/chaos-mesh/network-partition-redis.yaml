@@ -1,0 +1,30 @@
+# Chaos Mesh NetworkChaos: partition the backend from Redis.
+#
+# Safety scoping mirrors network-partition-postgres.yaml — see that file's
+# header comment and ops/chaos-mesh/README.md.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-backend-redis
+  namespace: veritasor-nonprod
+  labels:
+    chaos-mesh.org/environment: nonprod
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - veritasor-nonprod
+    labelSelectors:
+      app.kubernetes.io/name: veritasor-backend
+      chaos-mesh.org/environment: nonprod
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - veritasor-nonprod
+      labelSelectors:
+        app.kubernetes.io/name: redis
+        chaos-mesh.org/environment: nonprod
+  duration: 60s

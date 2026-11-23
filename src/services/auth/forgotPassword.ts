@@ -21,10 +21,10 @@
  *   provided logger callback (or a no-op if omitted). The record contains only
  *   the first 8 hex chars of the raw token for correlation — never the full
  *   token, and never the hash.
- * • Email delivery failures — retryable vs. permanent failures are surfaced as
- *   distinct AppError codes so callers/operators can react appropriately.
- *   On any delivery failure the token is cleared from the DB before throwing,
- *   so the user is not left with an unusable token silently stored.
+ * • Email delivery failures — failures are logged and recorded in metrics while
+ *   returning the standard 200 response to prevent enumeration attacks.
+ *   On any delivery failure the token is cleared from the DB so the user is
+ *   not left with an unusable token silently stored.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -36,6 +36,7 @@ import {
 import { sendPasswordResetEmail } from '../email/sendReset.js'
 import { AppError } from '../../types/errors.js'
 import { hashResetToken, tokenLogPrefix } from '../../utils/tokenHash.js'
+import { normalizeStoredEmail } from '../../utils/abusePrevention.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ export interface ForgotPasswordRequest {
 
 export interface ForgotPasswordResponse {
   message: string
-  /** Returned only in non-production environments for local testing. */
+  /** Returned only in test environment or when EXPOSE_RESET_LINK_IN_RESPONSE=true outside production. */
   resetLink?: string
 }
 
@@ -72,6 +73,24 @@ export interface ForgotPasswordAuditRecord {
 export type ForgotPasswordLogger = (record: ForgotPasswordAuditRecord) => void
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Determines whether raw resetLink should be included in the response.
+ *
+ * Included only when:
+ * 1. NODE_ENV === 'test', OR
+ * 2. EXPOSE_RESET_LINK_IN_RESPONSE=true is explicitly set and environment is not production.
+ */
+export function shouldExposeResetLink(): boolean {
+  if (process.env.NODE_ENV === 'test') {
+    return true
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return false
+  }
+  const raw = process.env.EXPOSE_RESET_LINK_IN_RESPONSE?.trim().toLowerCase()
+  return raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on'
+}
 
 /**
  * Read RESET_TOKEN_TTL_MINUTES from env, defaulting to 15.
@@ -138,12 +157,16 @@ export async function forgotPassword(
   // parallel so the total wall-clock time is ~consistent whether or not the
   // user exists.
   const [user] = await Promise.all([
-    findUserByEmail(email.trim().toLowerCase()),
+    findUserByEmail(normalizeStoredEmail(email)),
     timingDelay(),
   ])
 
   // ── User not found: return the generic message without leaking existence ──
   if (!user) {
+    // Equalise timing: perform comparable cryptographic work to avoid timing side channels
+    const dummyRawToken = randomBytes(32).toString('hex')
+    hashResetToken(dummyRawToken)
+
     logger({ event: 'forgot_password_user_not_found', timestamp: nowIso() })
     return {
       message:
@@ -191,31 +214,23 @@ export async function forgotPassword(
       resetTokenExpiry: null,
     })
 
-    if (emailResult.retryable) {
-      logger({
-        event: 'forgot_password_email_retryable_failure',
-        tokenPrefix: logPrefix,
-        userId: String(user.id),
-        timestamp: nowIso(),
-      })
-      throw new AppError(
-        'Unable to send reset email right now. Please try again shortly.',
-        503,
-        'RESET_EMAIL_RETRYABLE_FAILURE',
-      )
-    }
-
     logger({
-      event: 'forgot_password_email_permanent_failure',
+      event: emailResult.retryable
+        ? 'forgot_password_email_retryable_failure'
+        : 'forgot_password_email_permanent_failure',
       tokenPrefix: logPrefix,
       userId: String(user.id),
       timestamp: nowIso(),
     })
-    throw new AppError(
-      'Password reset email is currently unavailable.',
-      500,
-      'RESET_EMAIL_UNAVAILABLE',
-    )
+
+    passwordResetEmailFailuresTotal.inc({
+      type: emailResult.retryable ? 'retryable' : 'permanent',
+    })
+
+    return {
+      message:
+        'If an account with this email exists, a reset link has been sent.',
+    }
   }
 
   logger({
@@ -225,11 +240,9 @@ export async function forgotPassword(
     timestamp: nowIso(),
   })
 
-  const isDev = process.env.NODE_ENV !== 'production'
-
   return {
     message:
       'If an account with this email exists, a reset link has been sent.',
-    ...(isDev && { resetLink }),
+    ...(shouldExposeResetLink() && { resetLink }),
   }
 }

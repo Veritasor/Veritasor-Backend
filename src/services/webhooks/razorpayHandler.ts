@@ -1,8 +1,17 @@
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { logger } from '../../utils/logger.js'
-import { isEventProcessed, markEventProcessed, checkTimestampTolerance } from './idempotency.js'
+import {
+  BackoffError,
+  type BackoffOptions,
+  DEFAULT_BACKOFF_OPTIONS,
+  withBackoff,
+} from '../../utils/backoff.js'
+import { isEventProcessed, markEventProcessed, checkTimestampTolerance, reserveWebhookEvent } from './idempotency.js'
+import { RedisCircuitBreakerError } from '../../redis.js'
 import { saveDeadLetter } from './deadLetterQueue.js'
+import { webhookRetryAttempts, webhookRetryExhaustedTotal } from '../../metrics.js'
+import { hasForbiddenKeys } from '../../middleware/prototypePollution.js'
 
 const HANDLED_EVENT_TYPES = new Set(['payment.captured', 'payment.failed', 'order.paid'])
 const DEFAULT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
@@ -145,6 +154,10 @@ export function parseRazorpayEvent(
     throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
   }
 
+  if (hasForbiddenKeys(payload)) {
+    throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload: forbidden keys detected')
+  }
+
   const parsedEvent = razorpayEventSchema.safeParse(payload)
   if (!parsedEvent.success) {
     throw new RazorpayWebhookError('invalid_event', 400, 'Invalid event structure')
@@ -165,88 +178,180 @@ export function parseRazorpayEvent(
 }
 
 // In-memory store for processed events (for simplicity; in production, use DB)
-const processedEvents = new Set<string>()
-
 export function resetProcessedRazorpayEvents(): void {
-  processedEvents.clear()
+  resetIdempotencyStore()
 }
 
-export async function handleRazorpayEvent(event: RazorpayEvent): Promise<{ status: string; message: string }> {
-  try {
-    if (processedEvents.has(event.id)) {
-      logger.info(
-        JSON.stringify({
-          type: 'razorpay_webhook_duplicate',
-          eventId: event.id,
-          eventType: event.event,
-        }),
-      )
-
-      return {
-        status: 'ok',
-        message: `Event ${event.id} already processed`,
-      }
-    }
-
-    const tsCheck = checkTimestampTolerance(event.created_at)
-    if (!tsCheck.valid) {
-      throw new RazorpayWebhookError('invalid_timestamp', 400, tsCheck.reason ?? 'Event timestamp out of tolerance')
-    }
-    if (isEventProcessed(event.id)) {
-      logger.info(JSON.stringify({ type: 'razorpay_webhook_duplicate', eventId: event.id, eventType: event.event }))
-      return { status: 'duplicate', message: `Event ${event.id} already processed` }
-    }
-    markEventProcessed(event.id)
+async function processRazorpayEvent(event: RazorpayEvent): Promise<{ status: string; message: string }> {
+  if (processedEvents.has(event.id)) {
     logger.info(
       JSON.stringify({
-        type: 'razorpay_webhook_processing',
+        type: 'razorpay_webhook_duplicate',
         eventId: event.id,
         eventType: event.event,
       }),
     )
 
-    switch (event.event) {
-      case 'payment.captured':
-        return {
-          status: 'ok',
-          message: `Payment ${event.payload.payment?.entity.id} captured successfully`,
-        }
-      case 'payment.failed':
-        return {
-          status: 'ok',
-          message: `Payment ${event.payload.payment?.entity.id} failed`,
-        }
-      case 'order.paid':
-        return {
-          status: 'ok',
-          message: `Order ${event.payload.payment?.entity.order_id} marked as paid`,
-        }
-      default:
-        logger.info(
+    return {
+      status: 'ok',
+      message: `Event ${event.id} already processed`,
+    }
+  }
+
+  const tsCheck = checkTimestampTolerance(event.created_at)
+  if (!tsCheck.valid) {
+    throw new RazorpayWebhookError('invalid_timestamp', 400, tsCheck.reason ?? 'Event timestamp out of tolerance')
+  }
+  try {
+    const reserved = await reserveWebhookEvent(event.id)
+    if (!reserved) {
+      logger.info(JSON.stringify({ type: 'razorpay_webhook_duplicate', eventId: event.id, eventType: event.event }))
+      return { status: 'duplicate', message: `Event ${event.id} already processed` }
+    }
+  } catch (err: any) {
+    if (err?.name === 'RedisCircuitBreakerError') {
+      throw new RazorpayWebhookError('secret_not_configured', 503, 'Redis unavailable')
+    }
+    throw err
+  }
+  logger.info(
+    JSON.stringify({
+      type: 'razorpay_webhook_processing',
+      eventId: event.id,
+      eventType: event.event,
+    }),
+  )
+
+  let result: { status: string; message: string }
+
+  switch (event.event) {
+    case 'payment.captured':
+      result = {
+        status: 'ok',
+        message: `Payment ${event.payload.payment?.entity.id} captured successfully`,
+      }
+      break
+    case 'payment.failed':
+      result = {
+        status: 'ok',
+        message: `Payment ${event.payload.payment?.entity.id} failed`,
+      }
+      break
+    case 'order.paid':
+      result = {
+        status: 'ok',
+        message: `Order ${event.payload.payment?.entity.order_id} marked as paid`,
+      }
+      break
+    default:
+      logger.info(
+        JSON.stringify({
+          type: 'razorpay_webhook_ignored',
+          eventId: event.id,
+          eventType: event.event,
+        }),
+      )
+
+      result = {
+        status: 'ignored',
+        message: `Unhandled event type: ${event.event}`,
+      }
+      break
+  }
+
+  // Mark the event processed only AFTER the work succeeds
+  markEventProcessed(event.id)
+
+  return result
+}
+
+export async function handleRazorpayEvent(
+  event: RazorpayEvent,
+  backoffOptions?: Partial<BackoffOptions>,
+): Promise<{ status: string; message: string }> {
+  // Validate timestamp once before entering withBackoff
+  const tsCheck = checkTimestampTolerance(event.created_at)
+  if (!tsCheck.valid) {
+    throw new RazorpayWebhookError(
+      'invalid_timestamp',
+      400,
+      tsCheck.reason ?? 'Event timestamp out of tolerance',
+    )
+  }
+
+  // Check duplicate once before entering withBackoff
+  if (isEventProcessed(event.id)) {
+    logger.info(
+      JSON.stringify({
+        type: 'razorpay_webhook_duplicate',
+        eventId: event.id,
+        eventType: event.event,
+      }),
+    )
+    return {
+      status: 'duplicate',
+      message: `Event ${event.id} already processed`,
+    }
+  }
+
+  const options: BackoffOptions = {
+    ...DEFAULT_BACKOFF_OPTIONS,
+    ...backoffOptions,
+    shouldRetry: (error: unknown) => {
+      if (
+        error instanceof RazorpayWebhookError &&
+        error.httpStatus >= 400 &&
+        error.httpStatus < 500
+      ) {
+        return false
+      }
+      if (backoffOptions?.shouldRetry) {
+        return backoffOptions.shouldRetry(error)
+      }
+      return true
+    },
+  }
+
+  try {
+    return await withBackoff(
+      async () => processRazorpayEvent(event),
+      options,
+      (attempt, delayMs, error) => {
+        webhookRetryAttempts.observe({ provider: 'razorpay' }, attempt)
+        logger.warn(
           JSON.stringify({
-            type: 'razorpay_webhook_ignored',
+            type: 'razorpay_webhook_retry',
             eventId: event.id,
             eventType: event.event,
+            attempt,
+            delayMs,
+            error: error instanceof Error ? error.message : String(error),
           }),
         )
-
-        return {
-          status: 'ignored',
-          message: `Unhandled event type: ${event.event}`,
-        }
-    }
+      },
+    )
   } catch (error) {
     if (event.id) {
-      try {
-        await saveDeadLetter('razorpay', event.id, event, error)
-      } catch (dlqError) {
-        logger.error(
-          JSON.stringify({
-            type: 'razorpay_webhook_dlq_failed',
-            eventId: event.id,
-            error: dlqError instanceof Error ? dlqError.message : String(dlqError),
-          }),
-        )
+      const cause = error instanceof BackoffError ? error.cause : error
+      const attemptCount = error instanceof BackoffError ? error.attemptCount : 1
+      const isNonRetryable4xx =
+        cause instanceof RazorpayWebhookError &&
+        cause.httpStatus >= 400 &&
+        cause.httpStatus < 500
+
+      if (!isNonRetryable4xx) {
+        webhookRetryExhaustedTotal.inc({ provider: 'razorpay' })
+        try {
+          await saveDeadLetter('razorpay', event.id, event, cause, attemptCount)
+        } catch (dlqError) {
+          logger.error(
+            JSON.stringify({
+              type: 'razorpay_webhook_dlq_failed',
+              eventId: event.id,
+              error: dlqError instanceof Error ? dlqError.message : String(dlqError),
+            }),
+          )
+        }
       }
     }
     throw error

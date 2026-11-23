@@ -4,6 +4,7 @@ import {
   isSpanContextValid,
   trace,
 } from "@opentelemetry/api";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 
 /**
  * Structured logger utility with request-scoped context.
@@ -17,7 +18,7 @@ import {
  */
 
 export type LogContext = Record<string, unknown>;
-type LogLevel = "info" | "warn" | "error";
+type LogLevel = "debug" | "info" | "warn" | "error";
 
 const REDACTED = "[REDACTED]";
 const LOGGER_CONTEXT_KEY = createContextKey("veritasor.logger.context");
@@ -44,6 +45,10 @@ export const SENSITIVE_LOG_FIELDS = new Set([
   "x-auth-token",
   "email",
 ]);
+
+const NORMALIZED_SENSITIVE_LOG_FIELDS = new Set(
+  [...SENSITIVE_LOG_FIELDS].map((field) => normalizeFieldName(field)),
+);
 
 export function runWithLoggerContext<T>(
   logContext: LogContext,
@@ -77,14 +82,62 @@ export function getLoggerContext(activeContext = context.active()): LogContext {
 }
 
 export const logger = {
+  debug: (...args: unknown[]) => writeLog("debug", args),
   info: (...args: unknown[]) => writeLog("info", args),
   warn: (...args: unknown[]) => writeLog("warn", args),
   error: (...args: unknown[]) => writeLog("error", args),
 };
 
+/**
+ * Scoped, class-style logger.
+ *
+ * `Logger` is a thin adapter over the same {@link writeLog} pipeline as the
+ * module-level {@link logger} object, so scoped call sites keep redaction,
+ * request-correlation and OpenTelemetry emission identical to unscoped ones.
+ * The scope is emitted as the leading message segment.
+ *
+ * Usage: `const log = new Logger("DLQ"); log.info("archived", { count: 3 });`
+ */
+export class Logger {
+  constructor(private readonly scope: string) {}
+
+  debug(...args: unknown[]): void {
+    writeLog("debug", [this.scope, ...args]);
+  }
+
+  info(...args: unknown[]): void {
+    writeLog("info", [this.scope, ...args]);
+  }
+
+  warn(...args: unknown[]): void {
+    writeLog("warn", [this.scope, ...args]);
+  }
+
+  error(...args: unknown[]): void {
+    writeLog("error", [this.scope, ...args]);
+  }
+}
+
 function writeLog(level: LogLevel, args: unknown[]): void {
   const entry = buildLogEntry(level, args);
   const output = JSON.stringify(entry);
+
+  try {
+    const otelLogger = logs.getLogger("veritasor-logger");
+    const severityNumber = 
+      level === "error" ? SeverityNumber.ERROR : 
+      level === "warn" ? SeverityNumber.WARN : 
+      SeverityNumber.INFO;
+
+    otelLogger.emit({
+      severityNumber,
+      severityText: level.toUpperCase(),
+      body: entry.message || output,
+      attributes: entry as any,
+    });
+  } catch (e) {
+    // Ignore OTel bridge errors
+  }
 
   if (level === "error") {
     console.error(output);
@@ -151,6 +204,7 @@ function normalizeLogArgs(args: unknown[]): {
         name: arg.name,
         message: arg.message,
         stack: arg.stack,
+        ...Object.fromEntries(Object.entries(arg)),
       };
       continue;
     }
@@ -210,7 +264,7 @@ function assertTraceCorrelation(
 }
 
 function sanitizeLogValue(value: unknown, key?: string): unknown {
-  if (key && SENSITIVE_LOG_FIELDS.has(normalizeFieldName(key))) {
+  if (key && NORMALIZED_SENSITIVE_LOG_FIELDS.has(normalizeFieldName(key))) {
     return REDACTED;
   }
 
@@ -227,6 +281,12 @@ function sanitizeLogValue(value: unknown, key?: string): unknown {
       name: sanitizeString(value.name),
       message: sanitizeString(value.message),
       stack: value.stack ? sanitizeString(value.stack) : undefined,
+      ...Object.fromEntries(
+        Object.entries(value).map(([entryKey, entryValue]) => [
+          entryKey,
+          sanitizeLogValue(entryValue, entryKey),
+        ]),
+      ),
     };
   }
 
@@ -246,7 +306,7 @@ function sanitizeString(value: string): string {
 }
 
 function normalizeFieldName(key: string): string {
-  return key.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function isPlainRecord(value: unknown): value is LogContext {

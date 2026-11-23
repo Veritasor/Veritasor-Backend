@@ -1,12 +1,47 @@
 import { Router, Request, Response } from 'express';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/requireAuth.js';
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
-import { requirePermissions } from '../middleware/permissions.js';
+import { requirePermissions, requirePolicy } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
-import { listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
+import { getById, listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
+import crypto from 'crypto';
+import { setOAuthState, consumeOAuthState } from '../services/integrations/stripe/store.js';
+
+const DEFAULT_OAUTH_CALLBACK_URL = 'http://localhost:3000/integrations/callback';
+
+/**
+ * Build the provider authorization URL for the generic integration connect flow.
+ *
+ * Kept provider-explicit (rather than a lookup table) so the unsupported-provider
+ * branch stays a hard error and the URL shapes stay covered by tests.
+ */
+export function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
+  const callbackUrl = redirectUri ?? DEFAULT_OAUTH_CALLBACK_URL;
+
+  switch (provider) {
+    case 'stripe': {
+      const clientId = process.env.STRIPE_CLIENT_ID ?? 'mock_stripe_client_id';
+      return `https://connect.stripe.com/oauth/authorize?client_id=${clientId}&state=${state}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read_write`;
+    }
+    case 'shopify': {
+      const clientId = process.env.SHOPIFY_CLIENT_ID ?? 'mock_shopify_client_id';
+      const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? 'example';
+      return `https://${shopDomain}.myshopify.com/admin/oauth/authorize?client_id=${clientId}&state=${state}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read_products,read_orders`;
+    }
+    case 'razorpay':
+      return `${callbackUrl}?provider=razorpay&state=${state}`;
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
 
 const router = Router();
+
+// Integration records are keyed by UUID (see repositories/integration.ts).
+// Constraining the dynamic segment keeps provider paths such as `/razorpay`
+// and `/shopify` from being captured by the generic handlers below.
+const INTEGRATION_ID_PATTERN = '[0-9a-fA-F-]{36}';
 
 interface IntegrationType {
   name: string;
@@ -51,8 +86,77 @@ const disconnectIntegrationSchema = z.object({
 });
 
 /**
- * @route GET /api/integrations
- * @desc List all available integrations (public endpoint)
+ * Resolve the set of allowed redirect URIs for the generic connect flow.
+ * Configured via INTEGRATION_REDIRECT_ALLOWLIST (comma-separated).
+ */
+export function getAllowedRedirectUris(): string[] {
+  const raw = process.env.INTEGRATION_REDIRECT_ALLOWLIST
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+/**
+ * Return true if the supplied redirect URI is on the configured allowlist.
+ * Fails closed when the allowlist is empty.
+ */
+export function isAllowedRedirectUri(redirectUri: string): boolean {
+  const allowed = getAllowedRedirectUris()
+  return allowed.includes(redirectUri)
+}
+
+/**
+ * @notice Consume and validate a generic integration OAuth state for the caller.
+ * @returns true only if the state exists, has not expired, and is bound to the caller's user/business.
+ */
+export function consumeGenericOAuthState(state: string, userId: string, businessId: string): boolean {
+  const record = consumeOAuthState(state)
+  if (!record) return false
+  if (record.userId !== userId || record.businessId !== businessId) return false
+  return true
+}
+
+/**
+ * @notice Generate a random OAuth state for the generic connect flow.
+ */
+export function generateGenericOAuthState(): string {
+  return crypto.randomBytes(32).toString('hex')
+}
+
+/**
+ * @notice Persist the generic OAuth state bound to the initiating user/business.
+ */
+export function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): void {
+  setOAuthState(state, { userId, businessId, expiresAt })
+}
+
+/**
+ * GET /api/integrations/callback
+ * Handles the generic OAuth callback for providers that use the generic connect flow.
+ * Verifies the state is bound to the calling user/business and has not been replayed.
+ */
+router.get('/callback',
+  requireBusinessAuth,
+  async (req: Request, res: Response) => {
+    const state = (typeof req.query.state === 'string' ? req.query.state : '').trim()
+    if (!state) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Invalid or expired state' })
+    }
+
+    const ok = consumeGenericOAuthState(state, req.user!.userId, req.business!.id)
+    if (!ok) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Invalid or expired state' })
+    }
+
+    return res.json({ success: true })
+  }
+);
+
+/**
+ * GET /api/integrations
+ * List all available integrations (public endpoint)
  * @access Public - no authentication required for browsing available integrations
  */
 router.get('/', async (req: Request, res: Response) => {
@@ -101,13 +205,14 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 /**
- * @route GET /api/integrations/connected
- * @desc List connected integrations for authenticated business
+ * GET /api/integrations/connected
+ * List connected integrations for authenticated business
  * @access Private - requires business authentication and read permissions
  */
 router.get('/connected',
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.READ_CONNECTED),
+  requirePolicy('read', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
       const businessId = req.business!.id;
@@ -144,13 +249,14 @@ router.get('/connected',
 );
 
 /**
- * @route POST /api/integrations/connect
- * @desc Initiate connection process for an integration provider
+ * POST /api/integrations/connect
+ * Initiate connection process for an integration provider
  * @access Private - requires business authentication and connect permissions
  */
 router.post('/connect',
   requireBusinessAuth,
   requirePermissions(IntegrationPermission.CONNECT),
+  requirePolicy('create', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
       const { provider, redirectUri } = connectIntegrationSchema.parse(req.body);
@@ -171,6 +277,14 @@ router.post('/connect',
         });
       }
 
+      // Restrict client-supplied redirect URIs to the configured allowlist.
+      if (redirectUri !== undefined && !isAllowedRedirectUri(redirectUri)) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: 'redirectUri is not allowed',
+        });
+      }
+
       // Check if user already has this integration connected
       const existingIntegrations = await listByBusinessId(req.business!.id);
       const existingConnection = existingIntegrations.find(i => i.provider === provider);
@@ -186,27 +300,27 @@ router.post('/connect',
         });
       }
 
-      // Generate OAuth state or API key connection details
-      const state = `${provider}_${req.user!.userId}_${Date.now()}`;
+      // Generate a random OAuth state bound to the initiating user/business.
+      const state = generateGenericOAuthState();
+      const expiresAt = Date.now() + 10 * 60 * 1000;
+      storeGenericOAuthState(state, req.user!.userId, req.business!.id, expiresAt);
+
       const authUrl = generateAuthUrl(provider, state, redirectUri);
 
-      res.json({
-        provider,
-        authType: integration.authType,
+      return res.json({
+        state: state,
+        redirectUri: redirectUri,
         authUrl,
-        state,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 minutes
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({
-          error: 'Validation Error',
-          message: 'Invalid request body',
+          error: 'Bad Request',
+          message: 'Invalid request data',
           details: error.errors,
         });
       }
-
-      console.error('Error initiating integration connection:', error);
+      console.error('Error initiating integration connection', error);
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to initiate connection',
@@ -216,52 +330,43 @@ router.post('/connect',
 );
 
 /**
- * @route DELETE /api/integrations/:integrationId
- * @desc Disconnect a specific integration
- * @access Private - requires business authentication and disconnect permissions with ownership check
+ * DELETE /api/integrations/:id
+ * Disconnect an integration
+ * @access Private - requires business authentication and delete permissions
  */
-router.delete('/:integrationId',
+router.delete('/:id',
   requireBusinessAuth,
-  requirePermissions(IntegrationPermission.DISCONNECT_OWN, { checkOwnership: true }),
+  requirePermissions(IntegrationPermission.DISCONNECT),
+  requirePolicy('delete', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
-      const { integrationId } = req.params;
+      const { integrationId } = disconnectIntegrationSchema.parse({ integrationId: req.params.id });
 
-      if (!integrationId) {
-        return res.status(400).json({
-          error: 'Bad Request',
-          message: 'Integration ID is required',
-        });
-      }
-
-      // Verify ownership before deletion
-      const businessIntegrations = await listByBusinessId(req.business!.id);
-      const integration = businessIntegrations.find(i => i.id === integrationId);
-
-      if (!integration) {
+      const existing = await getById(integrationId);
+      if (!existing || existing.businessId !== req.business!.id) {
         return res.status(404).json({
           error: 'Not Found',
-          message: 'Integration not found or access denied',
+          message: 'Integration not found',
         });
       }
 
-      // Delete the integration
       const deleted = await deleteById(req.business!.id, integrationId);
-
       if (!deleted) {
-        return res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Failed to disconnect integration',
+        return res.status(404).json({
+          error: 'Not Found',
+          message: 'Integration not found',
         });
       }
 
-      res.json({
-        message: 'Integration disconnected successfully',
-        integrationId,
-        provider: integration.provider,
-        disconnectedAt: new Date().toISOString(),
-      });
+      return res.json({ success: true });
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          error: 'Bad Request',
+          message: 'Invalid integration ID',
+          details: error.errors,
+        });
+      }
       console.error('Error disconnecting integration:', error);
       res.status(500).json({
         error: 'Internal Server Error',
@@ -270,84 +375,5 @@ router.delete('/:integrationId',
     }
   }
 );
-
-/**
- * @route GET /api/integrations/:integrationId
- * @desc Get details of a specific integration
- * @access Private - requires business authentication and read permissions with ownership check
- */
-router.get('/:integrationId',
-  requireBusinessAuth,
-  requirePermissions(IntegrationPermission.READ_OWN, { checkOwnership: true }),
-  async (req: Request, res: Response) => {
-    try {
-      const { integrationId } = req.params;
-
-      if (!integrationId) {
-        return res.status(400).json({
-          error: 'Bad Request',
-          message: 'Integration ID is required',
-        });
-      }
-
-      const businessIntegrations = await listByBusinessId(req.business!.id);
-      const integration = businessIntegrations.find(i => i.id === integrationId);
-
-      if (!integration) {
-        return res.status(404).json({
-          error: 'Not Found',
-          message: 'Integration not found or access denied',
-        });
-      }
-
-      // Return safe integration details (exclude sensitive tokens)
-      const safeIntegration = {
-        id: integration.id,
-        provider: integration.provider,
-        externalId: integration.externalId,
-        createdAt: integration.createdAt,
-        updatedAt: integration.updatedAt,
-        metadata: {
-          // Only include non-sensitive metadata
-          ...Object.fromEntries(
-            Object.entries(integration.metadata).filter(([key]) =>
-              !key.includes('token') && !key.includes('secret') && !key.includes('key')
-            )
-          ),
-        },
-      };
-
-      res.json(safeIntegration);
-    } catch (error) {
-      console.error('Error fetching integration details:', error);
-      res.status(500).json({
-        error: 'Internal Server Error',
-        message: 'Failed to fetch integration details',
-      });
-    }
-  }
-);
-
-/**
- * Helper function to generate authentication URLs for different providers
- */
-function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
-  const baseUrl = redirectUri || 'http://localhost:3000/integrations/callback';
-
-  switch (provider) {
-    case 'stripe':
-      return `https://connect.stripe.com/oauth/authorize?client_id=mock_stripe_client_id&state=${state}&redirect_uri=${encodeURIComponent(baseUrl)}&scope=read_write`;
-
-    case 'shopify':
-      return `https://${process.env.SHOPIFY_SHOP_DOMAIN || 'example'}.myshopify.com/admin/oauth/authorize?client_id=mock_shopify_client_id&state=${state}&redirect_uri=${encodeURIComponent(baseUrl)}&scope=read_products,read_orders`;
-
-    case 'razorpay':
-      // Razorpay uses API key flow, return mock instructions
-      return `${baseUrl}?provider=razorpay&state=${state}`;
-
-    default:
-      throw new Error(`Unsupported provider: ${provider}`);
-  }
-}
 
 export default router;

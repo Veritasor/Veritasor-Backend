@@ -14,7 +14,13 @@ coverage
 reports/mutation
 *.stryker.log
 
+# Heap snapshot artifacts
+*.heapsnapshot
+
 # Test artifacts
 .jest-cache
 node_modules
 dist
+
+# Scratch / temp files (e.g. leftover copies of edited sources)
+*.tmp

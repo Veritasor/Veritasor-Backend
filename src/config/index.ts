@@ -8,32 +8,102 @@ export class ConfigValidationError extends Error {
   }
 }
 
-export const envSchema = z.object({
+export const rawEnvSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  TRUST_PROXY: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
   DATABASE_URL: z.string({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
   }).url("DATABASE_URL must be a valid URL"),
+  DATABASE_SESSION_URL: z.string().url("DATABASE_SESSION_URL must be a valid URL").optional(),
   PGPOOL_MAX: z.string().optional(),
   PG_IDLE_TIMEOUT_MS: z.string().optional(),
   PG_CONN_TIMEOUT_MS: z.string().optional(),
   PGSSL: z.string().optional(),
   PGSSL_REJECT_UNAUTHORIZED: z.string().optional(),
+  PGBOUNCER_METRICS_ADMIN_URL: z.string().url(
+    "PGBOUNCER_METRICS_ADMIN_URL must be a valid URL",
+  ).refine(
+    (value) => value.startsWith("postgres://") || value.startsWith("postgresql://"),
+    "PGBOUNCER_METRICS_ADMIN_URL must use postgres or postgresql",
+  ).optional(),
+  PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS: z.string().optional(),
+  PGBOUNCER_METRICS_QUERY_TIMEOUT_MS: z.string().optional(),
   STELLAR_NETWORK: z.enum(["testnet", "public", "futurenet"]).default("testnet"),
   SOROBAN_RPC_URL: z.string().url().default("https://soroban-testnet.stellar.org"),
   SOROBAN_CONTRACT_ID: z.string().default(""),
   SOROBAN_NETWORK_PASSPHRASE: z.string().default("Test SDF Network ; September 2015"),
   SOROBAN_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
   SOROBAN_REPLAY_MAX_AGE_DAYS: z.string().optional(),
-  SECRET_LOADER: z.enum(["env", "file", "vault"]).default("env"),
+  SOROBAN_ADAPTIVE_BATCH_MIN_SIZE: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_MAX_SIZE: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SENSITIVITY: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING: z.string().optional(),
+  SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS: z.string().optional(),
+  DRR_SCHEDULER_TIER_WEIGHTS: z.string().optional(),
+  DRR_SCHEDULER_QUANTUM: z.string().optional(),
+  SECRET_LOADER: z.enum(["env", "file", "vault", "aws", "gsm"]).optional(),
+  SECRET_PROVIDER: z.enum(["env", "file", "vault", "aws", "gsm"]).optional(),
   SECRET_FILE_PATH: z.string().optional(),
+  SECRET_CACHE_KMS_KEY_ID: z.string().optional(),
+  SECRET_CACHE_PATH: z.string().optional(),
+  SECRET_CACHE_TTL_MINUTES: z.string().optional(),
   VAULT_BASE_URL: z.string().url().optional(),
   VAULT_SECRET_PATH: z.string().optional(),
   VAULT_TOKEN: z.string().optional(),
   ROLE_PROMOTION_TTL_MINUTES: z.string().optional(),
-}).superRefine((data, ctx) => {
+  ENABLE_INTROSPECTION: z.string().optional(),
+  GRAPHQL_DEV_BYPASS: z.string().optional(),
+  ALLOW_ARBITRARY_OPERATIONS: z.string().optional(),
+  PERSISTED_QUERY_SECRET: z.string().optional(),
+  STATSD_HOST: z.string().optional(),
+  STATSD_PORT: z.string().optional(),
+  STATSD_PREFIX: z.string().optional(),
+  STATSD_DUAL_WRITE_ENABLED: z.string().optional(),
+  STATSD_DUAL_WRITE_INTERVAL_MS: z.string().optional(),
+  OTEL_EXPORTER_PROTOCOL: z.enum(["http", "grpc"]).default("http"),
+  OTEL_GRPC_MTLS_ENABLED: z.string().optional(),
+  OTEL_MTLS_CA_PATH: z.string().optional(),
+  OTEL_MTLS_CERT_PATH: z.string().optional(),
+  OTEL_MTLS_KEY_PATH: z.string().optional(),
+  MTLS_ENABLED: z.string().optional(),
+  MTLS_SPIFFE_ENABLED: z.string().optional(),
+  SPIFFE_TRUST_DOMAIN: z.string().optional(),
+  MTLS_CA_PATH: z.string().optional(),
+  MTLS_CERT_PATH: z.string().optional(),
+  MTLS_KEY_PATH: z.string().optional(),
+  MTLS_CN_ALLOWLIST: z.string().optional(),
+  MTLS_SPIFFE_ID_ALLOWLIST: z.string().optional(),
+  SPIFFE_WORKLOAD_API_SOCKET: z.string().optional(),
+  REDIS_URL: z
+    .string()
+    .url("REDIS_URL must be a valid URL")
+    .refine(
+      (value) => value.startsWith("redis://") || value.startsWith("rediss://"),
+      "REDIS_URL must use redis:// or rediss://",
+    )
+    .optional(),
+  REDIS_CLUSTER_NODES: z.string().optional(),
+  REDIS_TLS: z.string().optional(),
+  REDIS_FORCE_SINGLE_NODE: z.string().optional(),
+  EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
+});
+
+export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
+  if (data.SECRET_LOADER && data.SECRET_PROVIDER && data.SECRET_LOADER !== data.SECRET_PROVIDER) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `SECRET_LOADER (${data.SECRET_LOADER}) and SECRET_PROVIDER (${data.SECRET_PROVIDER}) conflict: both are set and disagree`,
+      path: ["SECRET_LOADER"],
+    });
+  }
+
+  const effectiveLoader = data.SECRET_LOADER ?? data.SECRET_PROVIDER ?? "env";
+
   if (data.NODE_ENV === "production") {
       if (!data.ALLOWED_ORIGINS || data.ALLOWED_ORIGINS.trim() === "") {
         ctx.addIssue({
@@ -43,7 +113,7 @@ export const envSchema = z.object({
         });
       }
 
-      if (data.SECRET_LOADER === 'env') {
+      if (effectiveLoader === 'env') {
         if (!data.JWT_SECRET || data.JWT_SECRET.length < 32) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -53,7 +123,7 @@ export const envSchema = z.object({
         }
       }
 
-      if (data.SECRET_LOADER === 'file' && !data.SECRET_FILE_PATH) {
+      if (effectiveLoader === 'file' && !data.SECRET_FILE_PATH) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "SECRET_FILE_PATH is required when SECRET_LOADER=file",
@@ -61,7 +131,7 @@ export const envSchema = z.object({
         });
       }
 
-      if (data.SECRET_LOADER === 'vault') {
+      if (effectiveLoader === 'vault') {
         if (!data.VAULT_BASE_URL) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -76,6 +146,48 @@ export const envSchema = z.object({
             path: ["VAULT_SECRET_PATH"]
           });
         }
+      }
+
+      const DEV_PERSISTED_QUERY_SECRET = 'default-dev-secret-do-not-use-in-prod';
+      if (!data.PERSISTED_QUERY_SECRET || data.PERSISTED_QUERY_SECRET.length < 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PERSISTED_QUERY_SECRET must be at least 32 characters in production",
+          path: ["PERSISTED_QUERY_SECRET"]
+        });
+      } else if (data.PERSISTED_QUERY_SECRET === DEV_PERSISTED_QUERY_SECRET) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "PERSISTED_QUERY_SECRET must not use the development default in production",
+          path: ["PERSISTED_QUERY_SECRET"]
+        });
+      }
+
+      if (!data.SOROBAN_CONTRACT_ID || data.SOROBAN_CONTRACT_ID.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SOROBAN_CONTRACT_ID is required in production",
+          path: ["SOROBAN_CONTRACT_ID"]
+        });
+      } else if (!/^C[A-Z2-7]{55}$/.test(data.SOROBAN_CONTRACT_ID)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "SOROBAN_CONTRACT_ID must be a valid Soroban contract strkey (C + 55 base32 chars)",
+          path: ["SOROBAN_CONTRACT_ID"]
+        });
+      }
+
+      const expectedPassphrase = data.STELLAR_NETWORK === "public"
+        ? "Public Global Stellar Network ; September 2015"
+        : data.STELLAR_NETWORK === "testnet"
+          ? "Test SDF Network ; September 2015"
+          : "Test SDF Future Network ; October 2022";
+      if (data.SOROBAN_NETWORK_PASSPHRASE !== expectedPassphrase) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `SOROBAN_NETWORK_PASSPHRASE must match STELLAR_NETWORK=${data.STELLAR_NETWORK} in production`,
+          path: ["SOROBAN_NETWORK_PASSPHRASE"]
+        });
       }
     }
 });
@@ -114,6 +226,30 @@ function parsePositiveIntEnv(name: string, rawValue: string | undefined, default
   return value;
 }
 
+function parseDecimalEnv(name: string, rawValue: string | undefined, defaultValue: number, min: number, max: number): number {
+  if (rawValue === undefined) {
+    return defaultValue;
+  }
+
+  const value = Number(rawValue);
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new ConfigValidationError(`${name} must be a number between ${min} and ${max}`);
+  }
+
+  return value;
+}
+
+function parseCsvList(rawValue: string | undefined): string[] {
+  if (!rawValue?.trim()) {
+    return [];
+  }
+
+  return rawValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 let parsedEnv: z.infer<typeof envSchema>;
 
 try {
@@ -135,6 +271,24 @@ if (parsedEnv.NODE_ENV === "development" && !parsedEnv.JWT_SECRET) {
   parsedEnv.JWT_SECRET = "default_dev_secret_for_local_testing_only";
 }
 
+const exposeResetLink = parseBooleanEnv(
+  "EXPOSE_RESET_LINK_IN_RESPONSE",
+  parsedEnv.EXPOSE_RESET_LINK_IN_RESPONSE,
+  false,
+);
+
+if (exposeResetLink) {
+  if (isProduction) {
+    logger.warn(
+      "EXPOSE_RESET_LINK_IN_RESPONSE is enabled but ignored in production.",
+    );
+  } else {
+    logger.warn(
+      "EXPOSE_RESET_LINK_IN_RESPONSE is enabled. Raw password reset links will be exposed in API responses outside production.",
+    );
+  }
+}
+
 /**
  * CORS allowed origins.
  * - Dev: * (allow all) unless ALLOWED_ORIGINS is set.
@@ -154,12 +308,78 @@ export function getAllowedOrigins(): string | string[] {
   return "*";
 }
 
+function parseTrustProxy(rawValue: string | undefined): number | string[] | false {
+  const value = rawValue?.trim();
+  if (!value) return false;
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    if (!Number.isSafeInteger(hops)) {
+      throw new ConfigValidationError("TRUST_PROXY hop count must be a safe integer");
+    }
+    return hops;
+  }
+
+  const entries = value.split(",").map((entry) => entry.trim());
+  if (entries.some((entry) => entry.length === 0)) {
+    throw new ConfigValidationError("TRUST_PROXY must be a hop count or a comma-separated proxy list");
+  }
+  return entries;
+}
+
+function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
+  const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
+  const spiffeEnabled = parseBooleanEnv(
+    "MTLS_SPIFFE_ENABLED",
+    parsedEnv.MTLS_SPIFFE_ENABLED,
+    false,
+  );
+  const trustDomain = parsedEnv.SPIFFE_TRUST_DOMAIN?.trim() ?? "";
+
+  if (enabled && spiffeEnabled && !trustDomain) {
+    throw new ConfigValidationError(
+      "SPIFFE_TRUST_DOMAIN must be set when MTLS_SPIFFE_ENABLED=true",
+    );
+  }
+
+  if (enabled && !spiffeEnabled) {
+    const caPath = parsedEnv.MTLS_CA_PATH?.trim();
+    const certPath = parsedEnv.MTLS_CERT_PATH?.trim();
+    const keyPath = parsedEnv.MTLS_KEY_PATH?.trim();
+    if (!caPath || !certPath || !keyPath) {
+      throw new ConfigValidationError(
+        "MTLS_CA_PATH, MTLS_CERT_PATH, and MTLS_KEY_PATH must be set when MTLS_ENABLED=true and MTLS_SPIFFE_ENABLED is not true",
+      );
+    }
+  }
+
+  return {
+    enabled,
+    cnAllowlist: parseCsvList(parsedEnv.MTLS_CN_ALLOWLIST),
+    spiffeIdAllowlist: parseCsvList(parsedEnv.MTLS_SPIFFE_ID_ALLOWLIST),
+    caPath: parsedEnv.MTLS_CA_PATH?.trim(),
+    certPath: parsedEnv.MTLS_CERT_PATH?.trim(),
+    keyPath: parsedEnv.MTLS_KEY_PATH?.trim(),
+    spiffe: {
+      enabled: spiffeEnabled,
+      trustDomain,
+      workloadApiSocket:
+        parsedEnv.SPIFFE_WORKLOAD_API_SOCKET?.trim()
+        ?? "unix:///tmp/spire-agent/public/api.sock",
+      refreshRatio: 0.7,
+    },
+  };
+}
+
+const mtlsConfig = parseMtlsConfig(parsedEnv);
+
 export const config = {
   env: parsedEnv.NODE_ENV,
+  trustProxy: parseTrustProxy(parsedEnv.TRUST_PROXY),
   jwtSecret: parsedEnv.JWT_SECRET as string,
   databaseUrl: parsedEnv.DATABASE_URL,
   db: {
     url: parsedEnv.DATABASE_URL,
+    sessionUrl: parsedEnv.DATABASE_SESSION_URL || parsedEnv.DATABASE_URL,
     poolMax: parsePositiveIntEnv("PGPOOL_MAX", parsedEnv.PGPOOL_MAX, 10),
     idleTimeoutMs: parsePositiveIntEnv("PG_IDLE_TIMEOUT_MS", parsedEnv.PG_IDLE_TIMEOUT_MS, 30_000),
     connectionTimeoutMs: parsePositiveIntEnv("PG_CONN_TIMEOUT_MS", parsedEnv.PG_CONN_TIMEOUT_MS, 2_000),
@@ -172,6 +392,30 @@ export const config = {
             ),
         }
       : undefined,
+  },
+  otel: {
+    exporterProtocol: parsedEnv.OTEL_EXPORTER_PROTOCOL,
+    grpc: {
+      mtls: {
+        enabled: parseBooleanEnv("OTEL_GRPC_MTLS_ENABLED", parsedEnv.OTEL_GRPC_MTLS_ENABLED, false),
+        caPath: parsedEnv.OTEL_MTLS_CA_PATH?.trim(),
+        certPath: parsedEnv.OTEL_MTLS_CERT_PATH?.trim(),
+        keyPath: parsedEnv.OTEL_MTLS_KEY_PATH?.trim(),
+      },
+    },
+  },
+  pgbouncerMetrics: {
+    adminUrl: parsedEnv.PGBOUNCER_METRICS_ADMIN_URL,
+    scrapeIntervalMs: parsePositiveIntEnv(
+      "PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS",
+      parsedEnv.PGBOUNCER_METRICS_SCRAPE_INTERVAL_MS,
+      15_000,
+    ),
+    queryTimeoutMs: parsePositiveIntEnv(
+      "PGBOUNCER_METRICS_QUERY_TIMEOUT_MS",
+      parsedEnv.PGBOUNCER_METRICS_QUERY_TIMEOUT_MS,
+      2_000,
+    ),
   },
   stellar: {
     network: parsedEnv.STELLAR_NETWORK,
@@ -195,6 +439,7 @@ export const config = {
     /** HTTP methods allowed for cross-origin requests. */
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   },
+  mtls: mtlsConfig,
   jobs: {
     attestationReminder: {
       // Run every minute
@@ -215,6 +460,8 @@ export const config = {
   soroban: {
     /** Soroban RPC endpoint. Defaults to the public testnet node. */
     rpcUrl: parsedEnv.SOROBAN_RPC_URL,
+    /** Backup Soroban RPC endpoint for hedged requests. Falls back to primary if unset. */
+    backupRpcUrl: process.env.SOROBAN_BACKUP_RPC_URL || parsedEnv.SOROBAN_RPC_URL,
     /** Deployed attestation contract address (C…). Required in production. */
     contractId: parsedEnv.SOROBAN_CONTRACT_ID,
     /**
@@ -233,15 +480,90 @@ export const config = {
       parsedEnv.SOROBAN_REPLAY_MAX_AGE_DAYS,
       7,
     ),
+    adaptiveBatch: {
+      minBatchSize: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_MIN_SIZE",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_MIN_SIZE,
+        1,
+      ),
+      maxBatchSize: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_MAX_SIZE",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_MAX_SIZE,
+        100,
+      ),
+      ewmaAlpha: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA,
+        0.3,
+        0.01,
+        1.0,
+      ),
+      feeSpikeMultiplier: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SPIKE_MULTIPLIER,
+        2.0,
+        1.0,
+        10.0,
+      ),
+      sensitivity: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SENSITIVITY",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SENSITIVITY,
+        0.5,
+        0.01,
+        2.0,
+      ),
+      volatilityDampening: parseDecimalEnv(
+        "SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_VOLATILITY_DAMPENING,
+        0.5,
+        0.0,
+        1.0,
+      ),
+      sampleIntervalMs: parsePositiveIntEnv(
+        "SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS",
+        parsedEnv.SOROBAN_ADAPTIVE_BATCH_SAMPLE_INTERVAL_MS,
+        60_000,
+      ),
+    },
+    drrScheduler: {
+      /**
+       * JSON-serialised tier-weight table for the DRR scheduler.
+       * Example: '{"free":1,"starter":2,"growth":4,"enterprise":8}'
+       * Parsed and validated at runtime by {@link resolveTierWeights}.
+       */
+      tierWeightsRaw: parsedEnv.DRR_SCHEDULER_TIER_WEIGHTS,
+      /**
+       * DRR quantum — credits awarded per tenant per round.
+       * Higher quantum = larger burst slice per round, still fair overall.
+       */
+      quantum: parsePositiveIntEnv(
+        "DRR_SCHEDULER_QUANTUM",
+        parsedEnv.DRR_SCHEDULER_QUANTUM,
+        10,
+      ),
+    },
   },
   secretLoader: {
-    source: parsedEnv.SECRET_LOADER,
+    source: (parsedEnv.SECRET_LOADER ?? parsedEnv.SECRET_PROVIDER ?? "env") as "env" | "file" | "vault" | "aws" | "gsm",
     filePath: parsedEnv.SECRET_FILE_PATH,
+    /**
+     * When `source` is `"vault"`, `VaultAdapter` (src/utils/secret-loader.ts)
+     * auto-renews any renewable dynamic-secret lease Vault returns at 70% of
+     * its `lease_duration` (with jitter), and falls back to a full reload —
+     * rotating in-memory secrets from a fresh lease — if Vault denies
+     * renewal. See `vault_lease_renewal_total` / `vault_lease_seconds_remaining`
+     * in src/metrics.ts for observability into this.
+     */
     vault: {
       baseUrl: parsedEnv.VAULT_BASE_URL,
       secretPath: parsedEnv.VAULT_SECRET_PATH,
       token: parsedEnv.VAULT_TOKEN,
     },
+    cache: {
+      kmsKeyId: parsedEnv.SECRET_CACHE_KMS_KEY_ID,
+      path: parsedEnv.SECRET_CACHE_PATH,
+      ttlMinutes: parsePositiveIntEnv("SECRET_CACHE_TTL_MINUTES", parsedEnv.SECRET_CACHE_TTL_MINUTES, 60 * 24), // default 24h
+    }
   },
   redis: {
     /** Single-node Redis URL (redis[s]://...). Ignored when clusterNodes is set. */
@@ -249,5 +571,47 @@ export const config = {
     /** Comma-separated cluster node list, e.g. "host1:7000,host2:7001". */
     clusterNodes: parsedEnv.REDIS_CLUSTER_NODES,
     tls: parseBooleanEnv("REDIS_TLS", parsedEnv.REDIS_TLS, false),
+    /** When true, force single-node Redis mode even if cluster nodes are present. */
+    forceSingleNode: parseBooleanEnv("REDIS_FORCE_SINGLE_NODE", parsedEnv.REDIS_FORCE_SINGLE_NODE, false),
+  },
+  statsd: {
+    host: parsedEnv.STATSD_HOST?.trim() ?? '127.0.0.1',
+    port: parsePositiveIntEnv('STATSD_PORT', parsedEnv.STATSD_PORT, 8125),
+    prefix: parsedEnv.STATSD_PREFIX?.trim() ?? 'veritasor.',
+    dualWriteEnabled: parseBooleanEnv(
+      'STATSD_DUAL_WRITE_ENABLED',
+      parsedEnv.STATSD_DUAL_WRITE_ENABLED,
+      false,
+    ),
+    dualWriteIntervalMs: Math.max(
+      1000,
+      parsePositiveIntEnv(
+        'STATSD_DUAL_WRITE_INTERVAL_MS',
+        parsedEnv.STATSD_DUAL_WRITE_INTERVAL_MS,
+        10_000,
+      ),
+    ),
+  },
+  graphql: {
+    /**
+     * Controls whether GraphQL introspection is allowed.
+     * - ENABLE_INTROSPECTION env var overrides NODE_ENV when set.
+     * - Defaults to true in development/test, false in production.
+     */
+    enableIntrospection: parsedEnv.ENABLE_INTROSPECTION !== undefined
+      ? parseBooleanEnv("ENABLE_INTROSPECTION", parsedEnv.ENABLE_INTROSPECTION, true)
+      : !isProduction,
+    /**
+     * Controls whether arbitrary (ad-hoc) GraphQL operations are allowed.
+     * In production, defaults to false (enforces persisted query allow-list).
+     * Retains dev bypass toggle via GRAPHQL_DEV_BYPASS or ALLOW_ARBITRARY_OPERATIONS env var.
+     */
+    allowArbitraryOperations: (parsedEnv.GRAPHQL_DEV_BYPASS !== undefined || parsedEnv.ALLOW_ARBITRARY_OPERATIONS !== undefined)
+      ? parseBooleanEnv("GRAPHQL_DEV_BYPASS", parsedEnv.GRAPHQL_DEV_BYPASS ?? parsedEnv.ALLOW_ARBITRARY_OPERATIONS, false)
+      : !isProduction,
+    persistedQuerySecret: parsedEnv.PERSISTED_QUERY_SECRET || 'default-dev-secret-do-not-use-in-prod',
+  },
+  auth: {
+    exposeResetLinkInResponse: exposeResetLink && !isProduction,
   },
 } as const;

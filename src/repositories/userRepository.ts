@@ -9,6 +9,17 @@ export interface User {
   resetToken?: string
   resetTokenExpiry?: Date
   role: 'user' | 'admin' | 'business_admin'
+  name?: string
+  profile?: Record<string, unknown>
+}
+
+/**
+ * Profile fields that `PATCH /api/users/me` allows to be updated.
+ * Any omitted fields are left untouched to preserve partial update safety.
+ */
+export interface UserProfileUpdate {
+  name?: string
+  profile?: Record<string, unknown>
 }
 
 /**
@@ -22,6 +33,14 @@ export interface UpdateUserData {
   resetTokenExpiry?: Date | null
   role?: 'user' | 'admin' | 'business_admin'
 }
+
+export type UserRole = User['role']
+
+export type BusinessAdminPromotionResult =
+  | { outcome: 'promoted'; user: User; previousRole: 'user'; newRole: 'business_admin' }
+  | { outcome: 'already_business_admin'; user: User; previousRole: 'business_admin'; newRole: 'business_admin' }
+  | { outcome: 'invalid_current_role'; user: User; previousRole: Exclude<UserRole, 'user' | 'business_admin'>; newRole: 'business_admin' }
+  | { outcome: 'not_found'; user: null; previousRole: null; newRole: 'business_admin' }
 
 // In-memory user storage
 const users: Map<string, User> = new Map()
@@ -144,6 +163,80 @@ export async function updateUser(
 }
 
 /**
+ * Partially update a user's profile fields (`name`, `profile`).
+ *
+ * Only the allowlisted profile fields present in `fields` are written;
+ * the user's other fields (including auth material) are preserved.
+ * Returns the updated user record, or `null` when the user does not exist.
+ */
+export async function updateUserProfile(
+  userId: string,
+  fields: UserProfileUpdate
+): Promise<User | null> {
+  const current = users.get(userId)
+  if (!current) return null
+
+  const next: User = { ...current, updatedAt: new Date() }
+  if (fields.name !== undefined) next.name = fields.name
+  if (fields.profile !== undefined) next.profile = fields.profile
+
+  const stored = saveUser(next)
+  return cloneUser(stored)
+}
+
+/**
+ * Promote a regular user to business_admin with an expected-current-role guard.
+ *
+ * This direct admin promotion path intentionally supports only the documented
+ * business-tier transition. It is idempotent for retrying an already-completed
+ * promotion and refuses to overwrite admin or other future elevated roles.
+ */
+export async function promoteUserToBusinessAdmin(
+  userId: string,
+): Promise<BusinessAdminPromotionResult> {
+  const current = users.get(userId)
+  if (!current) {
+    return {
+      outcome: 'not_found',
+      user: null,
+      previousRole: null,
+      newRole: 'business_admin',
+    }
+  }
+
+  if (current.role === 'business_admin') {
+    return {
+      outcome: 'already_business_admin',
+      user: cloneUser(current),
+      previousRole: 'business_admin',
+      newRole: 'business_admin',
+    }
+  }
+
+  if (current.role !== 'user') {
+    return {
+      outcome: 'invalid_current_role',
+      user: cloneUser(current),
+      previousRole: current.role,
+      newRole: 'business_admin',
+    }
+  }
+
+  const stored = saveUser({
+    ...current,
+    role: 'business_admin',
+    updatedAt: new Date(),
+  })
+
+  return {
+    outcome: 'promoted',
+    user: cloneUser(stored),
+    previousRole: 'user',
+    newRole: 'business_admin',
+  }
+}
+
+/**
  * Update user's password
  */
 export async function updateUserPassword(
@@ -250,6 +343,16 @@ export async function deleteUser(userId: string): Promise<boolean> {
   users.delete(userId)
 
   return true
+}
+
+/**
+ * Find users by IDs (for DataLoader)
+ */
+export async function findUsersByIds(ids: readonly string[]): Promise<(User | Error)[]> {
+  return ids.map(id => {
+    const user = users.get(id)
+    return user ? cloneUser(user) : new Error(`User not found: ${id}`)
+  })
 }
 
 /**

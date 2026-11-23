@@ -8,6 +8,8 @@ import {
 } from '../services/webhooks/razorpayHandler.js'
 import { logger } from '../utils/logger.js'
 import { secretLoader, SecretNotFoundError } from '../utils/secret-loader.js'
+import { hasForbiddenKeys } from '../middleware/prototypePollution.js'
+import { BackoffError } from '../utils/backoff.js'
 
 export const razorpayWebhookRouter = Router()
 
@@ -67,19 +69,43 @@ razorpayWebhookRouter.post('/', async (req: Request, res: Response) => {
       }),
     )
 
+    let rawJson: unknown
+    try {
+      rawJson = JSON.parse(req.body.toString('utf8'))
+    } catch {
+      throw new RazorpayWebhookError('invalid_payload', 400, 'Invalid webhook payload')
+    }
+
+    if (hasForbiddenKeys(rawJson)) {
+      return res.status(400).json({
+        status: 'error',
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid body fields',
+      })
+    }
+
     const event = parseRazorpayEvent(req.body)
     const result = await handleRazorpayEvent(event)
     return res.status(200).json(result)
   } catch (error) {
-    if (error instanceof RazorpayWebhookError) {
+    let actualError: unknown = error
+    while (actualError instanceof BackoffError && actualError.cause) {
+      actualError = actualError.cause
+    }
+
+    if (actualError instanceof RazorpayWebhookError) {
       logger.warn(
         JSON.stringify({
           type: 'razorpay_webhook_rejected',
-          code: error.code,
-          statusCode: error.httpStatus,
+          code: actualError.code,
+          statusCode: actualError.httpStatus,
           correlationId,
         }),
       )
+
+      if (error.httpStatus === 503) {
+        return res.status(503).json({ error: error.message, code: error.code })
+      }
 
       return res.status(error.httpStatus).json({ error: error.message, code: error.code })
     }
@@ -88,7 +114,7 @@ razorpayWebhookRouter.post('/', async (req: Request, res: Response) => {
       JSON.stringify({
         type: 'razorpay_webhook_failure',
         correlationId,
-        message: error instanceof Error ? error.message : 'Unknown webhook failure',
+        message: actualError instanceof Error ? actualError.message : 'Unknown webhook failure',
       }),
     )
 

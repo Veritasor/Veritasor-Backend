@@ -2,20 +2,6 @@ import { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../utils/jwt.js";
 import { findUserById } from "../repositories/userRepository.js";
 
-// Extend Express Request to include user
-declare global {
-  namespace Express {
-    interface Request {
-      user?: {
-        id: string;
-        userId: string;
-        email?: string;
-        role?: 'user' | 'admin' | 'business_admin';
-      };
-    }
-  }
-}
-
 /**
  * Middleware to verify JWT token from Authorization header
  * Attaches user to req.user if valid

@@ -1,0 +1,40 @@
+# Chaos Mesh NetworkChaos: one-directional (partial) partition between the
+# backend and Postgres — covers the "recovery under partial partition" edge
+# case, distinct from the full bidirectional partition in
+# network-partition-postgres.yaml.
+#
+# `direction: to` drops only traffic FROM the backend TO Postgres; replies
+# already in flight and connections initiated the other way are unaffected.
+# This exercises a different failure mode than a full partition: the
+# backend's outbound queries hang/timeout while the pool may still see the
+# connection as technically alive, which is a common real-world partial
+# network-partition symptom (e.g. a one-way firewall/routing fault).
+#
+# Safety scoping mirrors network-partition-postgres.yaml — see that file's
+# header comment and ops/chaos-mesh/README.md.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-backend-postgres-partial
+  namespace: veritasor-nonprod
+  labels:
+    chaos-mesh.org/environment: nonprod
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - veritasor-nonprod
+    labelSelectors:
+      app.kubernetes.io/name: veritasor-backend
+      chaos-mesh.org/environment: nonprod
+  direction: to
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - veritasor-nonprod
+      labelSelectors:
+        app.kubernetes.io/name: postgres
+        chaos-mesh.org/environment: nonprod
+  duration: 60s

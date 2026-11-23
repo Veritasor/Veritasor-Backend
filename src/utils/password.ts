@@ -1,14 +1,31 @@
 import bcrypt from "bcryptjs";
 
 const DEFAULT_SALT_ROUNDS = 10;
+const MIN_SALT_ROUNDS = 4;
+const MAX_SALT_ROUNDS = 31;
 
 function getSaltRounds(): number {
-  const envRounds = process.env.BCRYPT_SALT_ROUNDS;
-  if (envRounds) {
-    const parsed = parseInt(envRounds, 10);
-    if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+  const envRounds = process.env.BCRYPT_SALT_ROUNDS?.trim();
+  if (!envRounds || !/^-?\d+$/.test(envRounds)) {
+    return DEFAULT_SALT_ROUNDS;
   }
-  return DEFAULT_SALT_ROUNDS;
+
+  const parsed = Number.parseInt(envRounds, 10);
+  if (
+    Number.isNaN(parsed) ||
+    parsed < MIN_SALT_ROUNDS ||
+    parsed > MAX_SALT_ROUNDS
+  ) {
+    return DEFAULT_SALT_ROUNDS;
+  }
+
+  if (parsed < DEFAULT_SALT_ROUNDS) {
+    console.warn(
+      `[password] BCRYPT_SALT_ROUNDS=${parsed} is below the recommended minimum of ${DEFAULT_SALT_ROUNDS}.`
+    );
+  }
+
+  return parsed;
 }
 
 /**

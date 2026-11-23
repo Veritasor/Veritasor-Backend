@@ -48,6 +48,9 @@ export const attestationRepository = {
       .filter((attestation) => attestation.businessId === businessId)
       .sort((a, b) => b.attestedAt.localeCompare(a.attestedAt));
   },
+  listByBusinessIds(businessIds: readonly string[]): Attestation[][] {
+    return businessIds.map(id => this.listByBusiness(id));
+  },
   create(data: Omit<Attestation, "id" | "attestedAt">): Attestation {
     const newAttestation: Attestation = {
       ...data,

@@ -1,18 +1,63 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 import express from "express";
-import { authRouter } from "./auth.js";
+import { authRouter, signupErrorToAppError } from "./auth.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import * as loginModule from "../services/auth/login.js";
 import { AuthenticationError } from "../types/errors.js";
+import { SignupError } from "../services/auth/signup.js";
+import { AppError, ConflictError, RateLimitError } from "../types/errors.js";
+
+const { meRateLimitUserId } = vi.hoisted(() => ({
+  meRateLimitUserId: { current: null as string | null },
+}));
 
 vi.mock("../services/auth/login.js", () => ({
   login: vi.fn(),
 }));
 
+vi.mock("../services/auth/me.js", () => ({
+  me: vi.fn().mockResolvedValue({ id: "user-1" }),
+}));
+
+vi.mock("../middleware/requireAuth.js", () => ({
+  requireAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    req.user = { id: "user-1", userId: "user-1" };
+    next();
+  },
+}));
+
+vi.mock("../services/auth/signup.js", () => ({
+  signup: vi.fn(),
+  SignupError: class extends Error {
+    public type: string;
+    public statusCode: number;
+    public retryAfterMs?: number;
+    constructor(
+      message: string,
+      type: string,
+      statusCode: number,
+      details?: string[],
+      retryAfterMs?: number,
+    ) {
+      super(message);
+      this.type = type;
+      this.statusCode = statusCode;
+      this.retryAfterMs = retryAfterMs;
+    }
+  },
+  getSignupRateLimitHeaders: vi.fn(() => ({})),
+  checkSignupAvailability: vi.fn(),
+}));
+
 vi.mock("../middleware/rateLimiter.js", () => ({
-  rateLimiter: () => (_req: express.Request, _res: express.Response, next: express.NextFunction) =>
-    next(),
+  rateLimiter: (options: { bucket?: string }) =>
+    (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      if (options.bucket === "auth:me") {
+        meRateLimitUserId.current = req.user?.userId ?? null;
+      }
+      next();
+    },
 }));
 
 const app = express();
@@ -158,5 +203,99 @@ describe("POST /api/v1/auth/login", () => {
       refreshToken: "refresh_token_456",
       user: { id: "user-1", email: "user@example.com" },
     });
+  });
+});
+
+describe("GET /api/v1/auth/me", () => {
+  it("runs authentication before applying the per-user limiter", async () => {
+    meRateLimitUserId.current = null;
+
+    const res = await request(app).get("/api/v1/auth/me");
+
+    expect(res.status).toBe(200);
+    expect(meRateLimitUserId.current).toBe("user-1");
+  });
+});
+
+describe("signupErrorToAppError", () => {
+  it("maps RATE_LIMITED to RateLimitError", () => {
+    const signupErr = new SignupError(
+      "Too many requests",
+      "RATE_LIMITED",
+      429,
+      undefined,
+      12000,
+    );
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(RateLimitError);
+    expect(result.message).toBe("Too many requests");
+    expect((result as RateLimitError).retryAfterMs).toBe(12000);
+  });
+
+  it("maps EMAIL_EXISTS to ConflictError", () => {
+    const signupErr = new SignupError("Email already exists", "EMAIL_EXISTS", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(ConflictError);
+    expect(result.message).toBe("Email already exists");
+  });
+
+  it("maps other errors to AppError with type preserved", () => {
+    const signupErr = new SignupError("Invalid email", "EMAIL_INVALID", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.message).toBe("Invalid email");
+    expect(result.status).toBe(400);
+  });
+
+  it("handles VALIDATION_ERROR type", () => {
+    const signupErr = new SignupError("Validation failed", "VALIDATION_ERROR", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.message).toBe("Validation failed");
+  });
+
+  it("handles PASSWORD_WEAK type", () => {
+    const signupErr = new SignupError("Password too weak", "PASSWORD_WEAK", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.message).toBe("Password too weak");
+  });
+
+  it("handles HONEYPOT_TRIGGERED type", () => {
+    const signupErr = new SignupError("Honeypot triggered", "HONEYPOT_TRIGGERED", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.message).toBe("Honeypot triggered");
+  });
+
+  it("handles SUSPICIOUS_ACTIVITY type", () => {
+    const signupErr = new SignupError("Suspicious activity", "SUSPICIOUS_ACTIVITY", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.message).toBe("Suspicious activity");
+  });
+
+  it("preserves error type in AppError for non-standard types", () => {
+    const signupErr = new SignupError("Custom error", "CUSTOM_ERROR", 400);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.message).toBe("Custom error");
+    expect(result.status).toBe(400);
+  });
+
+  it("handles different status codes", () => {
+    const signupErr = new SignupError("Service unavailable", "SERVICE_ERROR", 503);
+    const result = signupErrorToAppError(signupErr);
+    
+    expect(result).toBeInstanceOf(AppError);
+    expect(result.status).toBe(503);
   });
 });

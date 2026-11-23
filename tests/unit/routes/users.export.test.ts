@@ -11,7 +11,7 @@ import {
   getExportStatus,
   getExportArchive,
 } from '../../../src/services/user/dataExportService.js'
-import { consumeDownloadToken } from '../../../src/repositories/dataExportRepository.js'
+import { consumeDownloadToken, peekDownloadToken } from '../../../src/repositories/dataExportRepository.js'
 
 // Create test app with custom routes that bypass requireAuth
 const createTestApp = (userId: string) => {
@@ -58,7 +58,7 @@ const createTestApp = (userId: string) => {
         return res.status(400).json({ message: 'Invalid export token' })
       }
 
-      const exportId = await consumeDownloadToken(token)
+      const exportId = await peekDownloadToken(token)
       if (!exportId) {
         return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
       }
@@ -74,6 +74,10 @@ const createTestApp = (userId: string) => {
           status: exportStatus.status,
           message: 'Export is still being processed',
         })
+      }
+
+      if (await consumeDownloadToken(token) !== exportId) {
+        return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
       }
 
       const archiveData = await getExportArchive(exportId)
@@ -233,6 +237,20 @@ describe('GET /api/users/me/export/:exportId/status - Check Export Status', () =
 })
 
 describe('GET /api/users/me/export/:token - Download GDPR Export', () => {
+  it('keeps the same token usable after a pending export becomes completed', async () => {
+    const pendingExport = await exportRepo.createDataExport(testUserId)
+    const exportId = pendingExport.id
+    const token = await exportRepo.createDownloadToken(exportId)
+    const pending = await request(app).get(`/api/users/me/export/${token}`)
+    expect(pending.status).toBe(202)
+
+    await exportRepo.updateDataExportStatus(exportId, 'completed')
+    await getRedisClient().setex(`data-export-archive:${exportId}`, 86400, JSON.stringify({ buffer: Buffer.from('archive').toString('base64') }))
+    const completed = await request(app).get(`/api/users/me/export/${token}`)
+    expect(completed.status).toBe(200)
+    expect(completed.headers['content-disposition']).toContain(exportId)
+  })
+
   it('should return 410 for invalid token', async () => {
     const response = await request(app)
       .get('/api/users/me/export/invalid-token-format-does-not-exist-anywhere')

@@ -1,39 +1,20 @@
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import { verifyToken } from "../utils/jwt.js";
 import { findUserById } from "../repositories/userRepository.js";
+import type { User } from "../repositories/userRepository.js";
 import { businessRepository } from "../repositories/business.js";
 import { logger } from "../utils/logger.js";
-
-// Extend Express Request to include user and business
-declare global {
-  namespace Express {
-    interface Request {
-      user?: {
-        id: string;
-        userId: string;
-        email?: string;
-        role?: 'user' | 'admin' | 'business_admin';
-      };
-      business?: {
-        id: string;
-        userId: string;
-        name: string;
-        industry: string | null;
-        description: string | null;
-        website: string | null;
-        createdAt: string;
-        updatedAt: string;
-        suspended?: boolean;
-      };
-    }
-  }
-}
 
 /**
  * Validates JWT token and returns the user, or null on any failure.
  * Catches all errors so callers never see an unhandled rejection.
  */
-async function validateUserToken(token: string): Promise<{ id: string; userId: string; email?: string } | null> {
+async function validateUserToken(token: string): Promise<{
+  id: string;
+  userId: string;
+  email?: string;
+  role: User['role'];
+} | null> {
   try {
     const payload = verifyToken(token);
     if (!payload) return null;
@@ -41,7 +22,12 @@ async function validateUserToken(token: string): Promise<{ id: string; userId: s
     const user = await findUserById(payload.userId);
     if (!user) return null;
 
-    return { id: payload.userId, userId: payload.userId, email: payload.email };
+    return {
+      id: payload.userId,
+      userId: payload.userId,
+      email: payload.email,
+      role: user.role,
+    };
   } catch {
     return null;
   }

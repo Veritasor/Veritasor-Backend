@@ -62,6 +62,14 @@ export interface AttestationFilters {
   businessId?: string;
   /** Filter by user ID (joins with businesses table) */
   userId?: string;
+  /** Filter by time period (e.g. "2026-01") */
+  period?: string;
+  /**
+   * Filter by attestation status.
+   * When null is absent from the DB `status` column the record is treated as
+   * 'submitted' (matching the current in-memory behaviour in the route layer).
+   */
+  status?: AttestationStatus;
 }
 
 /**

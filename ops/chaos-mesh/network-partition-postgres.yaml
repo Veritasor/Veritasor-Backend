@@ -1,0 +1,43 @@
+# Chaos Mesh NetworkChaos: partition the backend from Postgres.
+#
+# Safety: this experiment is scoped in two independent ways so it can never
+# accidentally hit production:
+#   1. `namespaceSelector` restricts targets to the `veritasor-nonprod`
+#      namespace.
+#   2. `selector.labelSelectors` additionally requires pods to carry
+#      `chaos-mesh.org/environment: nonprod` — an explicit opt-in label, so
+#      applying this manifest against the wrong namespace/cluster by mistake
+#      still matches zero pods instead of silently hitting prod.
+#
+# See ops/chaos-mesh/README.md for how to run this safely and verify recovery.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-backend-postgres
+  namespace: veritasor-nonprod
+  labels:
+    chaos-mesh.org/environment: nonprod
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - veritasor-nonprod
+    labelSelectors:
+      app.kubernetes.io/name: veritasor-backend
+      chaos-mesh.org/environment: nonprod
+  # `both` = full bidirectional partition. For the partial-partition edge
+  # case (see README "Recovery under partial partition"), apply
+  # network-partition-postgres-partial.yaml instead, which uses `direction: to`.
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - veritasor-nonprod
+      labelSelectors:
+        app.kubernetes.io/name: postgres
+        chaos-mesh.org/environment: nonprod
+  # Bounded duration: Chaos Mesh heals the partition automatically once this
+  # elapses, even if the runbook's manual cleanup step is skipped.
+  duration: 60s

@@ -26,7 +26,7 @@ import type { Server } from "node:http";
 import { verifyToken } from "../utils/jwt.js";
 import { businessRepository } from "../repositories/business.js";
 import { logger } from "../utils/logger.js";
-import { wsConnections, wsMessagesTotal } from "../metrics.js";
+import { wsConnections, wsMessagesTotal, wsMessagesDroppedTotal } from "../metrics.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -78,6 +78,7 @@ export class AttestationBroadcaster {
           userId: socket.userId,
           bufferedAmount: socket.bufferedAmount,
         });
+        wsMessagesDroppedTotal.inc({ reason: "backpressure" });
         continue;
       }
       socket.send(payload);
@@ -113,6 +114,15 @@ export class AttestationBroadcaster {
 }
 
 export const broadcaster = new AttestationBroadcaster();
+let activeWss: WebSocketServer | undefined;
+
+export function closeAttestationStream(): Promise<void> {
+  if (!activeWss) return Promise.resolve();
+  const wss = activeWss;
+  activeWss = undefined;
+  for (const client of wss.clients) client.terminate();
+  return new Promise((resolve) => wss.close(() => resolve()));
+}
 
 // ---------------------------------------------------------------------------
 // Extract JWT from upgrade request
@@ -135,6 +145,7 @@ function extractToken(req: IncomingMessage): string | null {
 
 export function attachAttestationStream(server: Server): WebSocketServer {
   const wss = new WebSocketServer({ server, path: WS_PATH });
+  activeWss = wss;
 
   wss.on("connection", async (ws: WebSocket, req: IncomingMessage) => {
     const socket = ws as AuthedSocket;

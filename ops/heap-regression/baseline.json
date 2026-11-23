@@ -1,0 +1,32 @@
+{
+  "preSoak": {
+    "rss": 0,
+    "heapTotal": 0,
+    "heapUsed": 0,
+    "external": 0
+  },
+  "pressurePeak": {
+    "rss": 0,
+    "heapTotal": 0,
+    "heapUsed": 0,
+    "external": 0
+  },
+  "postRelease": {
+    "rss": 0,
+    "heapTotal": 0,
+    "heapUsed": 0,
+    "external": 0
+  },
+  "pressurePhase": [],
+  "config": {
+    "allocationSizeMb": 50,
+    "allocationSteps": 5,
+    "gcBetweenSteps": true,
+    "regressionThresholdBytes": 10485760
+  },
+  "meta": {
+    "createdAt": "1970-01-01T00:00:00.000Z",
+    "nodeVersion": "",
+    "platform": ""
+  }
+}

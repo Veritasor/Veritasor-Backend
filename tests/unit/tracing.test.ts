@@ -7,17 +7,55 @@ const extractMock = vi.fn((ctx: Record<string, unknown>) => ({
   extracted: true,
 }));
 
+// Mock @grpc/grpc-js for gRPC mTLS tests
+vi.mock("@grpc/grpc-js", () => ({
+  credentials: {
+    createSsl: vi.fn(
+      (_rootCert?: Buffer, _privateKey?: Buffer, _certChain?: Buffer) => ({
+        _isSecure: true,
+        _mtlsMocked: true,
+      }),
+    ),
+  },
+}));
+
+// Mock OTLP gRPC exporter modules
+vi.mock("@opentelemetry/exporter-trace-otlp-grpc", () => ({
+  OTLPTraceExporter: class MockGrpcTraceExporter {
+    constructor(opts: Record<string, unknown>) {
+      mockExporterCalls.push({ type: "trace-grpc", opts });
+    }
+  },
+}));
+
+vi.mock("@opentelemetry/exporter-logs-otlp-grpc", () => ({
+  OTLPLogExporter: class MockGrpcLogExporter {
+    constructor(opts: Record<string, unknown>) {
+      mockExporterCalls.push({ type: "log-grpc", opts });
+    }
+  },
+}));
+
+const mockExporterCalls: Array<{ type: string; opts: Record<string, unknown> }> = [];
+
 class FakeSpan {
+  public name: string;
   public attributes: Record<string, unknown>;
   public exceptions: unknown[] = [];
   public status: unknown;
   public ended = false;
 
   constructor(
-    public readonly name: string,
+    name: string,
     options: { attributes?: Record<string, unknown> },
   ) {
+    this.name = name;
     this.attributes = { ...(options.attributes ?? {}) };
+  }
+
+  updateName(name: string) {
+    this.name = name;
+    return this;
   }
 
   setAttribute(key: string, value: unknown) {
@@ -50,6 +88,13 @@ vi.mock("@opentelemetry/api", async (importOriginal) => {
     propagation: {
       ...actual.propagation,
       extract: extractMock,
+      getBaggage: vi.fn(),
+      setBaggage: vi.fn((ctx) => ctx),
+      createBaggage: vi.fn(() => ({
+        getEntry: vi.fn(),
+        setEntry: vi.fn().mockReturnThis(),
+        removeEntry: vi.fn().mockReturnThis(),
+      })),
     },
     trace: {
       ...actual.trace,
@@ -82,6 +127,7 @@ describe("OpenTelemetry tracing helpers", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     process.env = { ...originalEnv };
+    mockExporterCalls.length = 0;
   });
 
   it("keeps tracing disabled when OTEL_EXPORTER_OTLP_ENDPOINT is unset", async () => {
@@ -162,5 +208,101 @@ describe("OpenTelemetry tracing helpers", () => {
     });
     expect(JSON.stringify(spans[0].attributes)).not.toContain("secret");
     expect(spans[0].ended).toBe(true);
+  });
+
+  it("propagates tenant.id from baggage into span attributes", async () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318/v1/traces";
+    const api = await import("@opentelemetry/api");
+    const { startHttpRequestSpan } = await import("../../src/tracing.js");
+
+    const mockBaggage = {
+      getEntry: vi.fn((key) => {
+        if (key === "tenant.id") return { value: "tenant-123" };
+        return undefined;
+      }),
+      setEntry: vi.fn().mockReturnThis(),
+      removeEntry: vi.fn().mockReturnThis(),
+    };
+    
+    vi.mocked(api.propagation.getBaggage).mockReturnValue(mockBaggage as any);
+    
+    const req = {
+      headers: {},
+      method: "GET",
+      path: "/api/v1/tenant-test",
+      ip: "127.0.0.1",
+      query: {},
+    };
+    const res = Object.assign(new EventEmitter(), {
+      statusCode: 200,
+      once: EventEmitter.prototype.once,
+    });
+    const next = vi.fn();
+
+    startHttpRequestSpan(req as never, res as never, "corr-test", next);
+    res.emit("finish");
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0].attributes["tenant.id"]).toBe("tenant-123");
+  });
+});
+
+describe("OTLP exporter protocol selection", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+    delete process.env.OTEL_EXPORTER_PROTOCOL;
+    delete process.env.OTEL_GRPC_MTLS_ENABLED;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.env = { ...originalEnv };
+  });
+
+  it("getExporterProtocol defaults to http", async () => {
+    const { getExporterProtocol } = await import("../../src/tracing.js");
+    expect(getExporterProtocol()).toBe("http");
+  });
+
+  it("getExporterProtocol returns grpc when OTEL_EXPORTER_PROTOCOL=grpc", async () => {
+    process.env.OTEL_EXPORTER_PROTOCOL = "grpc";
+    const { getExporterProtocol } = await import("../../src/tracing.js");
+    expect(getExporterProtocol()).toBe("grpc");
+  });
+
+  it("getExporterProtocol treats unknown values as http", async () => {
+    process.env.OTEL_EXPORTER_PROTOCOL = "unknown";
+    const { getExporterProtocol } = await import("../../src/tracing.js");
+    expect(getExporterProtocol()).toBe("http");
+  });
+
+  it("getExporterProtocol is case-insensitive", async () => {
+    process.env.OTEL_EXPORTER_PROTOCOL = "GRPC";
+    const { getExporterProtocol } = await import("../../src/tracing.js");
+    expect(getExporterProtocol()).toBe("grpc");
+  });
+
+  it("isGrpcMtlsEnabled defaults to false", async () => {
+    const { isGrpcMtlsEnabled } = await import("../../src/tracing.js");
+    expect(isGrpcMtlsEnabled()).toBe(false);
+  });
+
+  it("isGrpcMtlsEnabled returns true when OTEL_GRPC_MTLS_ENABLED=true", async () => {
+    process.env.OTEL_GRPC_MTLS_ENABLED = "true";
+    const { isGrpcMtlsEnabled } = await import("../../src/tracing.js");
+    expect(isGrpcMtlsEnabled()).toBe(true);
+  });
+
+  it("isGrpcMtlsEnabled supports multiple truthy values", async () => {
+    for (const val of ["true", "1", "yes", "on"]) {
+      process.env.OTEL_GRPC_MTLS_ENABLED = val;
+      // Re-import to pick up new env value
+      vi.resetModules();
+      const { isGrpcMtlsEnabled } = await import("../../src/tracing.js");
+      expect(isGrpcMtlsEnabled()).toBe(true);
+    }
   });
 });

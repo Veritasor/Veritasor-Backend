@@ -47,6 +47,41 @@ export interface EnhancedTokenPayload extends TokenPayload {
 }
 
 /**
+ * Decoded claims for rotation-aware tokens. These are validated at runtime
+ * (not merely cast) so that a signature-valid token still cannot smuggle in a
+ * missing, empty, or wrong-typed `jti` / `familyId` / `type`.
+ */
+type RotationAwareClaims = TokenPayload & {
+  jti: string
+  familyId: string
+  type: 'access' | 'refresh'
+}
+
+/**
+ * Runtime shape guard for rotation-aware token claims.
+ * @throws {TokenInvalidError} When any required rotation claim is absent.
+ */
+function assertRotationClaims(value: unknown): asserts value is RotationAwareClaims {
+  if (!value || typeof value !== 'object') {
+    throw new TokenInvalidError(
+      'Token payload is missing rotation claims'
+    )
+  }
+  const claims = value as Record<string, unknown>
+  const valid =
+    typeof claims.jti === 'string' && claims.jti.length > 0 &&
+    typeof claims.familyId === 'string' && claims.familyId.length > 0 &&
+    typeof claims.userId === 'string' && claims.userId.length > 0 &&
+    typeof claims.email === 'string' && claims.email.length > 0 &&
+    (claims.type === 'access' || claims.type === 'refresh')
+  if (!valid) {
+    throw new TokenInvalidError(
+      'Token payload is missing rotation claims'
+    )
+  }
+}
+
+/**
  * Custom error types for JWT operations
  */
 export class JWTError extends Error {
@@ -90,6 +125,7 @@ interface TokenRotationFamily {
   userId: string
   currentJti: string | null // Most recent token jti in this family
   blacklistedJtis: Set<string>
+  issuedJtis: Set<string> // Every access+refresh jti minted for this family
   lastRotation: number
   concurrentRefreshDetected: boolean
   createdAt: number
@@ -98,6 +134,36 @@ interface TokenRotationFamily {
 // In-memory token rotation tracking
 const tokenFamilies = new Map<string, TokenRotationFamily>()
 const jtiBlacklist = new Set<string>()
+
+/**
+ * Per-family mutexes serialise refresh rotations so two concurrent requests
+ * presenting the SAME refresh token cannot both pass the reuse check and mint
+ * fresh tokens. See {@link withFamilyLock} and the rotation security model in
+ * the "ENHANCED ROTATION-AWARE FUNCTIONS" section.
+ */
+const familyLocks = new Map<string, Promise<void>>()
+
+/**
+ * Run `operation` exclusively for a token family. Later callers wait for the
+ * current holder to finish (success or failure) before running in sequence.
+ */
+async function withFamilyLock<T>(
+  familyId: string,
+  operation: () => Promise<T> | T
+): Promise<T> {
+  const previous = familyLocks.get(familyId) ?? Promise.resolve()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  familyLocks.set(familyId, previous.then(() => gate))
+  await previous
+  try {
+    return await operation()
+  } finally {
+    release()
+  }
+}
 
 /**
  * Get or create a token family
@@ -109,6 +175,7 @@ function getOrCreateFamily(familyId: string, userId: string): TokenRotationFamil
       userId,
       currentJti: null,
       blacklistedJtis: new Set(),
+      issuedJtis: new Set(),
       lastRotation: Date.now(),
       concurrentRefreshDetected: false,
       createdAt: Date.now(),
@@ -195,6 +262,9 @@ function getRefreshJwtSecret(): string {
         return 'dev-refresh-secret-key'
       }
 
+      logger.warn(
+        'JWT_REFRESH_SECRET missing in production; falling back to primary JWT_SECRET. Configure a dedicated refresh secret.'
+      )
       return getPrimaryJwtSecret()
     }
 
@@ -420,6 +490,39 @@ export function verify(
 // ===========================================================================
 
 /**
+ * Rotation-aware token lifecycle — security model
+ *
+ * - Refresh tokens are single-use: `refreshTokenPair` consumes the presented
+ *   jti (adds it to the family's `blacklistedJtis`) BEFORE issuing a
+ *   replacement, so replaying a consumed token is always detected.
+ *
+ * - Reuse of a consumed refresh token is treated as a theft signal. The family
+ *   is flagged `concurrentRefreshDetected` and EVERY token minted for it
+ *   (access + refresh, including the current jti) is globally blacklisted so
+ *   nothing minted before the theft is usable — the attacker's replay AND the
+ *   valid sibling access token are both revoked at once.
+ *
+ * - Concurrent refresh of the same token is impossible by construction:
+ *   rotations are serialised per family with {@link withFamilyLock}, so
+ *   exactly one caller can rotate while the peers observe reuse and are
+ *   rejected with `TOKEN_REUSED`.
+ *
+ * - Family tokens are bound to distinct audiences (`JWT_AUDIENCE` for access,
+ *   `JWT_REFRESH_AUDIENCE` for refresh) plus an explicit `type` claim,
+ *   mirroring the legacy access/refresh isolation: an access token can never
+ *   be accepted as a refresh token (and vice-versa), even under a shared
+ *   secret.
+ *
+ * - All family verification enforces issuer (`JWT_ISSUER`), audience, and
+ *   `alg: HS256`, and tolerates `JWT_CLOCK_SKEW_SECONDS` of clock drift.
+ *
+ * - Scope: the family store is in-memory and process-local. Multi-instance
+ *   deployments must use the durable `usedTokenStore` replay detection (see
+ *   `src/services/auth/usedTokenStore.js`) which already backs the deployed
+ *   `/auth/refresh` route.
+ */
+
+/**
  * Generate an access token with rotation tracking
  * @param payload - User payload
  * @param familyId - Token family ID for rotation tracking (generates new if not provided)
@@ -432,6 +535,11 @@ export function generateAccessToken(
   const jti = randomUUID()
   const family = familyId || randomUUID()
 
+  // Register the family and track the issued jti so a compromise or
+  // revocation can revoke every token (access + refresh) in the family.
+  const tracking = getOrCreateFamily(family, payload.userId)
+  tracking.issuedJtis.add(jti)
+
   const tokenPayload = {
     ...payload,
     jti,
@@ -441,6 +549,8 @@ export function generateAccessToken(
 
   return jwt.sign(tokenPayload, getPrimaryJwtSecret(), {
     expiresIn: JWT_ACCESS_TOKEN_TTL,
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
     algorithm: 'HS256',
   } as SignOptions)
 }
@@ -459,7 +569,8 @@ export function generateRefreshTokenWithFamily(
   const family = familyId || randomUUID()
 
   // Initialize or update the family tracking
-  getOrCreateFamily(family, payload.userId)
+  const tracking = getOrCreateFamily(family, payload.userId)
+  tracking.issuedJtis.add(jti)
 
   const tokenPayload = {
     ...payload,
@@ -470,6 +581,8 @@ export function generateRefreshTokenWithFamily(
 
   return jwt.sign(tokenPayload, getRefreshJwtSecret(), {
     expiresIn: JWT_REFRESH_TOKEN_TTL,
+    issuer: JWT_ISSUER,
+    audience: JWT_REFRESH_AUDIENCE,
     algorithm: 'HS256',
   } as SignOptions)
 }
@@ -499,7 +612,12 @@ export function verifyAccessToken(token: string): EnhancedTokenPayload {
     const decoded = jwt.verify(token, getPrimaryJwtSecret(), {
       clockTimestamp: Math.floor(Date.now() / 1000),
       clockTolerance: JWT_CLOCK_SKEW_SECONDS,
-    }) as any
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+      algorithms: ['HS256'],
+    } as VerifyOptions)
+
+    assertRotationClaims(decoded)
 
     // Check if token is blacklisted
     if (decoded.jti && isTokenBlacklisted(decoded.jti)) {
@@ -511,7 +629,7 @@ export function verifyAccessToken(token: string): EnhancedTokenPayload {
       throw new JWTError('Token type mismatch', 'TYPE_MISMATCH', 401)
     }
 
-    return decoded as EnhancedTokenPayload
+    return decoded as unknown as EnhancedTokenPayload
   } catch (error) {
     if (error instanceof JWTError) throw error
     if (error instanceof jwt.TokenExpiredError) {
@@ -536,7 +654,12 @@ export function verifyRefreshTokenRotationAware(
     const decoded = jwt.verify(token, getRefreshJwtSecret(), {
       clockTimestamp: Math.floor(Date.now() / 1000),
       clockTolerance: JWT_CLOCK_SKEW_SECONDS,
-    }) as any
+      issuer: JWT_ISSUER,
+      audience: JWT_REFRESH_AUDIENCE,
+      algorithms: ['HS256'],
+    } as VerifyOptions)
+
+    assertRotationClaims(decoded)
 
     const { jti, familyId, userId } = decoded
 
@@ -555,6 +678,7 @@ export function verifyRefreshTokenRotationAware(
 
     if (family.concurrentRefreshDetected) {
       logger.warn('Concurrent refresh detected on compromised family', {
+        event: 'family_compromised',
         familyId,
         userId,
         jti,
@@ -566,18 +690,29 @@ export function verifyRefreshTokenRotationAware(
       )
     }
 
-    // Check if this jti was already used (token reuse = theft signal)
+    // Reuse of a consumed refresh token is a theft signal: flag the family as
+    // compromised and revoke EVERY token minted for it (access + refresh,
+    // including the current jti) so the stolen token and its siblings become
+    // unusable immediately. The family entry is intentionally NOT deleted so
+    // the compromise marker persists for the record.
     if (family.blacklistedJtis.has(jti)) {
-      logger.error('Token reuse detected - possible theft!', {
-        familyId,
-        userId,
-        jti,
-      })
+      logger.error(
+        'token_reuse_detected: consumed refresh token reused; revoking entire token family',
+        {
+          event: 'token_reuse_detected',
+          familyId,
+          userId,
+          jti,
+        }
+      )
       family.concurrentRefreshDetected = true
+      for (const compromisedJti of family.issuedJtis) {
+        jtiBlacklist.add(compromisedJti)
+      }
       throw new TokenReusedError()
     }
 
-    return decoded as EnhancedTokenPayload
+    return decoded as unknown as EnhancedTokenPayload
   } catch (error) {
     if (error instanceof JWTError) throw error
     if (error instanceof jwt.TokenExpiredError) {
@@ -592,55 +727,89 @@ export function verifyRefreshTokenRotationAware(
 
 /**
  * Perform refresh with rotation and theft detection
+ *
+ * Async: rotations for the same token family are serialised with a per-family
+ * mutex so concurrent requests presenting the same refresh token can never
+ * both rotate. The caller that wins mints the replacement; the losers are
+ * rejected with `TOKEN_REUSED`. There are no in-repo callers yet, so making
+ * this function async is a safe (documented) API change.
+ *
  * @param refreshToken - Current refresh token
- * @returns New token pair with advanced family tracking
+ * @returns Promise resolving to the new token pair with shared family tracking
  * @throws JWTError variants on failure, including theft detection
  */
-export function refreshTokenPair(refreshToken: string): {
+export async function refreshTokenPair(refreshToken: string): Promise<{
   accessToken: string
   refreshToken: string
   familyId: string
-} {
-  // Verify and extract claims
-  const decoded = verifyRefreshTokenRotationAware(refreshToken)
-  const { jti: oldJti, familyId, userId, email } = decoded
+}> {
+  // Resolve the family for the lock BEFORE verifying: if the token is
+  // malformed, verification inside the lock rejects it.
+  let familyId = 'unbound-refresh'
+  try {
+    const preview = jwt.decode(refreshToken) as RotationAwareClaims | null
+    if (preview?.familyId) {
+      familyId = preview.familyId
+    }
+  } catch {
+    // Malformed token; verification inside the lock rejects it.
+  }
 
-  // Get family
-  const family = getOrCreateFamily(familyId, userId)
+  return withFamilyLock(familyId, async () => {
+    // Verify and extract claims (confirms this token has not been consumed yet)
+    const decoded = verifyRefreshTokenRotationAware(refreshToken)
+    const { jti: oldJti, familyId: tokenFamilyId, userId, email } = decoded
 
-  // Mark old token as used (consumed)
-  family.blacklistedJtis.add(oldJti)
-  family.lastRotation = Date.now()
+    // Get family
+    const family = getOrCreateFamily(tokenFamilyId, userId)
 
-  // Generate new token pair with same family
-  const { accessToken, refreshToken: newRefreshToken } = generateTokenPair(
-    { userId, email },
-    familyId
-  )
+    // Mark old token as used (consumed) BEFORE minting the replacement so a
+    // concurrent call presenting the same token is rejected as reuse.
+    family.blacklistedJtis.add(oldJti)
+    family.lastRotation = Date.now()
 
-  // Update family's current jti
-  const newDecoded = jwt.decode(newRefreshToken) as any
-  family.currentJti = newDecoded.jti
+    // Generate new token pair with same family
+    const { accessToken, refreshToken: newRefreshToken } = generateTokenPair(
+      { userId, email },
+      tokenFamilyId
+    )
 
-  logger.info('Token pair refreshed', {
-    userId,
-    familyId,
-    oldJti,
-    newJti: newDecoded.jti,
+    // Update family's current jti
+    const newDecoded = jwt.decode(newRefreshToken) as RotationAwareClaims
+    family.currentJti = newDecoded.jti
+
+    logger.info('Token pair refreshed', {
+      event: 'refresh_rotated',
+      userId,
+      familyId: tokenFamilyId,
+      oldJti,
+      newJti: newDecoded.jti,
+    })
+
+    return {
+      accessToken,
+      refreshToken: newRefreshToken,
+      familyId: tokenFamilyId,
+    }
   })
-
-  return { accessToken, refreshToken: newRefreshToken, familyId }
 }
 
 /**
  * Revoke a token family (logout all devices)
+ *
+ * Blacklists every jti minted for the family (access + refresh, including the
+ * current jti) before removing the in-memory entry, so previously-issued
+ * tokens from the family are unusable even after a process restart.
  */
 export function revokeTokenFamily(familyId: string): void {
   const family = tokenFamilies.get(familyId)
   if (family) {
+    for (const jti of family.issuedJtis) {
+      jtiBlacklist.add(jti)
+    }
     family.blacklistedJtis.forEach((jti) => jtiBlacklist.add(jti))
     tokenFamilies.delete(familyId)
-    logger.info('Token family revoked', { familyId })
+    logger.warn('Token family revoked', { event: 'family_revoked', familyId })
   }
 }
 

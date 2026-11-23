@@ -77,7 +77,7 @@ describe("Signup Service - Abuse Prevention", () => {
       });
 
       expect(result).toBeDefined();
-      expect(result.user.email).toBe("valid.user@example.com");
+      expect(result.user.email).toBe("valid.user+tag@example.com");
 
       await deleteUser(result.user.id);
     });

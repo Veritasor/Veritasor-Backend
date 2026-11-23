@@ -251,7 +251,10 @@ describe("attestationReminderJob", () => {
   it("uses Date.now() as default when no `now` argument supplied", async () => {
     vi.mocked(businessRepository.getAll).mockResolvedValue([]);
     // Should not throw even when called without `now`.
-    await expect(attestationReminderJob()).resolves.toBeUndefined();
+    await expect(attestationReminderJob()).resolves.toEqual({
+      itemsProcessed: 0,
+      success: true,
+    });
   });
 
   it("catches and logs repository errors without rethrowing", async () => {

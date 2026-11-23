@@ -1,8 +1,11 @@
+packages:
+  - "."
 allowBuilds:
-  cpu-features: set this to true or false
-  esbuild: set this to true or false
-  libxmljs2: set this to true or false
-  protobufjs: set this to true or false
-  ssh2: set this to true or false
-  unrs-resolver: set this to true or false
+  cpu-features: true
+  esbuild: true
+  libxmljs2: true
+  protobufjs: true
+  ssh2: true
+  unix-dgram: true
+  unrs-resolver: true
 minimumReleaseAge: 0
