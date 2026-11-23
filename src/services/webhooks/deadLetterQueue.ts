@@ -131,6 +131,21 @@ export class DeadLetterQueue {
   }
 
   /**
+   * Get a single DLQ entry by its primary key.
+   *
+   * Returns null when no row matches. The id is bound as a query parameter
+   * and cast to integer, matching the column type, so an arbitrary string
+   * cannot alter the query.
+   */
+  async getEntryById(id: string): Promise<DLQEntry | null> {
+    const result = await db.query<DLQEntry>(
+      'SELECT * FROM webhook_dead_letters WHERE id = $1::integer LIMIT 1',
+      [id],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  /**
    * Archive DLQ entries past TTL
    */
   async archiveOldEntries(options?: ArchiveOptions): Promise<{
