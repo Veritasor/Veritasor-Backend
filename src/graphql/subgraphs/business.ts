@@ -1,6 +1,14 @@
 import { createSchema as makeExecutableSchema } from 'graphql-yoga';
 import * as businessRepository from '../../repositories/business.js';
 
+interface BusinessLoaderContext {
+  loaders: {
+    businessLoader: {
+      load(id: string): Promise<businessRepository.Business | null>;
+    };
+  };
+}
+
 export const businessSchema = makeExecutableSchema({
   typeDefs: `
     type Business {
@@ -26,7 +34,11 @@ export const businessSchema = makeExecutableSchema({
   resolvers: {
     Query: {
       businesses: async () => businessRepository.getAll(),
-      business: async (_: unknown, { id }: { id: string }) => businessRepository.getById(id),
+      business: async (
+        _: unknown,
+        { id }: { id: string },
+        context: BusinessLoaderContext,
+      ) => context.loaders.businessLoader.load(id),
     },
   },
 });

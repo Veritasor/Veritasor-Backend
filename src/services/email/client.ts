@@ -1,6 +1,8 @@
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
 
+const DEFAULT_SMTP_PORT = 587;
+
 /**
  * Build SMTP transport from env. Use SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS.
  * Optional: MAIL_FROM (defaults to SMTP_USER), SMTP_SECURE ('true' for 465).
@@ -13,7 +15,7 @@ export function getMailTransport(): Transporter | null {
   if (!host || !user || !pass) {
     return null;
   }
-  const port = parseInt(process.env.SMTP_PORT ?? '587', 10);
+  const port = parseInt(process.env.SMTP_PORT ?? String(DEFAULT_SMTP_PORT), 10);
   const secure = process.env.SMTP_SECURE === 'true';
   return nodemailer.createTransport({
     host,

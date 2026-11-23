@@ -6,16 +6,23 @@ import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { submitAttestation, SorobanErrorCode } from '../../src/services/attestation/submit.js';
 import { fetchRazorpayRevenue } from '../../src/services/revenue/razorpayFetch.js';
 import { attestationRepository } from '../../src/repositories/attestation.js';
+import { revenueSnapshotRepository } from '../../src/repositories/revenueSnapshotRepository.js';
 import * as CryptoUtils from '../../src/services/merkle.js';
 import { AppError, ExternalServiceError } from '../../src/types/errors.js';
 
 // Mock dependencies
 vi.mock('../../src/services/revenue/razorpayFetch.js');
 vi.mock('../../src/repositories/attestation.js');
+vi.mock('../../src/repositories/revenueSnapshotRepository.js', () => ({
+  revenueSnapshotRepository: {
+    upsert: vi.fn(),
+  },
+}));
 vi.mock('../../src/services/merkle.js', async (importOriginal) => { const mod = await importOriginal(); return { ...mod, generateMerkleRoot: vi.fn() }; });
 
 const mockFetchRazorpayRevenue = vi.mocked(fetchRazorpayRevenue);
 const mockAttestationRepository = vi.mocked(attestationRepository);
+const mockRevenueSnapshotUpsert = vi.mocked(revenueSnapshotRepository.upsert);
 
 // Mock console methods to capture structured logs
 const mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -46,6 +53,7 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     vi.clearAllMocks();
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
     mockAttestationRepository.create = vi.fn().mockResolvedValue(mockAttestation);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
     vi.spyOn(CryptoUtils, "generateMerkleRoot").mockReturnValue("0xmockedmerkleroothashstring");
   });
 
@@ -67,6 +75,15 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     expect(mockAttestationRepository.create).toHaveBeenCalledWith({
       businessId,
       period,
+    });
+
+    // Snapshot write path: the submit flow persists a revenue snapshot for analytics.
+    expect(mockRevenueSnapshotUpsert).toHaveBeenCalledWith({
+      businessId,
+      period,
+      totalRevenue: 4500,
+      netRevenue: 4275,
+      currency: 'USD',
     });
 
     // Verify structured logging

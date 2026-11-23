@@ -594,6 +594,55 @@ export async function waitForConfirmation(
   );
 }
 
+export async function revokeAttestationOnChain(params: {
+  business: string;
+  period: string;
+  signerSecret?: string;
+}): Promise<string> {
+  const signerSecret = params.signerSecret ?? process.env.SOROBAN_SOURCE_SECRET;
+  if (!signerSecret) {
+    throw new SorobanSubmissionError(
+      'No signer secret available. Set SOROBAN_SOURCE_SECRET to revoke attestations on-chain.',
+      'MISSING_SIGNER',
+    );
+  }
+
+  const { contractId, networkPassphrase, rpcUrl } = getSorobanConfig();
+  const server = createSorobanRpcServer(rpcUrl);
+  const signer = Keypair.fromSecret(signerSecret);
+  const account = await server.getAccount(signer.publicKey());
+  const contract = new Contract(contractId);
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(
+      contract.call(
+        'revoke_attestation',
+        nativeToScVal(params.business),
+        nativeToScVal(params.period),
+      ),
+    )
+    .setTimeout(30)
+    .build();
+
+  const prepared = await server.prepareTransaction(tx);
+  prepared.sign(signer);
+  const response = await server.sendTransaction(prepared);
+
+  validateSendTransactionResponse(response);
+  if (response.status === 'ERROR' || response.status === 'TRY_AGAIN_LATER') {
+    throw new SorobanSubmissionError(
+      mapSendResponseError(response),
+      'SUBMIT_FAILED',
+      response,
+    );
+  }
+
+  await waitForConfirmation(server, response.hash);
+  return response.hash;
+}
+
 /**
  * Validates the confirmed transaction result against the originally
  * submitted attestation parameters.

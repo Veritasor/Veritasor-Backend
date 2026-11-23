@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import https from "node:https";
 import { EventEmitter } from "node:events";
 import { CdnClient, cdnClient } from "../../../../src/services/cdn/cdnClientAdapter.js";
-import { FastlyClient, resetFastlyClient } from "../../../../src/services/cdn/fastlyClient.js";
+import {
+  FastlyClient,
+  FastlyPurgeError,
+  fastlyClient,
+  resetFastlyClient,
+} from "../../../../src/services/cdn/fastlyClient.js";
 import { logger } from "../../../../src/utils/logger.js";
 
 // Mock logger to verify error logging
@@ -154,6 +159,14 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
   // 2. cdnClient Singleton Export & Adapter Delegation
   // =========================================================================
   describe("cdnClient Singleton Export & Delegation", () => {
+    it("keeps public exports (FastlyClient, resetFastlyClient, fastlyClient) unchanged", () => {
+      expect(typeof FastlyClient).toBe("function");
+      expect(typeof resetFastlyClient).toBe("function");
+      expect(fastlyClient).toBeDefined();
+      expect(fastlyClient).toBeInstanceOf(FastlyClient);
+      expect(cdnClient).toBe(fastlyClient);
+    });
+
     it("exports cdnClient as an instance backed by FastlyClient", () => {
       expect(cdnClient).toBeInstanceOf(FastlyClient);
     });
@@ -400,6 +413,24 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
 
       expect(recordedCalls).toHaveLength(1);
     });
+
+    it("throws FastlyPurgeError with transient: false for 4xx responses", async () => {
+      responseQueue.push({ statusCode: 400, body: "Bad request" });
+
+      let caught: unknown;
+      try {
+        await cdnClient.purge(["https://example.com/4xx"]);
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(FastlyPurgeError);
+      const purgeErr = caught as FastlyPurgeError;
+      expect(purgeErr.status).toBe(400);
+      expect(purgeErr.transient).toBe(false);
+      expect(purgeErr.name).toBe("FastlyPurgeError");
+      expect(recordedCalls).toHaveLength(1);
+    });
   });
 
   // =========================================================================
@@ -414,8 +445,8 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
 
       const purgePromise = cdnClient.purge(["https://example.com/retry-once"]);
 
-      // Advance time for backoff(1) = min(1000 * 2^1, 16000) = 2000ms
-      await vi.advanceTimersByTimeAsync(2000);
+      // Advance time past backoff(1) = min(1000 * 2^1, 16000) + jitter(0–1000) ≤ 3000ms
+      await vi.advanceTimersByTimeAsync(3000);
 
       await expect(purgePromise).resolves.toBeUndefined();
       expect(recordedCalls).toHaveLength(2);
@@ -434,11 +465,11 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
 
       const purgePromise = cdnClient.purge(["https://example.com/retry-twice"]);
 
-      // Attempt 1 fails -> backoff(1) = 2000ms
-      await vi.advanceTimersByTimeAsync(2000);
+      // Attempt 1 fails -> backoff(1) + jitter ≤ 3000ms
+      await vi.advanceTimersByTimeAsync(3000);
 
-      // Attempt 2 fails -> backoff(2) = 4000ms
-      await vi.advanceTimersByTimeAsync(4000);
+      // Attempt 2 fails -> backoff(2) + jitter ≤ 5000ms
+      await vi.advanceTimersByTimeAsync(5000);
 
       await expect(purgePromise).resolves.toBeUndefined();
       expect(recordedCalls).toHaveLength(3);
@@ -456,14 +487,14 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
 
       const purgePromise = cdnClient.purge(["https://example.com/recover-at-5"]);
 
-      // backoff(1) = 2000ms
-      await vi.advanceTimersByTimeAsync(2000);
-      // backoff(2) = 4000ms
-      await vi.advanceTimersByTimeAsync(4000);
-      // backoff(3) = 8000ms
-      await vi.advanceTimersByTimeAsync(8000);
-      // backoff(4) = 16000ms
-      await vi.advanceTimersByTimeAsync(16000);
+      // backoff(1) + jitter ≤ 3000ms
+      await vi.advanceTimersByTimeAsync(3000);
+      // backoff(2) + jitter ≤ 5000ms
+      await vi.advanceTimersByTimeAsync(5000);
+      // backoff(3) + jitter ≤ 9000ms
+      await vi.advanceTimersByTimeAsync(9000);
+      // backoff(4) + jitter ≤ 17000ms
+      await vi.advanceTimersByTimeAsync(17000);
 
       await expect(purgePromise).resolves.toBeUndefined();
       expect(recordedCalls).toHaveLength(5);
@@ -502,6 +533,9 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
       expect(logger.error).toHaveBeenLastCalledWith(
         expect.stringContaining("Fastly purge attempt 5 failed: Fastly purge failed with status 503"),
       );
+      expect(rejectedError).toBeInstanceOf(FastlyPurgeError);
+      expect((rejectedError as FastlyPurgeError).status).toBe(503);
+      expect((rejectedError as FastlyPurgeError).transient).toBe(true);
     });
 
     it("caps backoff delay at 16000ms as per backoff calculation", () => {
@@ -520,17 +554,16 @@ describe("src/services/cdn/cdnClientAdapter.ts", () => {
   // 7. Network and Socket Error Handling
   // =========================================================================
   describe("Network and Socket Error Handling", () => {
-    it("fails immediately on ECONNRESET network error without retrying", async () => {
+    it("retries on ECONNRESET network error and succeeds on the next attempt", async () => {
       const socketError = new Error("ECONNRESET");
       (socketError as any).code = "ECONNRESET";
       responseQueue.push({ networkError: socketError });
+      responseQueue.push({ statusCode: 200, body: '{"status":"ok"}' });
 
-      await expect(cdnClient.purge(["https://example.com/network-err"])).rejects.toThrow(
-        "ECONNRESET",
-      );
+      await expect(cdnClient.purge(["https://example.com/network-err"])).resolves.toBeUndefined();
 
-      // Network error does not have transient flag, fails on attempt 1
-      expect(recordedCalls).toHaveLength(1);
+      // Network error is now retried; both attempts are recorded.
+      expect(recordedCalls).toHaveLength(2);
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining("Fastly purge attempt 1 failed: ECONNRESET"),
       );

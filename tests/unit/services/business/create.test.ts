@@ -51,6 +51,37 @@ describe('createBusiness', () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
+  it('normalizes, persists, and returns countryCode when provided', async () => {
+    vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(null);
+    const created = {
+      id: 'biz-1',
+      userId: 'user-1',
+      name: 'Acme Corp',
+      email: 'user@example.com',
+      industry: null,
+      description: null,
+      website: null,
+      countryCode: 'NG',
+      reportingPeriod: 'monthly',
+      reportingTimezone: 'UTC',
+      lastReminderSentAt: null,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    } as any;
+    const createSpy = vi.spyOn(businessRepository, 'create').mockResolvedValue(created);
+
+    const { res, status, json } = makeRes();
+    await createBusiness(makeReq({ body: { name: 'Acme Corp', countryCode: 'ng' } }), res);
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Acme Corp', countryCode: 'NG' }),
+    );
+    expect(status).toHaveBeenCalledWith(201);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Acme Corp', countryCode: 'NG' }),
+    );
+  });
+
   it('throws AppError on unique constraint violation', async () => {
     vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(null);
     vi.spyOn(businessRepository, 'create').mockRejectedValue(
