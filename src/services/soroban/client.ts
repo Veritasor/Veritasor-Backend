@@ -43,6 +43,7 @@ export type SorobanRetryPolicy = {
 
 type ServerMethodName =
   | "getAccount"
+  | "getTransaction"
   | "prepareTransaction"
   | "sendTransaction"
   | "simulateTransaction";
@@ -758,6 +759,7 @@ export function createSorobanRpcServer(
 
       if (
         property === "getAccount" ||
+        property === "getTransaction" ||
         property === "prepareTransaction" ||
         property === "sendTransaction" ||
         property === "simulateTransaction"
