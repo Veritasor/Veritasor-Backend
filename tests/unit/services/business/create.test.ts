@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { createBusiness } from '../../../../src/services/business/create.js';
 import { businessRepository } from '../../../../src/repositories/business.js';
 import { AppError } from '../../../../src/types/errors.js';
+import { logger } from '../../../../src/utils/logger.js';
 
 const VALID_USER = { id: 'user-1', email: 'user@example.com' };
 const EXISTING_BUSINESS = {
@@ -68,6 +69,7 @@ describe('createBusiness', () => {
   });
 
   it('returns 500 for other unique violations', async () => {
+    const loggerError = vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(null);
     vi.spyOn(businessRepository, 'create').mockRejectedValue(
       Object.assign(new Error('duplicate key'), {
@@ -83,5 +85,14 @@ describe('createBusiness', () => {
     expect(json).toHaveBeenCalledWith(
       expect.objectContaining({ error: 'INTERNAL_ERROR' }),
     );
+    expect(loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'business.create.error',
+        userId: 'user-1',
+        error: 'duplicate key',
+      }),
+    );
+    expect(loggerError.mock.calls[0][0]).not.toHaveProperty('body');
+    expect(loggerError.mock.calls[0][0]).not.toHaveProperty('email');
   });
 });

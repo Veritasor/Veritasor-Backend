@@ -295,10 +295,10 @@ function validateSignupRequest(
  *     password: 'SecureP@ss123',
  *     ipAddress: '192.168.1.1'
  *   });
- *   console.log('User created:', result.user.id);
+ *   logger.info('User created', { userId: result.user.id });
  * } catch (error) {
  *   if (error instanceof SignupError) {
- *     console.error('Signup failed:', error.type, error.message);
+ *     logger.error({ type: error.type, error: error.message }, 'Signup failed');
  *   }
  * }
  * ```

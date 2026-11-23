@@ -4,6 +4,7 @@ import type { Server as HttpsServer } from "node:https";
 import type { Request, Response, NextFunction } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
+import { logger } from "./utils/logger.js";
 import { CachePolicies, setCacheControl } from "./utils/cacheControl.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -180,11 +181,17 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
       .filter((check) => !check.ready)
       .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
       .join("; ");
-    console.warn(`[Startup] Proceeding with failed readiness checks: ${failedChecks}`);
+    logger.warn(
+      { event: "startup_readiness_failed", failedChecks },
+      "[Startup] Proceeding with failed readiness checks",
+    );
   }
 
   replayFailedSubmissions().catch((err) => {
-    console.warn(`[Startup] Failed submission replay encountered an error: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(
+      { event: "startup_replay_failed", error: err },
+      "[Startup] Failed submission replay encountered an error",
+    );
   });
 
   // Start the cooperative idempotency TTL sweeper. This drives the
@@ -268,7 +275,10 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
 
     const onListening = () => {
       server.removeListener("error", onError);
-      console.log(`[Server] Veritasor Backend listening on port ${port} (mTLS: ${config.mtls.enabled})`);
+      logger.info(
+        { event: "server_listening", port, mtls: config.mtls.enabled },
+        "[Server] Veritasor Backend listening",
+      );
       resolve(server);
     };
 

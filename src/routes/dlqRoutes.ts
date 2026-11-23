@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { DeadLetterQueue } from '../services/webhooks/deadLetterQueue';
 import { authMiddleware } from '../middleware/auth';
 import { adminMiddleware } from '../middleware/admin';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
 const dlq = new DeadLetterQueue();
@@ -40,7 +41,7 @@ router.get('/entries', authMiddleware, adminMiddleware, async (req: Request, res
       },
     });
   } catch (error) {
-    console.error('Failed to get DLQ entries:', error);
+    logger.error({ error }, 'Failed to get DLQ entries');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to get DLQ entries',
@@ -70,7 +71,7 @@ router.get('/entries/:id', authMiddleware, adminMiddleware, async (req: Request,
       data: entry,
     });
   } catch (error) {
-    console.error('Failed to get DLQ entry:', error);
+    logger.error({ error }, 'Failed to get DLQ entry');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to get DLQ entry',
@@ -92,7 +93,7 @@ router.post('/entries/:id/archive', authMiddleware, adminMiddleware, async (req:
       data: { archive_location: location },
     });
   } catch (error) {
-    console.error('Failed to archive DLQ entry:', error);
+    logger.error({ error }, 'Failed to archive DLQ entry');
     res.status(500).json({
       error: 'Internal Server Error',
       message: error.message || 'Failed to archive DLQ entry',
@@ -115,7 +116,7 @@ router.post('/entries/:id/restore', authMiddleware, adminMiddleware, async (req:
       data: entry,
     });
   } catch (error) {
-    console.error('Failed to restore DLQ entry:', error);
+    logger.error({ error }, 'Failed to restore DLQ entry');
     res.status(500).json({
       error: 'Internal Server Error',
       message: error.message || 'Failed to restore DLQ entry',
@@ -140,7 +141,7 @@ router.post('/archive', authMiddleware, adminMiddleware, async (req: Request, re
       data: result,
     });
   } catch (error) {
-    console.error('Failed to run archive job:', error);
+    logger.error({ error }, 'Failed to run archive job');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to run archive job',
@@ -160,7 +161,7 @@ router.get('/stats', authMiddleware, adminMiddleware, async (req: Request, res: 
       data: stats,
     });
   } catch (error) {
-    console.error('Failed to get DLQ stats:', error);
+    logger.error({ error }, 'Failed to get DLQ stats');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to get DLQ stats',

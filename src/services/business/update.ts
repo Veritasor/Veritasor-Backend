@@ -33,6 +33,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { businessRepository } from '../../repositories/business.js';
+import { logger } from '../../utils/logger.js';
 import {
   parseUpdateBusinessInput,
   UpdateBusinessInput,
@@ -163,12 +164,12 @@ export async function updateBusiness(req: Request, res: Response) {
   } catch (error) {
     // @dev Structured log: emit a JSON-serialisable object so log aggregators
     //      (e.g. Datadog, Cloud Logging) can index fields individually.
-    console.error(JSON.stringify({
+    logger.error({
       event: 'business.update.error',
       userId: req.user?.id ?? null,
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
-    }));
+    });
 
     return res.status(500).json({
       error: 'INTERNAL_ERROR',
