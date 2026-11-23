@@ -9,6 +9,17 @@ export interface User {
   resetToken?: string
   resetTokenExpiry?: Date
   role: 'user' | 'admin' | 'business_admin'
+  name?: string
+  profile?: Record<string, unknown>
+}
+
+/**
+ * Profile fields that `PATCH /api/users/me` allows to be updated.
+ * Any omitted fields are left untouched to preserve partial update safety.
+ */
+export interface UserProfileUpdate {
+  name?: string
+  profile?: Record<string, unknown>
 }
 
 /**
@@ -146,6 +157,28 @@ export async function updateUser(
   if (current.email !== next.email) {
     emailIndex.delete(current.email)
   }
+
+  const stored = saveUser(next)
+  return cloneUser(stored)
+}
+
+/**
+ * Partially update a user's profile fields (`name`, `profile`).
+ *
+ * Only the allowlisted profile fields present in `fields` are written;
+ * the user's other fields (including auth material) are preserved.
+ * Returns the updated user record, or `null` when the user does not exist.
+ */
+export async function updateUserProfile(
+  userId: string,
+  fields: UserProfileUpdate
+): Promise<User | null> {
+  const current = users.get(userId)
+  if (!current) return null
+
+  const next: User = { ...current, updatedAt: new Date() }
+  if (fields.name !== undefined) next.name = fields.name
+  if (fields.profile !== undefined) next.profile = fields.profile
 
   const stored = saveUser(next)
   return cloneUser(stored)

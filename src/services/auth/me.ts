@@ -11,7 +11,7 @@ export interface MeResponse {
 }
 
 export async function me(userId: string): Promise<MeResponse> {
-  if (!userId) {
+  if (!userId || userId.trim().length === 0) {
     throw new AuthenticationError('User ID is required')
   }
 

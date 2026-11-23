@@ -1,48 +1,44 @@
-export type User = {
-  id: string
-  email: string
-  name?: string
-  profile?: Record<string, any>
-}
+import {
+  updateUserProfile,
+  type User,
+  type UserProfileUpdate,
+} from '../../repositories/userRepository.js'
+import { NotFoundError } from '../../types/errors.js'
 
 /**
- * Update a user's profile. This is a stubbed service that would
- * normally persist changes to a database. It validates allowed fields
- * and returns the updated user object.
+ * Sanitized user profile DTO returned by `updateProfile`.
+ * Never includes `passwordHash` or any auth/refresh/reset tokens.
  */
-export async function updateProfile(userId: string, updates: Partial<User>): Promise<User> {
+export type SanitizedUserProfile = Omit<
+  User,
+  'passwordHash' | 'resetToken' | 'resetTokenExpiry'
+>
+
+/**
+ * Update the authenticated user's profile.
+ *
+ * Persists only the validated/allowlisted profile fields through the user
+ * repository and returns the sanitized user record. Throws `NotFoundError`
+ * when the repository reports that the user does not exist.
+ */
+export async function updateProfile(
+  userId: string,
+  updates: UserProfileUpdate
+): Promise<SanitizedUserProfile> {
   if (!userId) throw new Error('userId required')
 
-  const allowed: (keyof User)[] = ['name', 'profile']
-  const payload: Partial<User> = {}
-  for (const k of allowed) {
-    if (k in updates) {
-      // simple runtime validation
-      if (k === 'name' && updates.name !== undefined && typeof updates.name !== 'string') {
-        throw new Error('name must be a string')
-      }
-      if (k === 'profile' && updates.profile !== undefined && typeof updates.profile !== 'object') {
-        throw new Error('profile must be an object')
-      }
-      // @ts-ignore
-      payload[k] = updates[k]
-    }
-  }
+  const updated = await updateUserProfile(userId, updates)
+  if (!updated) throw new NotFoundError('User not found')
 
-  // Stub: return merged object. In real app, fetch existing user from DB
-  const existing: User = {
-    id: userId,
-    email: 'user@example.com',
-    name: 'Existing User',
-    profile: {},
+  return {
+    id: updated.id,
+    email: updated.email,
+    role: updated.role,
+    createdAt: updated.createdAt,
+    updatedAt: updated.updatedAt,
+    name: updated.name,
+    profile: updated.profile,
   }
-
-  const updated: User = {
-    ...existing,
-    ...payload,
-  }
-
-  return updated
 }
 
 export default updateProfile

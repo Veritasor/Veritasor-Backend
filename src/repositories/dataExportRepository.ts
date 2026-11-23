@@ -150,15 +150,6 @@ export async function consumeDownloadToken(token: string): Promise<string | null
   return typeof result === 'string' ? result : null
 }
 
-/** Read the export ID without consuming the one-time token. */
-export async function peekDownloadToken(token: string): Promise<string | null> {
-  const client = getRedisClient()
-  const data = await redisCircuitBreaker.execute(() => client.get(`${TOKEN_KEY_PREFIX}${token}`))
-  if (!data) return null
-  const parsed = JSON.parse(data)
-  return parsed.downloaded ? null : parsed.exportId
-}
-
 /**
  * Get export for user
  */

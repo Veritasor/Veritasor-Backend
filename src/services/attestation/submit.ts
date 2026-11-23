@@ -5,6 +5,8 @@ import {
 } from "../revenue/razorpayFetch.js";
 import { buildTree, getRoot } from "../merkle/index.js";
 import { attestationRepository } from "../../repositories/attestation.js";
+import { revenueSnapshotRepository } from "../../repositories/revenueSnapshotRepository.js";
+import { roundAmount } from "../revenue/normalize.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
 import {
   BatchingQueue,
@@ -99,6 +101,9 @@ interface LogContext {
   errorCode?: string;
   duration?: number;
   delay?: number;
+  snapshotId?: string;
+  totalRevenue?: number;
+  netRevenue?: number;
 }
 
 function log(level: 'info' | 'warn' | 'error', message: string, context: LogContext): void {
@@ -360,6 +365,28 @@ async function doSubmitAttestation(
     const attestation = attestationRepository.create({
       businessId,
       period,
+    });
+
+    // 6a. Upsert the revenue snapshot consumed by analytics
+    // (revenue_snapshots table). Aggregated amounts are rounded with
+    // roundAmount() so totals are deterministic money values.
+    const snapshotTotal = roundAmount(
+      Object.values(aggregated).reduce((sum, amount) => sum + amount, 0),
+    );
+    const snapshot = await revenueSnapshotRepository.upsert({
+      businessId,
+      period,
+      totalRevenue: snapshotTotal,
+      netRevenue: roundAmount(snapshotTotal * 0.95),
+      currency: rawRevenue[0]?.currency?.toUpperCase() || "USD",
+    });
+    log("info", `Revenue snapshot upserted for period ${period}`, {
+      userId,
+      businessId,
+      period,
+      snapshotId: snapshot.id,
+      totalRevenue: snapshot.totalRevenue,
+      netRevenue: snapshot.netRevenue,
     });
 
     return {

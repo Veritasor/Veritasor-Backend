@@ -27,11 +27,14 @@ the Pact Broker during CI.
 | `/api/v1/public/attestations/:hash` | GET | 400 | Invalid hash (too long) |
 | `/api/v1/public/attestations/:hash` | GET | 404 | Non-existent attestation |
 | `/api/v1/public/attestations/:hash` | GET | 410 | Revoked attestation |
+| `/api/users/me` | PATCH | 200 | Update the authenticated user's profile |
+| `/api/v1/webhook-subscriptions` | GET | 200 | List webhook subscriptions for the authenticated business |
+| `/api/v1/webhook-subscriptions` | POST | 201 | Create a webhook subscription |
 
 ## How It Works
 
-The single test in `tests/pact/contract.spec.ts` does both consumer-side
-expectation definition and provider-side verification:
+`tests/pact/contract.spec.ts` does both consumer-side expectation definition
+and provider-side verification:
 
 1. **Consumer interactions** — defines what the Frontend expects for each
    request/response pair, using PactV3 matchers for flexible field matching.
@@ -42,6 +45,14 @@ expectation definition and provider-side verification:
 4. **Provider verification** — a `Verifier` starts the real Express app and
    replays every interaction against it, using state handlers to set up
    provider state (e.g. seed attestations in the mock repository).
+
+`tests/pact/users-webhooks-provider.spec.ts` additionally replays just the
+users + webhook-subscription interactions from the generated pact file. It
+asserts that the pact file still contains all three interactions, so a lost
+consumer expectation cannot silently shrink coverage. The mocked JWT verifier
+keeps the checked-in bearer token deterministic and non-expiring; the user,
+business, and webhook-subscription repositories are mocked so verification does
+not need PostgreSQL.
 
 ## Running
 
@@ -65,6 +76,26 @@ to state handlers defined in the test:
 | `no attestation exists with hash "nonexistent"` | Removes any attestation with that key |
 | `an attestation exists with hash "revoked123" and status "revoked"` | Seeds a revoked attestation |
 | `an attestation exists with hash "abc123" and the request has a matching ETag` | Same as valid attestation |
+| `an authenticated user exists` | Resolves the seeded Pact user and business |
+| `a business has at least one webhook subscription` | Seeds one enabled subscription |
+| `a business has room for another webhook subscription` | Clears subscriptions so the per-business limit is not hit |
+
+## Pact File Diff
+
+The regenerated contract contains three new interactions:
+
+- `PATCH /api/users/me` — expects `id`, `email`, `name`, and `profile` in the
+  response and never any credential fields.
+- `GET /api/v1/webhook-subscriptions` — expects `{ status: "success", data: [] }`
+  with the public subscription shape (no signing secret).
+- `POST /api/v1/webhook-subscriptions` — expects `201` with the public shape
+  plus the one-time `secret`.
+
+The existing public-attestation interactions were also brought up to date with
+the provider's cache policy. Their expected `Cache-Control` now includes the
+`stale-if-error` directive (`86400` for active, `3600` for revoked), and the
+ETag / `If-None-Match` values use the current strong SHA-256 ETag instead of the
+older opaque value. No endpoint was removed or renamed.
 
 ## Publishing to Pact Broker
 

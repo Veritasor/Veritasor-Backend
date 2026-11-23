@@ -7,6 +7,7 @@ import { submitAttestation, SorobanErrorCode } from '../../src/services/attestat
 import { fetchRazorpayRevenue } from '../../src/services/revenue/razorpayFetch.js';
 import { attestationRepository } from '../../src/repositories/attestation.js';
 import { getRoot } from '../../src/services/merkle/index.js';
+import { revenueSnapshotRepository } from '../../src/repositories/revenueSnapshotRepository.js';
 import * as CryptoUtils from '../../src/services/merkle.js';
 import {
   PERIOD_REGEX,
@@ -22,6 +23,11 @@ vi.mock('../../src/services/revenue/razorpayFetch.js', () => ({
   fetchRazorpayRevenue: vi.fn(),
 }));
 vi.mock('../../src/repositories/attestation.js');
+vi.mock('../../src/repositories/revenueSnapshotRepository.js', () => ({
+  revenueSnapshotRepository: {
+    upsert: vi.fn(),
+  },
+}));
 vi.mock('../../src/metrics.js', () => {
   const metric = { inc: vi.fn(), set: vi.fn(), observe: vi.fn() };
   return {
@@ -44,6 +50,7 @@ vi.mock('../../src/services/merkle.js', async (importOriginal) => {
 const mockFetchRazorpayRevenue = vi.mocked(fetchRazorpayRevenue);
 const mockAttestationRepository = vi.mocked(attestationRepository);
 const mockGetRoot = vi.mocked(getRoot);
+const mockRevenueSnapshotUpsert = vi.mocked(revenueSnapshotRepository.upsert);
 
 // Mock console methods to capture structured logs.
 const mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -77,6 +84,7 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
     // The real repository create() is synchronous.
     mockAttestationRepository.create = vi.fn().mockReturnValue(mockAttestation);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
     vi.spyOn(CryptoUtils, 'generateMerkleRoot').mockReturnValue('0xmockedmerkleroothashstring');
   });
 
@@ -99,6 +107,15 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     expect(mockAttestationRepository.create).toHaveBeenCalledWith({
       businessId,
       period,
+    });
+
+    // Snapshot write path: the submit flow persists a revenue snapshot for analytics.
+    expect(mockRevenueSnapshotUpsert).toHaveBeenCalledWith({
+      businessId,
+      period,
+      totalRevenue: 4500,
+      netRevenue: 4275,
+      currency: 'USD',
     });
 
     expect(mockConsoleLog).toHaveBeenCalledWith(
@@ -303,6 +320,7 @@ describe('Structured logging', () => {
     vi.clearAllMocks();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
     mockAttestationRepository.create = vi.fn().mockReturnValue({
       id: 'att_789', businessId, period: '2024-03', createdAt: new Date().toISOString(),
     });
@@ -375,6 +393,7 @@ describe('Error taxonomy mapping', () => {
     vi.clearAllMocks();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
     mockAttestationRepository.create = vi.fn().mockReturnValue({
       id: 'att_789', businessId, period: '2024-03', createdAt: new Date().toISOString(),
     });
@@ -485,6 +504,7 @@ describe('submitAttestation period validation', () => {
     vi.clearAllMocks();
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
     mockAttestationRepository.create = vi.fn().mockReturnValue({
       id: 'att_789', businessId, period: '2024-03', createdAt: new Date().toISOString(),
     });
