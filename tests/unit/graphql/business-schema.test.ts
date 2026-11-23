@@ -19,17 +19,28 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { getAll, getById } = vi.hoisted(() => ({
+const { getAll, getById, listByIds } = vi.hoisted(() => ({
   getAll: vi.fn(),
   getById: vi.fn(),
+  listByIds: vi.fn(),
 }));
 
 vi.mock("../../../src/repositories/business.js", () => ({
   getAll,
   getById,
+  listByIds,
+}));
+vi.mock("../../../src/repositories/userRepository.js", () => ({
+  findUsersByIds: vi.fn(),
+}));
+vi.mock("../../../src/repositories/attestation.js", () => ({
+  attestationRepository: {
+    listByBusinessIds: vi.fn(),
+  },
 }));
 
 import { businessSchema } from "../../../src/graphql/subgraphs/business.js";
+import { createDataLoaders } from "../../../src/graphql/loaders.js";
 
 function makeBusiness(overrides: Record<string, unknown> = {}) {
   return {
@@ -74,12 +85,13 @@ function businessFields(): FieldMap {
 function resolveField(
   field: string,
   args: Record<string, unknown> = {},
+  context: unknown = { loaders: { businessLoader: { load: getById } } },
 ): Promise<unknown> {
   const resolver = queryFields()[field]?.resolve;
   if (typeof resolver !== "function") {
     throw new Error(`Query.${field} has no resolver`);
   }
-  return Promise.resolve(resolver({}, args, {}, {}));
+  return Promise.resolve(resolver({}, args, context, {}));
 }
 
 describe("businessSchema — schema contract", () => {
@@ -153,6 +165,7 @@ describe("businessSchema — businesses resolver", () => {
   beforeEach(() => {
     getAll.mockReset();
     getById.mockReset();
+    listByIds.mockReset();
   });
 
   it("delegates to the repository and passes the result through", async () => {
@@ -190,6 +203,7 @@ describe("businessSchema — business(id) resolver", () => {
   beforeEach(() => {
     getAll.mockReset();
     getById.mockReset();
+    listByIds.mockReset();
   });
 
   it("looks the business up by the supplied id", async () => {
@@ -232,5 +246,21 @@ describe("businessSchema — business(id) resolver", () => {
     await resolveField("business", { id: "biz-1" });
 
     expect(getAll).not.toHaveBeenCalled();
+  });
+
+  it("batches multiple business lookups into one repository call and preserves missing ids", async () => {
+    const first = makeBusiness({ id: "biz-1" });
+    const second = makeBusiness({ id: "biz-2" });
+    listByIds.mockResolvedValue([first, second, null]);
+    const { businessLoader } = createDataLoaders();
+
+    await expect(Promise.all([
+      businessLoader.load("biz-1"),
+      businessLoader.load("biz-2"),
+      businessLoader.load("missing"),
+    ])).resolves.toEqual([first, second, null]);
+
+    expect(listByIds).toHaveBeenCalledTimes(1);
+    expect(listByIds).toHaveBeenCalledWith(["biz-1", "biz-2", "missing"]);
   });
 });

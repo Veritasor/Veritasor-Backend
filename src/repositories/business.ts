@@ -71,6 +71,21 @@ export async function getByIds(ids: readonly string[]): Promise<(Business | Erro
   })
 }
 
+export async function listByIds(ids: readonly string[]): Promise<(Business | null)[]> {
+  if (ids.length === 0) return []
+
+  const result = await db.query<BusinessRow>(
+    `SELECT id, user_id, name, email, industry, description, website,
+            reporting_period, reporting_timezone, last_reminder_sent_at,
+            created_at, updated_at
+     FROM businesses
+     WHERE id = ANY($1)`,
+    [ids]
+  )
+  const businessesById = new Map(result.rows.map(row => [row.id, toBusiness(row)]))
+  return ids.map(id => businessesById.get(id) ?? null)
+}
+
 export async function getByUserId(userId: string): Promise<Business | null> {
   for (const business of businesses.values()) {
     if (business.userId === userId) {
@@ -239,6 +254,7 @@ export const businessRepository = {
   create,
   getById,
   getByIds,
+  listByIds,
   getByUserId,
   getAll,
   list,

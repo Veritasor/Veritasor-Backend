@@ -1,15 +1,13 @@
 import { Router } from 'express';
-import { createYoga, type YogaServerInstance } from 'graphql-yoga';
+import { createYoga } from 'graphql-yoga';
 import { GraphQLError, Kind, type DocumentNode, type FieldNode, type ValidationContext, type ASTVisitor } from 'graphql';
 import { usePersistedOperations } from '@graphql-yoga/plugin-persisted-operations';
-import DataLoader from 'dataloader';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { requirePermissions } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
-import * as businessRepository from '../repositories/business.js';
-import * as userRepository from '../repositories/userRepository.js';
-import * as attestationRepository from '../repositories/attestationRepository.js';
 import { gatewaySchema } from '../graphql/gateway.js';
+import { createDataLoaders } from '../graphql/loaders.js';
+export { createDataLoaders } from '../graphql/loaders.js';
 import { getPersistedQueryStore } from '../graphql/persistedQueries.js';
 import { Counter } from 'prom-client';
 import { metricsRegistry } from '../metrics.js';
@@ -40,20 +38,6 @@ export const graphqlPersistedQueryRejections = new Counter({
 });
 
 const MAX_QUERY_DEPTH = 5;
-
-export function createDataLoaders() {
-  return {
-    userLoader: new DataLoader(async (ids: readonly string[]) => {
-      return userRepository.findUsersByIds(ids as string[]);
-    }),
-    businessLoader: new DataLoader(async (ids: readonly string[]) => {
-      return businessRepository.getByIds(ids as string[]);
-    }),
-    attestationsByBusinessLoader: new DataLoader(async (businessIds: readonly string[]) => {
-      return attestationRepository.listByBusinessIds(businessIds as string[]);
-    }),
-  };
-}
 
 function extractPersistedKey(params: any): string | undefined {
   if (!params) return undefined;
@@ -151,7 +135,7 @@ function introspectionGateRule(context: ValidationContext): ASTVisitor {
   };
 }
 
-export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
+export function createAdminGraphqlYoga() {
   return createYoga({
     schema: gatewaySchema,
     maskedErrors: true,
@@ -208,7 +192,7 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
       usePersistedOperations({
         getPersistedOperation: (key: string) => {
           const store = getPersistedQueryStore();
-          return store.get(key);
+          return store.get(key) ?? null;
         },
         allowArbitraryOperations: (_request) => {
           return config.graphql.allowArbitraryOperations;
