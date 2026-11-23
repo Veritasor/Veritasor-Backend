@@ -334,3 +334,30 @@ export async function remove(
   );
   return (result.rowCount ?? 0) > 0;
 }
+
+/**
+ * Return the highest secret_version across all webhook subscriptions (0 if none).
+ */
+export async function getLatestSecretVersion(): Promise<number> {
+  const result = await db.query(
+    "SELECT COALESCE(MAX(secret_version), 0)::int AS latest_version FROM webhook_subscriptions",
+  );
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  return Number(row?.latest_version ?? 0);
+}
+
+/**
+ * Return each subscription's ID, business ID, and current secret_version.
+ */
+export async function listSecretVersions(): Promise<
+  Array<{ subscriptionId: string; businessId: string; currentVersion: number }>
+> {
+  const result = await db.query(
+    "SELECT id, business_id, secret_version FROM webhook_subscriptions ORDER BY id ASC",
+  );
+  return (result.rows as Record<string, unknown>[]).map((row) => ({
+    subscriptionId: String(row.id),
+    businessId: String(row.business_id),
+    currentVersion: Number(row.secret_version ?? 1),
+  }));
+}
