@@ -582,8 +582,9 @@ adminRouter.get(
       const deliveryId = typeof req.query.deliveryId === 'string' ? req.query.deliveryId : undefined;
       const subscriptionId = typeof req.query.subscriptionId === 'string' ? req.query.subscriptionId : undefined;
       const limit = typeof req.query.limit === 'string' ? Math.min(parseInt(req.query.limit, 10) || 50, 100) : 50;
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
 
-      const result = await queryDeliveryReceipts({ businessId, deliveryId, subscriptionId, limit });
+      const result = await queryDeliveryReceipts({ businessId, deliveryId, subscriptionId, limit, cursor });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: 'Internal Server Error', message: error.message });
