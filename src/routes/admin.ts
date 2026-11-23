@@ -127,7 +127,8 @@ adminRouter.post(
 
     try {
       const revoked = await revokeBatchAttestations(parsed.data.attestationIds, req.user!.id);
-      res.json({ message: 'Batch revoked successfully', count: revoked.length });
+      const count = Array.isArray(revoked) ? revoked.length : revoked.revoked.length;
+      res.json({ message: 'Batch revoked successfully', count });
     } catch (error: any) {
       res.status(500).json({ error: 'Internal Server Error', message: error.message });
     }

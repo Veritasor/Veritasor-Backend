@@ -67,11 +67,12 @@ Requires Node.js 22 (as in CI) and Docker for the dev stack. CI uses pnpm (`pnpm
 docker compose -f ops/dev/docker-compose.yml up -d   # Postgres, Redis, mock Soroban RPC (seeded dev data)
 cp .env.example .env
 pnpm install            # or: npm install
+pnpm run typecheck      # run strict TypeScript type check (tsc --noEmit)
 pnpm run migrate        # apply SQL migrations
 pnpm run dev            # http://localhost:3000
 ```
 
-Other scripts: `build`, `start`, `lint`, `migrate:rollback`, `migrate:verify-rollback`, `docs:routes`, `docs:openapi`, `sbom:generate`, `perf:k6:*`, `soak`, `pact:test`, `test:mutation`. Reset the dev stack with `docker compose -f ops/dev/docker-compose.yml down -v`.
+Other scripts: `typecheck`, `build`, `start`, `lint`, `migrate:rollback`, `migrate:verify-rollback`, `docs:routes`, `docs:openapi`, `sbom:generate`, `perf:k6:*`, `soak`, `pact:test`, `test:mutation`. Reset the dev stack with `docker compose -f ops/dev/docker-compose.yml down -v`.
 
 ## Testing
 

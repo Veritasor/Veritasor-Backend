@@ -3,6 +3,15 @@ import path from 'node:path'
 import dotenv from 'dotenv'
 import { logger } from './logger.js'
 import { config } from '../config/index.js'
+import {
+  vaultLeaseSecondsRemaining,
+  vaultLeaseRenewalTotal,
+  vaultLeaseRenewalDurationSeconds,
+} from '../metrics.js'
+
+const LEASE_RENEWAL_THRESHOLD_RATIO = 0.7
+const LEASE_RENEWAL_JITTER_RATIO = 0.1
+const LEASE_RENEWAL_ERROR_RETRY_MS = 5000
 
 export interface SecretLoader {
   get(key: string): string
@@ -74,14 +83,6 @@ abstract class BaseSecretAdapter implements SecretLoader {
     this.secrets = new Map(secrets)
   }
 
-  get allSecrets(): Map<string, string> {
-    return new Map(this.secrets)
-  }
-
-  set allSecrets(secrets: Map<string, string>) {
-    this.secrets = new Map(secrets)
-  }
-
   protected ensureLoaded(): void {
     if (!this.loaded) {
       throw new SecretNotLoadedError()
@@ -115,7 +116,7 @@ abstract class BaseSecretAdapter implements SecretLoader {
 export class EnvAdapter extends BaseSecretAdapter {
   async reload(): Promise<void> {
     const entries = Object.entries(process.env)
-      .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim() !== '')
       .map(([key, value]) => [BaseSecretAdapter.normalizeSecretKey(key), value] as const)
 
     this.secrets = new Map(entries)
@@ -152,7 +153,7 @@ export class FileAdapter extends BaseSecretAdapter {
     this.loaded = true
   }
 
-  async get(key: string): Promise<string> {
+  get(key: string): string {
     this.ensureLoaded()
     return this.toSecretValue(this.secrets.get(BaseSecretAdapter.normalizeSecretKey(key)), key)
   }
@@ -428,6 +429,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
     this.loaded = true
 
     try {
+      // @ts-expect-error — @aws-sdk/client-secrets-manager is an optional peer dependency loaded dynamically
       const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager')
       const client = new SecretsManagerClient({ region: this.primaryRegion })
       const response = await client.send(new GetSecretValueCommand({ SecretId: process.env.AWS_SECRET_NAME ?? 'veritasor' }))
@@ -465,7 +467,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
   private isRetryableError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
 
-    const err = error as Record<string, unknown>
+    const err = error as unknown as Record<string, unknown>
     const metadata = err.$metadata as Record<string, unknown> | undefined
 
     if (metadata?.httpStatusCode && Number(metadata.httpStatusCode) >= 500) {
@@ -485,7 +487,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
 }
 
 export class GsmSecretAdapter extends BaseSecretAdapter {
-  private client: { accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Buffer } }]> } | null = null
+  private client: { accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Uint8Array | string | null } | null }, ...unknown[]]> } | null = null
 
   constructor(private readonly projectId: string) {
     super()
@@ -500,7 +502,12 @@ export class GsmSecretAdapter extends BaseSecretAdapter {
       const secretName = process.env.GSM_SECRET_NAME ?? 'DEFAULT_SECRET'
       const name = `projects/${this.projectId}/secrets/${secretName}/versions/latest`
       const [version] = await client.accessSecretVersion({ name })
-      const payload = version.payload?.data?.toString('utf8')
+      const rawData = version.payload?.data
+      const payload = typeof rawData === 'string'
+        ? rawData
+        : rawData
+          ? Buffer.from(rawData).toString('utf8')
+          : undefined
       if (payload) {
         this.secrets.set(secretName, payload)
       }
@@ -521,12 +528,12 @@ export class GsmSecretAdapter extends BaseSecretAdapter {
     return this.toSecretValue(fallback, key)
   }
 
-  private async getClient(): Promise<{ accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Buffer } }]> }> {
+  private async getClient(): Promise<{ accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Uint8Array | string | null } | null }, ...unknown[]]> }> {
     if (!this.client) {
       const { SecretManagerServiceClient } = await import('@google-cloud/secret-manager')
       this.client = new SecretManagerServiceClient()
     }
-    return this.client
+    return this.client!
   }
 }
 
@@ -685,20 +692,9 @@ class FailoverSecretLoader extends BaseSecretAdapter {
       return this.toSecretValue(this.secrets.get(normalizedKey), key)
     }
     try {
-      return await this.withTimeout(this.primaryAdapter.get(key), this.timeout)
+      return this.primaryAdapter.get(key)
     } catch (primaryErr) {
-      if (this.diskCache) {
-        const cached = await this.diskCache.load()
-        if (cached) {
-          for (const [k, v] of cached.entries()) {
-            this.secrets.set(k, v)
-          }
-          if (this.secrets.has(normalizedKey)) {
-            return this.toSecretValue(this.secrets.get(normalizedKey), key)
-          }
-        }
-      }
-      return await this.fallbackAdapter.get(key)
+      return this.fallbackAdapter.get(key)
     }
   }
 

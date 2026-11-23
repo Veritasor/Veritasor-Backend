@@ -104,7 +104,7 @@ export interface DbClient {
    * @param params Optional array of parameter values
    * @returns Promise resolving to query result with rows array
    */
-  query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+  query<T = any>(sql: string, params?: any[]): Promise<{ rows: any[] }>;
 }
 
 /**

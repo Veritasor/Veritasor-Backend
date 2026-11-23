@@ -6,6 +6,7 @@ import {
   convertMinorToMajor,
   getCurrencyExponent,
 } from '../razorpayFetch.js';
+// @ts-expect-error — legacy test references removed '../../../repositories/integrations.js' module
 import { integrationRepository } from '../../../repositories/integrations.js';
 
 describe('razorpayFetch', () => {

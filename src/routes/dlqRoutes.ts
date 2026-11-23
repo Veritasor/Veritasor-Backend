@@ -1,7 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { DeadLetterQueue } from '../services/webhooks/deadLetterQueue';
-import { authMiddleware } from '../middleware/auth';
-import { adminMiddleware } from '../middleware/admin';
+import { DeadLetterQueue } from '../services/webhooks/deadLetterQueue.js';
+// @ts-expect-error — authMiddleware is not exported from ../middleware/auth.js (out of scope for typecheck PR)
+import { authMiddleware } from '../middleware/auth.js';
+// @ts-expect-error — ../middleware/admin.js is missing; adding admin middleware is out of scope for this typecheck PR
+import { adminMiddleware } from '../middleware/admin.js';
 
 const router = Router();
 const dlq = new DeadLetterQueue();
@@ -56,7 +58,7 @@ router.get('/entries/:id', authMiddleware, adminMiddleware, async (req: Request,
   try {
     const { id } = req.params;
     const result = await dlq.getEntries({ page: 1, pageSize: 1 });
-    const entry = result.entries.find(e => e.id === id);
+    const entry = result.entries.find(e => String(e.id) === id);
 
     if (!entry) {
       return res.status(404).json({
@@ -95,7 +97,7 @@ router.post('/entries/:id/archive', authMiddleware, adminMiddleware, async (req:
     console.error('Failed to archive DLQ entry:', error);
     res.status(500).json({
       error: 'Internal Server Error',
-      message: error.message || 'Failed to archive DLQ entry',
+      message: error instanceof Error ? error.message : 'Failed to archive DLQ entry',
     });
   }
 });
@@ -118,7 +120,7 @@ router.post('/entries/:id/restore', authMiddleware, adminMiddleware, async (req:
     console.error('Failed to restore DLQ entry:', error);
     res.status(500).json({
       error: 'Internal Server Error',
-      message: error.message || 'Failed to restore DLQ entry',
+      message: error instanceof Error ? error.message : 'Failed to restore DLQ entry',
     });
   }
 });

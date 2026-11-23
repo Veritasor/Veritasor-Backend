@@ -22,7 +22,7 @@ import {
   beforeEach,
   afterEach,
   vi,
-  type SpyInstance,
+  type MockInstance as SpyInstance,
 } from 'vitest';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

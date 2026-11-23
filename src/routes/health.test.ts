@@ -246,7 +246,6 @@ describe("GET /api/health", () => {
           quit: vi.fn().mockResolvedValue(undefined),
         })),
       }),
-      { virtual: true },
     );
 
     const { healthRouter: freshRouter } = await import("./health.js");
@@ -319,7 +318,6 @@ describe("GET /api/health", () => {
           },
         },
       }),
-      { virtual: true },
     );
 
     const { healthRouter: freshRouter } = await import("./health.js");

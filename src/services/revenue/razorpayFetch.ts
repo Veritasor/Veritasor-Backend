@@ -25,6 +25,37 @@ export class InvalidPaymentAmountError extends Error {
   }
 }
 
+const DEFAULT_PAGE_SIZE = 100;
+const DEFAULT_MAX_PAGES = 100;
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+const ZERO_DECIMAL_CURRENCIES = new Set([
+  'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA',
+  'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+]);
+
+const THREE_DECIMAL_CURRENCIES = new Set([
+  'BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND',
+]);
+
+export function getCurrencyExponent(currency: string): number {
+  const code = currency.toUpperCase();
+  if (ZERO_DECIMAL_CURRENCIES.has(code)) return 0;
+  if (THREE_DECIMAL_CURRENCIES.has(code)) return 3;
+  return 2;
+}
+
+export function convertMinorToMajor(minorAmount: number, currency: string): number {
+  const exponent = getCurrencyExponent(currency);
+  return minorAmount / 10 ** exponent;
+}
+
+export interface FetchRazorpayRevenueOptions {
+  pageSize?: number;
+  maxPages?: number;
+  timeoutMs?: number;
+}
+
 /**
  * Fetch revenue entries from Razorpay between two ISO dates (inclusive).
  * When a business ID is supplied, credentials are loaded from its connected
@@ -34,7 +65,7 @@ export async function fetchRazorpayRevenue(
   businessId: string,
   startDate: string,
   endDate: string,
-  businessId?: string,
+  options: FetchRazorpayRevenueOptions = {},
 ): Promise<RevenueEntry[]> {
   const businessCredentials = businessId
     ? await getRazorpayCredentials(businessId)
@@ -48,9 +79,6 @@ export async function fetchRazorpayRevenue(
   if (!key || !secret) {
     throw new Error('Missing RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET environment variables');
   }
-
-  const key = integration.meta.apiKeyId;
-  const secret = integration.meta.apiKeySecret;
 
   const from = Math.floor(new Date(startDate).getTime() / 1000);
   const to = Math.floor(new Date(endDate).getTime() / 1000);

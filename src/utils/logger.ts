@@ -128,7 +128,7 @@ function writeLog(level: LogLevel, args: unknown[]): void {
     otelLogger.emit({
       severityNumber,
       severityText: level.toUpperCase(),
-      body: entry.message || output,
+      body: String(entry.message || output),
       attributes: entry as any,
     });
   } catch (e) {

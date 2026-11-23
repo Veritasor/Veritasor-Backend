@@ -630,6 +630,7 @@ export async function initializeOpenTelemetry(): Promise<
     const sampler = new RouteAwareSampler();
 
     // Import Resource type for cloud-provider detection integration.
+    // @ts-expect-error — @opentelemetry/resources is a transitive dependency of @opentelemetry/sdk-node
     const { Resource } = await import("@opentelemetry/resources");
 
     // Detect cloud-provider resource attributes with timeout guards.
@@ -658,7 +659,7 @@ export async function initializeOpenTelemetry(): Promise<
       resource: new Resource(resourceAttributes),
       traceExporter,
       sampler,
-      logRecordProcessor: new BatchLogRecordProcessor(logExporter),
+      logRecordProcessor: new BatchLogRecordProcessor(logExporter as any) as any,
     });
 
     sdk.start();

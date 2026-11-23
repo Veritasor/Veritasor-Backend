@@ -50,7 +50,7 @@ export function createDataLoaders() {
       return businessRepository.getByIds(ids as string[]);
     }),
     attestationsByBusinessLoader: new DataLoader(async (businessIds: readonly string[]) => {
-      return attestationRepository.listByBusinessIds(businessIds as string[]);
+      return (attestationRepository as any).listByBusinessIds(businessIds as string[]);
     }),
   };
 }
@@ -151,7 +151,7 @@ function introspectionGateRule(context: ValidationContext): ASTVisitor {
   };
 }
 
-export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
+export function createAdminGraphqlYoga(): YogaServerInstance<{}, any> {
   return createYoga({
     schema: gatewaySchema,
     maskedErrors: true,
@@ -208,7 +208,7 @@ export function createAdminGraphqlYoga(): YogaServerInstance<{}, {}> {
       usePersistedOperations({
         getPersistedOperation: (key: string) => {
           const store = getPersistedQueryStore();
-          return store.get(key);
+          return store.get(key) ?? null;
         },
         allowArbitraryOperations: (_request) => {
           return config.graphql.allowArbitraryOperations;

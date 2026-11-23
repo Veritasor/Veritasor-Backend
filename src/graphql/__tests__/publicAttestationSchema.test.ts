@@ -14,7 +14,7 @@ vi.mock('../../repositories/attestationRepository.js', () => ({
 vi.mock('../../db/client.js', () => ({ db: { query: vi.fn() } }));
 
 // Import the Yoga server
-const { publicGraphqlYoga } = await import('../../src/graphql/publicAttestationSchema.js');
+const { publicGraphqlYoga } = await import('../publicAttestationSchema.js');
 
 const app = express();
 app.use(publicGraphqlYoga);

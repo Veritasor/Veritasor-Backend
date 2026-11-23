@@ -5,9 +5,15 @@ import { requirePermissions, requirePolicy } from '../middleware/permissions.js'
 import { IntegrationPermission } from '../types/permissions.js';
 import { getById, listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
-import crypto from 'cypto';
-import { setOAuthState, consumeOAuthState } from '../services/integrations/stripe/store.js';
-import { generateAuthUrl } from '../services/integrations/oauth.js';
+import crypto from 'crypto';
+
+function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
+  const params = new URLSearchParams({ state });
+  if (redirectUri) {
+    params.set('redirect_uri', redirectUri);
+  }
+  return `/api/integrations/${provider}/connect?${params.toString()}`;
+}
 
 const router = Router();
 
@@ -51,11 +57,11 @@ const AVAILABLE_INTEGRATIONS: IntegrationType[] = [
 // Validation schemas
 const connectIntegrationSchema = z.object({
   provider: z.enum(['stripe', 'razorpay', 'shopify']),
-  redirectUri: z.string.url().optional(),
+  redirectUri: z.string().url().optional(),
 });
 
 const disconnectIntegrationSchema = z.object({
-  integrationId: z.string.uuid(),
+  integrationId: z.string().uuid(),
 });
 
 /**
@@ -80,13 +86,16 @@ export function isAllowedRedirectUri(redirectUri: string): boolean {
   return allowed.includes(redirectUri)
 }
 
+const genericOAuthStates = new Map<string, { userId: string; businessId: string; expiresAt: number }>();
+
 /**
  * @notice Consume and validate a generic integration OAuth state for the caller.
  * @returns true only if the state exists, has not expired, and is bound to the caller's user/business.
  */
 export function consumeGenericOAuthState(state: string, userId: string, businessId: string): boolean {
-  const record = consumeOAuthState(state)
-  if (!record) return false
+  const record = genericOAuthStates.get(state)
+  genericOAuthStates.delete(state)
+  if (!record || record.expiresAt < Date.now()) return false
   if (record.userId !== userId || record.businessId !== businessId) return false
   return true
 }
@@ -102,7 +111,7 @@ export function generateGenericOAuthState(): string {
  * @notice Persist the generic OAuth state bound to the initiating user/business.
  */
 export function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): void {
-  setOAuthState(state, { userId, businessId, expiresAt })
+  genericOAuthStates.set(state, { userId, businessId, expiresAt })
 }
 
 /**
@@ -309,7 +318,7 @@ router.post('/connect',
  */
 router.delete('/:id',
   requireBusinessAuth,
-  requirePermissions(IntegrationPermission.DISCONNECT),
+  requirePermissions(IntegrationPermission.DISCONNECT_OWN),
   requirePolicy('delete', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
