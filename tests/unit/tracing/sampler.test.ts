@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SamplingDecision } from "@opentelemetry/api";
+
+vi.mock("../../../src/metrics.js", async () => {
+  const { Registry } = await import("prom-client");
+  return { metricsRegistry: new Registry() };
+});
+
 import {
   RouteAwareSampler,
   loadSamplerConfig,
@@ -168,6 +174,84 @@ describe("RouteAwareSampler.shouldSample", () => {
     const result = sample(s, "/api/v1/attestations");
     expect(result.attributes).toBeUndefined();
     expect(result.traceState).toBeUndefined();
+  });
+
+  describe("deterministic table-driven decisions with fixed trace IDs", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      {
+        name: "rate=0 always drops regardless of random",
+        config: { defaultRate: 0 },
+        route: "/api/v1/orders",
+        traceId: "0123456789abcdef0123456789abcdef",
+        randomVal: 0.0,
+        expected: SamplingDecision.NOT_RECORD,
+      },
+      {
+        name: "rate=1 always samples regardless of random",
+        config: { defaultRate: 1 },
+        route: "/api/v1/orders",
+        traceId: "fedcba9876543210fedcba9876543210",
+        randomVal: 0.9999,
+        expected: SamplingDecision.RECORD_AND_SAMPLED,
+      },
+      {
+        name: "rate=0.5 samples when random < 0.5",
+        config: { defaultRate: 0.5 },
+        route: "/api/v1/orders",
+        traceId: "00000000000000000000000000000001",
+        randomVal: 0.49,
+        expected: SamplingDecision.RECORD_AND_SAMPLED,
+      },
+      {
+        name: "rate=0.5 drops when random === 0.5",
+        config: { defaultRate: 0.5 },
+        route: "/api/v1/orders",
+        traceId: "00000000000000000000000000000001",
+        randomVal: 0.5,
+        expected: SamplingDecision.NOT_RECORD,
+      },
+      {
+        name: "hot route /health at rate=0 is dropped even when defaultRate=1",
+        config: { defaultRate: 1, hotRoutes: [{ route: "/health", rate: 0 }] },
+        route: "/health",
+        traceId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        randomVal: 0.0,
+        expected: SamplingDecision.NOT_RECORD,
+      },
+      {
+        name: "hot route /metrics at rate=0 is dropped",
+        config: { defaultRate: 1, hotRoutes: [{ route: "/metrics", rate: 0 }] },
+        route: "/metrics",
+        traceId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        randomVal: 0.0,
+        expected: SamplingDecision.NOT_RECORD,
+      },
+      {
+        name: "rare route /api/v1/admin at rate=1 is sampled even when defaultRate=0",
+        config: { defaultRate: 0, rareRoutes: [{ route: "/api/v1/admin", rate: 1 }] },
+        route: "/api/v1/admin/audit",
+        traceId: "cccccccccccccccccccccccccccccccc",
+        randomVal: 0.99,
+        expected: SamplingDecision.RECORD_AND_SAMPLED,
+      },
+    ])("$name", ({ config, route, traceId, randomVal, expected }) => {
+      vi.spyOn(Math, "random").mockReturnValue(randomVal);
+      const s = makeSampler(config);
+      const result = s.shouldSample(
+        {} as never,
+        traceId,
+        "GET " + route,
+        0 as never,
+        { "http.route": route },
+        [],
+      );
+      expect(result.decision).toBe(expected);
+      expect(result.attributes).toBeUndefined();
+    });
   });
 });
 
@@ -359,14 +443,26 @@ describe("loadSamplerConfig", () => {
     expect(() => loadSamplerConfig()).toThrow(/between 0 and 1/);
   });
 
-  it("ignores empty string env vars and falls back to defaults", () => {
-    process.env.OTEL_SAMPLING_DEFAULT_RATE = "";
-    process.env.OTEL_SAMPLING_HOT_ROUTES = "";
+  it("ignores empty or whitespace-only env vars and falls back to defaults", () => {
+    process.env.OTEL_SAMPLING_DEFAULT_RATE = "   ";
+    process.env.OTEL_SAMPLING_HOT_ROUTES = "  \t ";
     process.env.OTEL_SAMPLING_RARE_ROUTES = "";
     const cfg = loadSamplerConfig();
     expect(cfg.defaultRate).toBe(1.0);
     expect(cfg.hotRoutes).toEqual([]);
     expect(cfg.rareRoutes).toEqual([]);
+  });
+
+  it.each([
+    { name: "negative default rate", envKey: "OTEL_SAMPLING_DEFAULT_RATE", value: "-0.1", pattern: /between 0 and 1/ },
+    { name: "NaN default rate", envKey: "OTEL_SAMPLING_DEFAULT_RATE", value: "NaN", pattern: /between 0 and 1/ },
+    { name: "Infinity default rate", envKey: "OTEL_SAMPLING_DEFAULT_RATE", value: "Infinity", pattern: /between 0 and 1/ },
+    { name: "invalid JSON in rare routes", envKey: "OTEL_SAMPLING_RARE_ROUTES", value: "{bad", pattern: /valid JSON/ },
+    { name: "null item in rare routes", envKey: "OTEL_SAMPLING_RARE_ROUTES", value: "[null]", pattern: /must have string "route"/ },
+    { name: "negative rate in rare routes", envKey: "OTEL_SAMPLING_RARE_ROUTES", value: '[{"route":"/a","rate":-0.5}]', pattern: /between 0 and 1/ },
+  ])("throws on invalid env value: $name", ({ envKey, value, pattern }) => {
+    process.env[envKey] = value;
+    expect(() => loadSamplerConfig()).toThrow(pattern);
   });
 });
 

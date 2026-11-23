@@ -90,14 +90,6 @@ function isPostgresError(error: unknown): error is PostgresError {
   );
 }
 
-function getBodyParserErrorType(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("type" in error)) {
-    return undefined;
-  }
-  const type = (error as BodyParserError).type;
-  return typeof type === "string" ? type : undefined;
-}
-
 function normalizeZodIssues(
   error: z.ZodError
 ): Array<{ path: string[]; message: string; code: string }> {

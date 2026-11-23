@@ -149,6 +149,7 @@ export async function updateBusiness(req: Request, res: Response) {
       industry: normalizedData.industry,
       description: normalizedData.description,
       website: normalizedData.website,
+      countryCode: normalizedData.countryCode,
     });
 
     // @dev Return updated business with 200 status

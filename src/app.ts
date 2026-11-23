@@ -1,7 +1,7 @@
 import express, { type Express } from "express";
 import http, { type Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
 import { logger } from "./utils/logger.js";
@@ -14,6 +14,7 @@ import {
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
+import { prototypePollutionGuard } from "./middleware/prototypePollution.js";
 import { compressionMiddleware } from "./middleware/compression.js";
 import {
   applyRotatedTlsMaterial,
@@ -41,6 +42,7 @@ import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import { webhookSubscriptionsRouter } from "./routes/webhook-subscriptions.js";
 import adminRouter from "./routes/admin.js";
+import dlqRouter from "./routes/dlqRoutes.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
@@ -82,7 +84,6 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.set("trust proxy", config.trustProxy);
   app.use(requestLogger);
   app.use(securityHeaders);
-  app.use(securityHeadersMiddleware);
   app.use(mtlsMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
@@ -92,6 +93,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   // 3. Body Parsing
   app.use(express.json());
   app.use(securityHeadersMiddleware);
+  app.use(prototypePollutionGuard);
   app.use(createCorsMiddleware());
 
   // Webhook subscription CRUD API (after body parsing)
@@ -122,6 +124,8 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/integrations/stripe", integrationsStripeRouter);
   app.use("/api/integrations", integrationsRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/v1/admin/dlq", dlqRouter);
+  app.use("/api/admin/dlq", dlqRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
 

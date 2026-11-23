@@ -76,13 +76,14 @@ const createTestApp = (userId: string) => {
         })
       }
 
-      if (await consumeDownloadToken(token) !== exportId) {
-        return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
-      }
-
       const archiveData = await getExportArchive(exportId)
       if (!archiveData) {
         return res.status(404).json({ message: 'Export archive not found' })
+      }
+
+      const consumedExportId = await consumeDownloadToken(token)
+      if (!consumedExportId || consumedExportId !== exportId) {
+        return res.status(410).json({ message: 'Export token not found, already downloaded, or expired' })
       }
 
       res.setHeader('Content-Type', 'application/octet-stream')
@@ -246,9 +247,15 @@ describe('GET /api/users/me/export/:token - Download GDPR Export', () => {
 
     await exportRepo.updateDataExportStatus(exportId, 'completed')
     await getRedisClient().setex(`data-export-archive:${exportId}`, 86400, JSON.stringify({ buffer: Buffer.from('archive').toString('base64') }))
-    const completed = await request(app).get(`/api/users/me/export/${token}`)
+    const completed = await request(app)
+      .get(`/api/users/me/export/${token}`)
+      .buffer(true)
     expect(completed.status).toBe(200)
+    expect(completed.body).toEqual(Buffer.from('archive'))
     expect(completed.headers['content-disposition']).toContain(exportId)
+
+    const replay = await request(app).get(`/api/users/me/export/${token}`)
+    expect(replay.status).toBe(410)
   })
 
   it('should return 410 for invalid token', async () => {

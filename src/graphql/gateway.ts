@@ -14,8 +14,19 @@ export const gatewaySchema = stitchSchemas({
       user: User
       attestations: [Attestation!]
     }
+    extend type Attestation {
+      business: Business
+    }
   `,
   resolvers: {
+    Attestation: {
+      business: {
+        selectionSet: `{ businessId }`,
+        resolve(attestation, _args, context: any) {
+          return context.loaders.businessLoader.load(attestation.businessId);
+        },
+      },
+    },
     Business: {
       user: {
         selectionSet: `{ userId }`,

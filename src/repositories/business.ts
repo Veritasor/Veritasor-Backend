@@ -18,6 +18,8 @@ export interface Business {
   reportingTimezone: string
   /** ISO-8601 timestamp of the last time a reminder was sent. Null if never sent. */
   lastReminderSentAt: string | null
+  /** ISO 3166-1 alpha-2 code of the business registration country, e.g. US, GB, NG. */
+  countryCode?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -31,6 +33,7 @@ export type CreateBusinessData = {
   website?: string | null
   reportingPeriod?: ReportingPeriod
   reportingTimezone?: string
+  countryCode?: string | null
 }
 
 export type UpdateBusinessData = Partial<Omit<CreateBusinessData, 'userId'>>
@@ -51,6 +54,7 @@ export async function create(data: CreateBusinessData): Promise<Business> {
     reportingPeriod: data.reportingPeriod ?? 'monthly',
     reportingTimezone: data.reportingTimezone ?? 'UTC',
     lastReminderSentAt: null,
+    countryCode: data.countryCode ?? null,
     createdAt: now,
     updatedAt: now,
   }
@@ -69,6 +73,21 @@ export async function getByIds(ids: readonly string[]): Promise<(Business | Erro
     const business = businesses.get(id)
     return business ? { ...business } : new Error(`Business not found: ${id}`)
   })
+}
+
+export async function listByIds(ids: readonly string[]): Promise<(Business | null)[]> {
+  if (ids.length === 0) return []
+
+  const result = await db.query<BusinessRow>(
+    `SELECT id, user_id, name, email, industry, description, website,
+            reporting_period, reporting_timezone, last_reminder_sent_at,
+            created_at, updated_at
+     FROM businesses
+     WHERE id = ANY($1)`,
+    [ids]
+  )
+  const businessesById = new Map(result.rows.map(row => [row.id, toBusiness(row)]))
+  return ids.map(id => businessesById.get(id) ?? null)
 }
 
 export async function getByUserId(userId: string): Promise<Business | null> {
@@ -211,6 +230,7 @@ export async function update(id: string, data: UpdateBusinessData): Promise<Busi
   if (data.industry !== undefined) business.industry = data.industry
   if (data.description !== undefined) business.description = data.description
   if (data.website !== undefined) business.website = data.website
+  if (data.countryCode !== undefined) business.countryCode = data.countryCode
   
   business.updatedAt = new Date().toISOString()
   return { ...business }
@@ -239,6 +259,7 @@ export const businessRepository = {
   create,
   getById,
   getByIds,
+  listByIds,
   getByUserId,
   getAll,
   list,

@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger.js';
 
 export const FlagKeys = {
   SOROBAN_BATCHED_SUBMISSION: 'soroban_batched_submission',
+  SOROBAN_ATTESTATION_REVOCATION: 'soroban_attestation_revocation',
   STATSD_DUAL_WRITE: 'statsd_dual_write',
 } as const;
 

@@ -15,6 +15,7 @@
 
 import { Router } from 'express';
 import { requireAuth } from '../middleware/requireAuth.js';
+import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
 import { z } from 'zod';
 import { validateBody, validateQuery } from '../middleware/validate.js';
 import { asyncErrorHandler } from '../middleware/errorHandler.js';
@@ -26,21 +27,18 @@ import {
   updateBusinessInputSchema,
   businessListQuerySchema,
 } from '../services/business/schemas.js'
-import type { WebhookSubscription } from '../services/webhooks/dispatcher.js';
-import crypto from 'node:crypto';
+import * as webhookSubscriptionRepo from '../repositories/webhookSubscriptionRepository.js';
 import { isValidWebhookUrl } from '../schemas/webhookSubscription.js';
 
 const router = Router();
 export const webhookRouter = Router({ mergeParams: true });
 
+const MAX_LEGACY_WEBHOOK_SUBSCRIPTIONS_PER_BUSINESS = 5;
+
 const webhookRegistrationSchema = z.object({
   url: z.string().url().refine(isValidWebhookUrl, 'URL must be a valid public HTTPS endpoint'),
   secret: z.string().min(32), // Mandate cryptographically strong secrets
 });
-
-// Mock database repository storage array layer
-// TODO: Replace with a persistent repository implementation
-const subscriptionsDb: WebhookSubscription[] = [];
 
 /**
  * POST /
@@ -149,31 +147,56 @@ router.get('/', validateQuery(businessListQuerySchema), asyncErrorHandler(listBu
  */
 router.get('/:id', asyncErrorHandler(getBusinessById));
 
-webhookRouter.post("/", requireAuth, validateBody(webhookRegistrationSchema), async (req, res) => {
-  try {
+/**
+ * POST /:id/webhooks
+ * Deprecated alias for POST /api/v1/webhook-subscriptions.
+ * Forwards registration to the persistent webhook subscription repository.
+ *
+ * @deprecated Use POST /api/v1/webhook-subscriptions instead.
+ */
+webhookRouter.post(
+  '/',
+  (req, _res, next) => {
+    if (
+      !req.headers['x-business-id'] &&
+      !req.body?.business_id &&
+      !req.body?.businessId &&
+      req.params.id
+    ) {
+      req.headers['x-business-id'] = req.params.id;
+    }
+    next();
+  },
+  requireBusinessAuth,
+  validateBody(webhookRegistrationSchema),
+  asyncErrorHandler(async (req, res) => {
     const businessId = req.params.id;
-    const validatedBody = webhookRegistrationSchema.parse(req.body);
-
-    // Limit bounded fan-out count capacity rules
-    const existingCount = subscriptionsDb.filter(sub => sub.businessId === businessId).length;
-    if (existingCount >= 5) {
-      return res.status(400).json({ error: "Maximum webhook endpoint subscription capacity reached." });
+    if (!req.business || req.business.id !== businessId) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Cannot register webhooks for another business',
+      });
     }
 
-    const newSubscription: WebhookSubscription = {
-      id: crypto.randomUUID(),
-      businessId,
-      url: validatedBody.url,
-      secret: validatedBody.secret,
-    };
+    res.setHeader('Deprecation', 'true');
+    res.setHeader('Link', '</api/v1/webhook-subscriptions>; rel="successor-version"');
 
-    subscriptionsDb.push(newSubscription);
-    return res.status(201).json(newSubscription);
-  } catch (err) {
-    // This will be caught by the asyncErrorHandler, but for clarity:
-    return res.status(400).json({ error: "Invalid registration payload context validation error." });
-  }
-});
+    const existingCount = await webhookSubscriptionRepo.countByBusiness(businessId);
+    if (existingCount >= MAX_LEGACY_WEBHOOK_SUBSCRIPTIONS_PER_BUSINESS) {
+      return res.status(400).json({ error: 'Maximum webhook endpoint subscription capacity reached.' });
+    }
+
+    const { url, secret } = req.body as z.infer<typeof webhookRegistrationSchema>;
+    const created = await webhookSubscriptionRepo.create(businessId, {
+      url,
+      secret,
+      eventFilters: {},
+      enabled: true,
+    });
+
+    return res.status(201).json(webhookSubscriptionRepo.toPublicSubscription(created));
+  }),
+);
 
 router.use('/:id/webhooks', webhookRouter);
 
