@@ -239,6 +239,23 @@ export type ListWebhookSubscriptionsQuery = z.infer<
   typeof listWebhookSubscriptionsQuerySchema
 >;
 
+/**
+ * Schema for querying webhook delivery receipts (business deliveries endpoint).
+ *
+ * Shares the subscription list schema's validation conventions: `limit` is
+ * coerced from a query string and must be an integer between 1 and the same
+ * max cap (100). The default of 50 matches the repository's default page
+ * size for delivery receipts.
+ */
+export const listWebhookDeliveriesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().optional(),
+}).strict();
+
+export type ListWebhookDeliveriesQuery = z.infer<
+  typeof listWebhookDeliveriesQuerySchema
+>;
+
 // ---------------------------------------------------------------------------
 // Filter evaluation (applied at dispatch time)
 // ---------------------------------------------------------------------------
