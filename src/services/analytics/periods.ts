@@ -20,18 +20,31 @@
  * server process is running.
  *
  * @security
- * Period strings are validated with a strict YYYY-MM regex before any numeric
- * parsing, preventing injection through malformed date inputs.
+ * Period strings are validated with a strict YYYY-MM / YYYY-Q1..Q4 regex
+ * before any numeric parsing, preventing injection through malformed inputs.
  */
 
 import { attestationRepository } from '../../repositories/attestation.js'
+import { AppError, VRTErrorCodes } from '../../types/errors.js'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Strict YYYY-MM regex. Rejects partial matches and arbitrary separators. */
-const PERIOD_REGEX = /^\d{4}-(?:0[1-9]|1[0-2])$/
+/**
+ * Strict period regex shared by the analytics helpers and the attestation
+ * route schema so both accept exactly the same formats.
+ *
+ * Accepts `YYYY-MM` (01-12) and `YYYY-Q1`..`YYYY-Q4`. Anchored to reject
+ * partial matches, whitespace, and arbitrary separators.
+ */
+export const PERIOD_REGEX = /^\d{4}-(?:0[1-9]|1[0-2]|Q[1-4])$/
+
+/** Human-readable description used in validation messages. */
+export const PERIOD_FORMAT = 'YYYY-MM (e.g. 2025-10) or YYYY-Q1..Q4 (e.g. 2025-Q4)'
+
+const MONTH_PERIOD_REGEX = /^\d{4}-(?:0[1-9]|1[0-2])$/
+const QUARTER_PERIOD_REGEX = /^\d{4}-Q[1-4]$/
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -39,13 +52,20 @@ const PERIOD_REGEX = /^\d{4}-(?:0[1-9]|1[0-2])$/
 
 /**
  * Thrown when a period string cannot be parsed.
- * Callers (e.g. route handlers) should catch this and return HTTP 400.
+ *
+ * Extends `AppError` so callers that do not explicitly catch it still turn an
+ * invalid period into an HTTP 400 rather than a 500.
  */
-export class PeriodParseError extends Error {
+export class PeriodParseError extends AppError {
   public readonly code = 'INVALID_PERIOD' as const
 
   constructor(value: string) {
-    super(`Invalid period string "${value}". Expected YYYY-MM (e.g. 2025-10).`)
+    super(
+      `Invalid period string "${value}". Expected ${PERIOD_FORMAT}.`,
+      400,
+      VRTErrorCodes.VRT_0002,
+      { period: value },
+    )
     this.name = 'PeriodParseError'
   }
 }
@@ -73,31 +93,64 @@ export type PeriodBounds = {
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a YYYY-MM period string to DST-safe UTC bounds.
+ * Convert a YYYY-MM or YYYY-Q1..Q4 period string to DST-safe UTC bounds.
  *
  * Uses `Date.UTC` so boundaries are always at UTC midnight, regardless of the
- * server's local offset or any DST transition that may occur during the month.
+ * server's local offset or any DST transition that may occur during the
+ * period. Quarter bounds always start on the first day of the quarter's first
+ * month and end on the first day of the following quarter.
  *
  * @example
  * const { start, end } = parsePeriodToBounds('2024-03')
  * // start → 2024-03-01T00:00:00.000Z
  * // end   → 2024-04-01T00:00:00.000Z  (exclusive)
  *
- * const { start, end } = parsePeriodToBounds('2024-12')
- * // start → 2024-12-01T00:00:00.000Z
+ * const { start, end } = parsePeriodToBounds('2024-Q4')
+ * // start → 2024-10-01T00:00:00.000Z
  * // end   → 2025-01-01T00:00:00.000Z  (rolls over to next year correctly)
  *
- * @throws {PeriodParseError} if `period` does not match YYYY-MM.
+ * @throws {PeriodParseError} if `period` is not a supported format.
  */
 export const parsePeriodToBounds = (period: string): PeriodBounds => {
   if (!PERIOD_REGEX.test(period)) {
     throw new PeriodParseError(period)
   }
-  const [year, month] = period.split('-').map(Number)
-  // Date.UTC normalises overflow: month=13 rolls to Jan of the next year.
-  const start = new Date(Date.UTC(year, month - 1, 1))
-  const end = new Date(Date.UTC(year, month, 1)) // first day of next month
+
+  const [yearPart, unit] = period.split('-')
+  const year = Number(yearPart)
+  const isQuarter = QUARTER_PERIOD_REGEX.test(period)
+  // Date.UTC normalises overflow: month=12 rolls to Jan of the next year.
+  const firstMonth = isQuarter
+    ? (Number(unit.slice(1)) - 1) * 3 + 1
+    : Number(unit)
+
+  const start = new Date(Date.UTC(year, firstMonth - 1, 1))
+  const end = new Date(Date.UTC(year, firstMonth - 1 + (isQuarter ? 3 : 1), 1))
   return { start, end }
+}
+
+/**
+ * Inclusive ISO-8601 window for a period, derived from the same UTC bounds as
+ * `parsePeriodToBounds`. Used by callers (e.g. Razorpay revenue fetching) that
+ * take inclusive `startDate` / `endDate` strings instead of `Date` objects.
+ *
+ * The end timestamp is the final second of the period, so a month or quarter
+ * never leaks into the next one, regardless of the server's timezone.
+ *
+ * @example
+ * parsePeriodToIsoRange('2024-02')
+ * // → { startDate: '2024-02-01T00:00:00Z', endDate: '2024-02-29T23:59:59Z' }
+ *
+ * @throws {PeriodParseError} if `period` is not a supported format.
+ */
+export const parsePeriodToIsoRange = (period: string): { startDate: string; endDate: string } => {
+  const { start, end } = parsePeriodToBounds(period)
+  const lastSecond = new Date(end.getTime() - 1000)
+
+  return {
+    startDate: `${start.toISOString().slice(0, 10)}T00:00:00Z`,
+    endDate: `${lastSecond.toISOString().slice(0, 10)}T23:59:59Z`,
+  }
 }
 
 /**
@@ -140,7 +193,7 @@ export const currentPeriod = (): string => dateToPeriod(new Date())
  *
  * @param timestampSeconds - Unix timestamp in seconds (as stored on-chain or
  *   in the attestation record).
- * @param period - YYYY-MM period string (e.g. `'2024-03'`).
+ * @param period - YYYY-MM or YYYY-Q1..Q4 period string (e.g. `'2024-03'`).
  *
  * @example
  * // March DST spring-forward in US/Eastern (2024-03-10 02:00 → 03:00):
@@ -148,7 +201,7 @@ export const currentPeriod = (): string => dateToPeriod(new Date())
  * isTimestampInPeriod(1711929599, '2024-03') // 2024-03-31 23:59:59 UTC → true
  * isTimestampInPeriod(1711929600, '2024-03') // 2024-04-01 00:00 UTC → false
  *
- * @throws {PeriodParseError} if `period` is not a valid YYYY-MM string.
+ * @throws {PeriodParseError} if `period` is not a valid period string.
  */
 export const isTimestampInPeriod = (timestampSeconds: number, period: string): boolean => {
   const { start, end } = parsePeriodToBounds(period)
