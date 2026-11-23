@@ -21,7 +21,7 @@
  * @module tests/integration/analytics-business-auth
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { app } from '../../src/app.js';
 import * as jwt from '../../src/utils/jwt.js';
@@ -29,6 +29,8 @@ import * as userRepository from '../../src/repositories/userRepository.js';
 import * as businessRepo from '../../src/repositories/business.js';
 import * as analyticsService from '../../src/services/analytics/periods.js';
 import { revenueSnapshotRepository } from '../../src/repositories/revenueSnapshotRepository.js';
+import { seedForTests, reset } from '../../src/repositories/attestation.js';
+import { resetRateLimiterStore } from '../../src/middleware/rateLimiter.js';
 
 // ─── Test Fixtures ────────────────────────────────────────────────────────────
 
@@ -151,6 +153,12 @@ function setupMocksForSuspendedBusiness() {
 describe('Analytics Routes — requireBusinessAuth Boundary Checks', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetRateLimiterStore();
+    seedForTests();
+  });
+
+  afterEach(() => {
+    reset();
   });
 
   describe('GET /api/analytics/periods', () => {
