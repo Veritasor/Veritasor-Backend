@@ -18,6 +18,8 @@ export interface Business {
   reportingTimezone: string
   /** ISO-8601 timestamp of the last time a reminder was sent. Null if never sent. */
   lastReminderSentAt: string | null
+  /** ISO 3166-1 alpha-2 code of the business registration country, e.g. US, GB, NG. */
+  countryCode?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -31,6 +33,7 @@ export type CreateBusinessData = {
   website?: string | null
   reportingPeriod?: ReportingPeriod
   reportingTimezone?: string
+  countryCode?: string | null
 }
 
 export type UpdateBusinessData = Partial<Omit<CreateBusinessData, 'userId'>>
@@ -51,6 +54,7 @@ export async function create(data: CreateBusinessData): Promise<Business> {
     reportingPeriod: data.reportingPeriod ?? 'monthly',
     reportingTimezone: data.reportingTimezone ?? 'UTC',
     lastReminderSentAt: null,
+    countryCode: data.countryCode ?? null,
     createdAt: now,
     updatedAt: now,
   }
@@ -226,6 +230,7 @@ export async function update(id: string, data: UpdateBusinessData): Promise<Busi
   if (data.industry !== undefined) business.industry = data.industry
   if (data.description !== undefined) business.description = data.description
   if (data.website !== undefined) business.website = data.website
+  if (data.countryCode !== undefined) business.countryCode = data.countryCode
   
   business.updatedAt = new Date().toISOString()
   return { ...business }
