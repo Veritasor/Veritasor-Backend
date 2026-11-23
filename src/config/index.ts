@@ -13,6 +13,8 @@ export const rawEnvSchema = z.object({
   TRUST_PROXY: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
+  METRICS_ENABLED: z.string().optional(),
+  METRICS_AUTH_TOKEN: z.string().optional(),
   DATABASE_URL: z.string({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
@@ -613,5 +615,30 @@ export const config = {
   },
   auth: {
     exposeResetLinkInResponse: exposeResetLink && !isProduction,
+  },
+  metrics: {
+    get authToken(): string | undefined {
+      return process.env.METRICS_AUTH_TOKEN ?? parsedEnv.METRICS_AUTH_TOKEN;
+    },
+    set authToken(val: string | undefined) {
+      if (val === undefined) {
+        delete process.env.METRICS_AUTH_TOKEN;
+      } else {
+        process.env.METRICS_AUTH_TOKEN = val;
+      }
+    },
+    get enabled(): boolean {
+      return process.env.METRICS_ENABLED === "true";
+    },
+  },
+  get metricsAuthToken(): string | undefined {
+    return process.env.METRICS_AUTH_TOKEN ?? parsedEnv.METRICS_AUTH_TOKEN;
+  },
+  set metricsAuthToken(val: string | undefined) {
+    if (val === undefined) {
+      delete process.env.METRICS_AUTH_TOKEN;
+    } else {
+      process.env.METRICS_AUTH_TOKEN = val;
+    }
   },
 } as const;

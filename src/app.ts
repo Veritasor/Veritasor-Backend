@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import crypto from "node:crypto";
 import http, { type Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
 import type { Request, Response } from "express";
@@ -69,14 +70,22 @@ export function stopSpiffeSvidProviderIfNeeded(): void {
 
 export const telemetryReady = initializeOpenTelemetry();
 
-import {
-  prototypePollutionGuard,
-  hasForbiddenKeys,
-  hasForbiddenQuery,
-} from "./middleware/prototypePollution.js";
-
 // Security middleware to reject prototype pollution attempts
 export const securityHeadersMiddleware = prototypePollutionGuard;
+
+/**
+ * Constant-time comparison between two strings using SHA-256 digests and crypto.timingSafeEqual.
+ * Hashing before comparison ensures fixed 32-byte buffers, preventing length-leakage attacks
+ * and eliminating RangeError on mismatched buffer lengths.
+ */
+export function timingSafeCompare(a: string, b: string): boolean {
+  if (typeof a !== "string" || typeof b !== "string") {
+    return false;
+  }
+  const hashA = crypto.createHash("sha256").update(a).digest();
+  const hashB = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
 
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
@@ -104,7 +113,31 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use(compressionMiddleware());
 
   if (process.env.METRICS_ENABLED === "true") {
-    app.get("/metrics", async (_req: Request, res: Response) => {
+    const configuredToken = config.metricsAuthToken;
+    if (!configuredToken && (process.env.NODE_ENV === "production" || config.env === "production")) {
+      logger.warn(
+        "[Startup] METRICS_AUTH_TOKEN is not configured in production. Metrics endpoint is unprotected and public.",
+      );
+    }
+
+    app.get("/metrics", async (req: Request, res: Response) => {
+      const authToken = config.metricsAuthToken;
+      if (authToken) {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
+          res.set("WWW-Authenticate", 'Bearer realm="metrics"');
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+
+        const providedToken = authHeader.slice(7);
+        if (!timingSafeCompare(providedToken, authToken)) {
+          res.set("WWW-Authenticate", 'Bearer realm="metrics"');
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+      }
+
       res.set("Content-Type", metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());
     });
