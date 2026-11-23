@@ -70,7 +70,30 @@ export const rawEnvSchema = z.object({
   OTEL_MTLS_CA_PATH: z.string().optional(),
   OTEL_MTLS_CERT_PATH: z.string().optional(),
   OTEL_MTLS_KEY_PATH: z.string().optional(),
-}).superRefine((data, ctx) => {
+  MTLS_ENABLED: z.string().optional(),
+  MTLS_SPIFFE_ENABLED: z.string().optional(),
+  SPIFFE_TRUST_DOMAIN: z.string().optional(),
+  MTLS_CA_PATH: z.string().optional(),
+  MTLS_CERT_PATH: z.string().optional(),
+  MTLS_KEY_PATH: z.string().optional(),
+  MTLS_CN_ALLOWLIST: z.string().optional(),
+  MTLS_SPIFFE_ID_ALLOWLIST: z.string().optional(),
+  SPIFFE_WORKLOAD_API_SOCKET: z.string().optional(),
+  REDIS_URL: z
+    .string()
+    .url("REDIS_URL must be a valid URL")
+    .refine(
+      (value) => value.startsWith("redis://") || value.startsWith("rediss://"),
+      "REDIS_URL must use redis:// or rediss://",
+    )
+    .optional(),
+  REDIS_CLUSTER_NODES: z.string().optional(),
+  REDIS_TLS: z.string().optional(),
+  REDIS_FORCE_SINGLE_NODE: z.string().optional(),
+  EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
+});
+
+export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
   if (data.SECRET_LOADER && data.SECRET_PROVIDER && data.SECRET_LOADER !== data.SECRET_PROVIDER) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -283,11 +306,6 @@ export function getAllowedOrigins(): string | string[] {
     return [];
   }
   return "*";
-}
-
-function parseCsvList(rawValue: string | undefined): string[] {
-  if (!rawValue) return [];
-  return rawValue.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 function parseTrustProxy(rawValue: string | undefined): number | string[] | false {
