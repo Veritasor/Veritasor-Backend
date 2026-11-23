@@ -168,6 +168,7 @@ export async function createBusiness(req: Request, res: Response) {
       industry: normalizedData.industry,
       description: normalizedData.description,
       website: normalizedData.website,
+      countryCode: normalizedData.countryCode,
     });
 
     // @dev Return created business with 201 status

@@ -198,6 +198,16 @@ describe('create', () => {
     expect(business.website).toBe('https://acme.test')
   })
 
+  it('persists countryCode when provided', async () => {
+    const business = await create(validInput({ countryCode: 'NG' }))
+    expect(business.countryCode).toBe('NG')
+  })
+
+  it('defaults countryCode to null when omitted', async () => {
+    const business = await create(validInput())
+    expect(business.countryCode).toBeNull()
+  })
+
   it('assigns ISO-8601 createdAt/updatedAt and a unique UUID id', async () => {
     const [first, second] = [await create(validInput()), await create(validInput())]
 
@@ -338,6 +348,25 @@ describe('update', () => {
     expect(updated!.industry).toBe('Technology')
     expect(updated!.description).toBe('Original')
     expect(updated!.website).toBe('https://acme.test')
+  })
+
+  it('sets countryCode when provided', async () => {
+    const created = await create(validInput())
+    const updated = await update(created.id, { countryCode: 'NG' })
+    expect(updated!.countryCode).toBe('NG')
+  })
+
+  it('preserves countryCode when the update omits it', async () => {
+    const created = await create(validInput({ countryCode: 'NG' }))
+    const updated = await update(created.id, { name: 'Renamed Corp' })
+    expect(updated!.name).toBe('Renamed Corp')
+    expect(updated!.countryCode).toBe('NG')
+  })
+
+  it('clears countryCode when explicitly set to null', async () => {
+    const created = await create(validInput({ countryCode: 'NG' }))
+    const updated = await update(created.id, { countryCode: null })
+    expect(updated!.countryCode).toBeNull()
   })
 
   it('bumps updatedAt and preserves createdAt (deterministic under a frozen clock)', async () => {
