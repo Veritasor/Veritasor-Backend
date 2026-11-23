@@ -1,7 +1,7 @@
 import express, { type Express } from "express";
 import http, { type Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
 import { CachePolicies, setCacheControl } from "./utils/cacheControl.js";
@@ -13,6 +13,7 @@ import {
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
+import { prototypePollutionGuard } from "./middleware/prototypePollution.js";
 import { compressionMiddleware } from "./middleware/compression.js";
 import {
   applyRotatedTlsMaterial,
@@ -81,7 +82,6 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.set("trust proxy", config.trustProxy);
   app.use(requestLogger);
   app.use(securityHeaders);
-  app.use(securityHeadersMiddleware);
   app.use(mtlsMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
@@ -91,6 +91,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   // 3. Body Parsing
   app.use(express.json());
   app.use(securityHeadersMiddleware);
+  app.use(prototypePollutionGuard);
   app.use(createCorsMiddleware());
 
   // Webhook subscription CRUD API (after body parsing)
