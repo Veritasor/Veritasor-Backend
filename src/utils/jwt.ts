@@ -814,6 +814,44 @@ export function revokeTokenFamily(familyId: string): void {
 }
 
 /**
+ * Revoke every token family owned by a user (e.g. after a password reset).
+ *
+ * Iterates `tokenFamilies` and, for each family whose `userId` matches,
+ * blacklists every minted JTI (access + refresh, including already-rotated
+ * ones) and deletes the family entry. Families belonging to other users are
+ * left untouched.
+ *
+ * @returns The number of families revoked.
+ */
+export function revokeAllUserTokenFamilies(userId: string): number {
+  const revokedFamilyIds: string[] = []
+
+  for (const [familyId, family] of tokenFamilies.entries()) {
+    if (family.userId !== userId) continue
+    for (const jti of family.issuedJtis) {
+      jtiBlacklist.add(jti)
+    }
+    family.blacklistedJtis.forEach((jti) => jtiBlacklist.add(jti))
+    revokedFamilyIds.push(familyId)
+  }
+
+  // Delete after iterating so entries are never mutated mid-iteration.
+  for (const familyId of revokedFamilyIds) {
+    tokenFamilies.delete(familyId)
+  }
+
+  if (revokedFamilyIds.length > 0) {
+    logger.warn('Token families revoked for user', {
+      event: 'families_revoked_for_user',
+      userId,
+      familyCount: revokedFamilyIds.length,
+    })
+  }
+
+  return revokedFamilyIds.length
+}
+
+/**
  * Clear old families (cleanup, can be called periodically)
  * @param maxAgeMs - Maximum age in milliseconds (default: 30 days)
  */
