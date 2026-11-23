@@ -525,7 +525,7 @@ MERKLE_MAX_LEAVES=4194304 npm run start
 
 #### `MERKLE_WARN_LEAVES` (soft threshold)
 
-When leaf count reaches 10 % of `MERKLE_MAX_LEAVES`, the service emits a structured `console.warn` entry:
+When leaf count reaches 10 % of `MERKLE_MAX_LEAVES`, the service emits a structured logger warning:
 
 ```json
 {

@@ -31,6 +31,7 @@ import { generateProof, verifyProof } from '../services/merkle/generateProof.js'
 import { rateLimiter } from '../middleware/rateLimiter.js';
 import { broadcaster } from '../ws/attestationStream.js';
 import { observeAttestationSubmitLatency } from '../metrics.js';
+import { logger } from '../utils/logger.js';
 
 type RouteAttestation = {
   id: string;
@@ -566,9 +567,14 @@ attestationsRouter.post(
 
       // Log warnings but allow submission
       if (attestationSummary.warnings.length > 0) {
-        console.warn(
-          `[Attestation] Warnings for business ${businessId} period ${payload.period}: ` +
-          attestationSummary.warnings.join('; ')
+        logger.warn(
+          {
+            event: 'attestation_submission_warnings',
+            businessId,
+            period: payload.period,
+            warnings: attestationSummary.warnings,
+          },
+          `[Attestation] Warnings for business ${businessId} period ${payload.period}`,
         );
       }
     } else if (!merkleRoot) {
@@ -684,7 +690,7 @@ async function handleRevoke(req: Request, res: Response): Promise<void> {
     if (error instanceof AppError) {
       throw error;
     }
-    console.error('Revoke error:', error);
+    logger.error({ error }, 'Revoke error');
     throw createHttpError(500, 'REVOKE_FAILED', 'Internal server error during revocation');
   }
 }

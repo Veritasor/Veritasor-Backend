@@ -6,6 +6,7 @@ import {
   hashPassword,
   verifyPassword,
 } from "../../../src/utils/password.js";
+import { logger } from "../../../src/utils/logger.js";
 import { resetPassword } from "../../../src/services/auth/resetPassword.js";
 import * as userRepository from "../../../src/repositories/userRepository.js";
 import * as passwordUtils from "../../../src/utils/password.js";
@@ -97,7 +98,7 @@ describe("password utility", () => {
       const hashSpy = vi
         .spyOn(bcrypt, "hash")
         .mockResolvedValue("mocked-hash" as never);
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
       process.env.BCRYPT_SALT_ROUNDS = "12";
       await hash("secret");
@@ -114,12 +115,19 @@ describe("password utility", () => {
       const hashSpy = vi
         .spyOn(bcrypt, "hash")
         .mockResolvedValue("mocked-hash" as never);
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
       process.env.BCRYPT_SALT_ROUNDS = "4";
       await hash("secret");
       expect(hashSpy).toHaveBeenLastCalledWith("secret", 4);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "password_salt_rounds_below_recommended",
+          rounds: 4,
+          recommendedRounds: 10,
+        }),
+        "[password] BCRYPT_SALT_ROUNDS is below the recommended minimum.",
+      );
 
       process.env.BCRYPT_SALT_ROUNDS = "8";
       await hash("secret");

@@ -7,6 +7,8 @@ import { getById, listByUserId, listByBusinessId, deleteById } from '../reposito
 import { z } from 'zod';
 import crypto from 'crypto';
 import { setOAuthState, consumeOAuthState } from '../services/integrations/stripe/store.js';
+import { generateAuthUrl } from '../services/integrations/oauth.js';
+import { logger } from '../utils/logger.js';
 
 const DEFAULT_OAUTH_CALLBACK_URL = 'http://localhost:3000/integrations/callback';
 
@@ -196,7 +198,7 @@ router.get('/', async (req: Request, res: Response) => {
 
     res.json({ available });
   } catch (error) {
-    console.error('Error fetching integrations:', error);
+    logger.error({ error }, 'Error fetching integrations');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to fetch integrations',
@@ -239,7 +241,7 @@ router.get('/connected',
         count: connectedSafe.length,
       });
     } catch (error) {
-      console.error('Error fetching connected integrations:', error);
+      logger.error({ error }, 'Error fetching connected integrations');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to fetch connected integrations',
@@ -320,7 +322,7 @@ router.post('/connect',
           details: error.errors,
         });
       }
-      console.error('Error initiating integration connection', error);
+      logger.error({ error }, 'Error initiating integration connection');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to initiate connection',
@@ -367,7 +369,7 @@ router.delete('/:id',
           details: error.errors,
         });
       }
-      console.error('Error disconnecting integration:', error);
+      logger.error({ error }, 'Error disconnecting integration');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to disconnect integration',
