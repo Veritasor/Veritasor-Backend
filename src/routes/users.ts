@@ -1,7 +1,8 @@
-import { Router } from 'express'
+import { Router, type NextFunction } from 'express'
 import { requireAuth } from '../middleware/requireAuth.js'
 import updateProfile from '../services/user/updateProfile.js'
 import { validateBody } from '../middleware/validate.js'
+import { AppError, VRTErrorCodes } from '../types/errors.js'
 import { updateUserProfileSchema } from './users.schema.js'
 import {
   initiateDataExport,
@@ -15,21 +16,25 @@ import { CachePolicies, setCacheControl } from '../utils/cacheControl.js'
 export const usersRouter = Router()
 
 // PATCH /api/users/me - update current user's profile
-usersRouter.patch('/me', requireAuth, validateBody(updateUserProfileSchema), async (req: any, res: any) => {
-  try {
-    const updates = req.body
+usersRouter.patch(
+  '/me',
+  requireAuth,
+  validateBody(updateUserProfileSchema),
+  async (req: any, res: any, next: NextFunction) => {
+    try {
+      const updates = req.body
 
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ message: 'No updatable fields provided' })
+      if (!updates || Object.keys(updates).length === 0) {
+        throw new AppError('No updatable fields provided', 400, VRTErrorCodes.VRT_0002)
+      }
+
+      const updated = await updateProfile(req.user.id, updates)
+      return res.json(updated)
+    } catch (err: any) {
+      next(err)
     }
-
-    const userId = req.user.id
-    const updated = await updateProfile(userId, updates)
-    return res.json(updated)
-  } catch (err: any) {
-    return res.status(400).json({ message: err?.message ?? 'Invalid input' })
-  }
-})
+  },
+)
 
 // POST /api/users/me/export - initiate GDPR data export
 usersRouter.post('/me/export', requireAuth, async (req: any, res: any) => {
