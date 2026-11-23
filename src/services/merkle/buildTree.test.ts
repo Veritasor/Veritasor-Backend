@@ -6,7 +6,7 @@
  *     primary regression target), zero / negative / non-integer / over-cap
  *     values, and the valid-override happy-path.
  *   - buildTree() – all RangeError / TypeError input guards, the large-tree
- *     console.warn path, single-leaf, two-leaf, odd-leaf, and even-leaf trees.
+ *     logger warning path, single-leaf, two-leaf, odd-leaf, and even-leaf trees.
  *   - hash() – SHA-256 contract: 64-char lowercase hex, deterministic, unique.
  *   - getRoot() – empty / null sentinel returns '' , root equals last element.
  *
@@ -371,17 +371,20 @@ describe('buildTree() – correct output', () => {
   });
 });
 
-// ─── buildTree() – large-tree console.warn path ──────────────────────────────
+// ─── buildTree() – large-tree structured logger path ─────────────────────────
 
 describe('buildTree() – large-tree structured warning', () => {
-  let warnSpy: SpyInstance;
+  let warnSpy: SpyInstance | undefined;
 
-  beforeEach(() => {
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-  });
+  async function loadTreeWithLoggerSpy() {
+    vi.resetModules();
+    const { logger } = await import('../../utils/logger.js');
+    warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    return await import('./buildTree.js');
+  }
 
   afterEach(() => {
-    warnSpy.mockRestore();
+    warnSpy?.mockRestore();
     vi.resetModules();
     vi.unstubAllEnvs();
   });
@@ -389,8 +392,7 @@ describe('buildTree() – large-tree structured warning', () => {
   it('does NOT warn for trees below the warn threshold', async () => {
     // Use a small cap so the threshold is easily tested without building huge trees
     vi.stubEnv('MERKLE_MAX_LEAVES', '100');
-    vi.resetModules();
-    const { buildTree, MERKLE_WARN_LEAVES } = await import('./buildTree.js');
+    const { buildTree, MERKLE_WARN_LEAVES } = await loadTreeWithLoggerSpy();
 
     // Build a tree just under the threshold
     const safeCount = MERKLE_WARN_LEAVES - 1;
@@ -399,10 +401,9 @@ describe('buildTree() – large-tree structured warning', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('emits console.warn when leaf count reaches MERKLE_WARN_LEAVES', async () => {
+  it('emits a logger warning when leaf count reaches MERKLE_WARN_LEAVES', async () => {
     vi.stubEnv('MERKLE_MAX_LEAVES', '100');
-    vi.resetModules();
-    const { buildTree, MERKLE_WARN_LEAVES } = await import('./buildTree.js');
+    const { buildTree, MERKLE_WARN_LEAVES } = await loadTreeWithLoggerSpy();
 
     const leaves = Array.from({ length: MERKLE_WARN_LEAVES }, (_, i) => `leaf-${i}`);
     buildTree(leaves);
@@ -411,21 +412,22 @@ describe('buildTree() – large-tree structured warning', () => {
 
   it('warn payload is valid JSON containing expected fields', async () => {
     vi.stubEnv('MERKLE_MAX_LEAVES', '100');
-    vi.resetModules();
-    const { buildTree, MERKLE_WARN_LEAVES, MERKLE_MAX_LEAVES } = await import('./buildTree.js');
+    const { buildTree, MERKLE_WARN_LEAVES, MERKLE_MAX_LEAVES } =
+      await loadTreeWithLoggerSpy();
 
     const leaves = Array.from({ length: MERKLE_WARN_LEAVES }, (_, i) => `leaf-${i}`);
     buildTree(leaves);
 
-    const raw: string = warnSpy.mock.calls[0][0];
-    const payload = JSON.parse(raw);
-    expect(payload.level).toBe('warn');
-    expect(payload.service).toBe('merkle');
-    expect(payload.event).toBe('large_tree');
-    expect(payload.leafCount).toBe(MERKLE_WARN_LEAVES);
-    expect(payload.warnThreshold).toBe(MERKLE_WARN_LEAVES);
-    expect(payload.maxAllowed).toBe(MERKLE_MAX_LEAVES);
-    expect(typeof payload.message).toBe('string');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: 'merkle',
+        event: 'large_tree',
+        leafCount: MERKLE_WARN_LEAVES,
+        warnThreshold: MERKLE_WARN_LEAVES,
+        maxAllowed: MERKLE_MAX_LEAVES,
+      }),
+      expect.stringContaining('approaching size guardrail'),
+    );
   });
 });
 

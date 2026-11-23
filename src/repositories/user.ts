@@ -1,5 +1,6 @@
 import { db } from '../db/client.js'
 import { AppError } from '../types/errors.js'
+import { logger } from '../utils/logger.js'
 
 export interface User {
     id: string
@@ -36,7 +37,7 @@ export async function getById(id: string): Promise<User | null> {
 
         return result.rows[0]
     } catch (error) {
-        console.error('Error in getById:', error)
+        logger.error({ event: 'user_repository_get_by_id_failed', error }, 'Error in getById')
         throw new AppError('Failed to fetch user', 500, 'DB_ERROR')
     }
 }
@@ -57,7 +58,7 @@ export async function create(data: CreateUserData): Promise<User> {
 
         return result.rows[0]
     } catch (error: any) {
-        console.error('Error in create user:', error)
+        logger.error({ event: 'user_repository_create_failed', error }, 'Error in create user')
         if (error.code === '23505') {
             throw new AppError('Email already exists', 400, 'USER_ALREADY_EXISTS')
         }
@@ -102,7 +103,7 @@ export async function update(id: string, data: UpdateUserData): Promise<User> {
             values
         )
     } catch (error: any) {
-        console.error('Error in update user:', error)
+        logger.error({ event: 'user_repository_update_failed', error }, 'Error in update user')
         if (error.code === '23505') {
             throw new AppError('Email already exists', 400, 'USER_ALREADY_EXISTS')
         }

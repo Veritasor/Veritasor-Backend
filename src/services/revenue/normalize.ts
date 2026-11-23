@@ -154,7 +154,7 @@ export type DriftOptions = {
  * const normalized = rawEntries.map(normalizeRevenueEntry);
  * const baseline = { refundRate: 0.05, unknownSourceRate: 0.02, usdRate: 0.8, meanAmount: 150 };
  * const result = detectNormalizationDrift(normalized, baseline);
- * if (result.hasDrift) console.warn("Drift detected:", result.summary);
+ * if (result.hasDrift) logger.warn("Drift detected:", result.summary);
  */
 export function detectNormalizationDrift(
   entries: NormalizedRevenue[],

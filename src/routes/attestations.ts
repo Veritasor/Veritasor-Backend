@@ -25,11 +25,13 @@ import {
   isSorobanQueueEnabled,
 } from '../services/soroban/submitAttestation.js';
 import { AppError } from '../types/errors.js';
+import { PERIOD_REGEX, PERIOD_FORMAT } from '../services/analytics/periods.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
 import { broadcaster } from '../ws/attestationStream.js';
 import { observeAttestationSubmitLatency } from '../metrics.js';
+import { logger } from '../utils/logger.js';
 
 type RouteAttestation = {
   id: string;
@@ -107,7 +109,8 @@ const listQuerySchema = z.object({
  */
 const submitBodySchema = z.object({
   businessId: z.string().min(1).max(255).optional(),
-  period: z.string().min(1).max(50),
+  // Same strict regex as the service parser; malformed periods never reach it.
+  period: z.string().regex(PERIOD_REGEX, `period must be ${PERIOD_FORMAT}`),
   merkleRoot: z.string().min(1).max(1024).optional(),
   timestamp: z.coerce.number().int('timestamp must be an integer').nonnegative('timestamp must be ≥ 0').optional(),
   version: z.string().min(1).max(50).default('1.0.0'),
@@ -565,9 +568,14 @@ attestationsRouter.post(
 
       // Log warnings but allow submission
       if (attestationSummary.warnings.length > 0) {
-        console.warn(
-          `[Attestation] Warnings for business ${businessId} period ${payload.period}: ` +
-          attestationSummary.warnings.join('; ')
+        logger.warn(
+          {
+            event: 'attestation_submission_warnings',
+            businessId,
+            period: payload.period,
+            warnings: attestationSummary.warnings,
+          },
+          `[Attestation] Warnings for business ${businessId} period ${payload.period}`,
         );
       }
     } else if (!merkleRoot) {
@@ -683,7 +691,7 @@ async function handleRevoke(req: Request, res: Response): Promise<void> {
     if (error instanceof AppError) {
       throw error;
     }
-    console.error('Revoke error:', error);
+    logger.error({ error }, 'Revoke error');
     throw createHttpError(500, 'REVOKE_FAILED', 'Internal server error during revocation');
   }
 }

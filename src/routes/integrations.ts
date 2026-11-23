@@ -6,13 +6,36 @@ import { IntegrationPermission } from '../types/permissions.js';
 import { getById, listByUserId, listByBusinessId, deleteById } from '../repositories/integration.js';
 import { z } from 'zod';
 import crypto from 'crypto';
+import { setOAuthState, consumeOAuthState } from '../services/integrations/stripe/store.js';
+import { generateAuthUrl } from '../services/integrations/oauth.js';
+import { logger } from '../utils/logger.js';
 
-function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
-  const params = new URLSearchParams({ state });
-  if (redirectUri) {
-    params.set('redirect_uri', redirectUri);
+const DEFAULT_OAUTH_CALLBACK_URL = 'http://localhost:3000/integrations/callback';
+
+/**
+ * Build the provider authorization URL for the generic integration connect flow.
+ *
+ * Kept provider-explicit (rather than a lookup table) so the unsupported-provider
+ * branch stays a hard error and the URL shapes stay covered by tests.
+ */
+export function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
+  const callbackUrl = redirectUri ?? DEFAULT_OAUTH_CALLBACK_URL;
+
+  switch (provider) {
+    case 'stripe': {
+      const clientId = process.env.STRIPE_CLIENT_ID ?? 'mock_stripe_client_id';
+      return `https://connect.stripe.com/oauth/authorize?client_id=${clientId}&state=${state}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read_write`;
+    }
+    case 'shopify': {
+      const clientId = process.env.SHOPIFY_CLIENT_ID ?? 'mock_shopify_client_id';
+      const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? 'example';
+      return `https://${shopDomain}.myshopify.com/admin/oauth/authorize?client_id=${clientId}&state=${state}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read_products,read_orders`;
+    }
+    case 'razorpay':
+      return `${callbackUrl}?provider=razorpay&state=${state}`;
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
   }
-  return `/api/integrations/${provider}/connect?${params.toString()}`;
 }
 
 const router = Router();
@@ -178,7 +201,7 @@ router.get('/', async (req: Request, res: Response) => {
 
     res.json({ available });
   } catch (error) {
-    console.error('Error fetching integrations:', error);
+    logger.error({ error }, 'Error fetching integrations');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to fetch integrations',
@@ -221,7 +244,7 @@ router.get('/connected',
         count: connectedSafe.length,
       });
     } catch (error) {
-      console.error('Error fetching connected integrations:', error);
+      logger.error({ error }, 'Error fetching connected integrations');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to fetch connected integrations',
@@ -302,7 +325,7 @@ router.post('/connect',
           details: error.errors,
         });
       }
-      console.error('Error initiating integration connection', error);
+      logger.error({ error }, 'Error initiating integration connection');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to initiate connection',
@@ -349,7 +372,7 @@ router.delete('/:id',
           details: error.errors,
         });
       }
-      console.error('Error disconnecting integration:', error);
+      logger.error({ error }, 'Error disconnecting integration');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to disconnect integration',

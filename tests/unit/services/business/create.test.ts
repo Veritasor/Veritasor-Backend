@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { createBusiness } from '../../../../src/services/business/create.js';
 import { businessRepository } from '../../../../src/repositories/business.js';
 import { AppError } from '../../../../src/types/errors.js';
+import { logger } from '../../../../src/utils/logger.js';
 
 const VALID_USER = { id: 'user-1', email: 'user@example.com' };
 const EXISTING_BUSINESS = {
@@ -51,6 +52,37 @@ describe('createBusiness', () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
+  it('normalizes, persists, and returns countryCode when provided', async () => {
+    vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(null);
+    const created = {
+      id: 'biz-1',
+      userId: 'user-1',
+      name: 'Acme Corp',
+      email: 'user@example.com',
+      industry: null,
+      description: null,
+      website: null,
+      countryCode: 'NG',
+      reportingPeriod: 'monthly',
+      reportingTimezone: 'UTC',
+      lastReminderSentAt: null,
+      createdAt: '2024-01-01T00:00:00Z',
+      updatedAt: '2024-01-01T00:00:00Z',
+    } as any;
+    const createSpy = vi.spyOn(businessRepository, 'create').mockResolvedValue(created);
+
+    const { res, status, json } = makeRes();
+    await createBusiness(makeReq({ body: { name: 'Acme Corp', countryCode: 'ng' } }), res);
+
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Acme Corp', countryCode: 'NG' }),
+    );
+    expect(status).toHaveBeenCalledWith(201);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Acme Corp', countryCode: 'NG' }),
+    );
+  });
+
   it('throws AppError on unique constraint violation', async () => {
     vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(null);
     vi.spyOn(businessRepository, 'create').mockRejectedValue(
@@ -68,6 +100,7 @@ describe('createBusiness', () => {
   });
 
   it('returns 500 for other unique violations', async () => {
+    const loggerError = vi.spyOn(logger, 'error').mockImplementation(() => {});
     vi.spyOn(businessRepository, 'getByUserId').mockResolvedValue(null);
     vi.spyOn(businessRepository, 'create').mockRejectedValue(
       Object.assign(new Error('duplicate key'), {
@@ -83,5 +116,14 @@ describe('createBusiness', () => {
     expect(json).toHaveBeenCalledWith(
       expect.objectContaining({ error: 'INTERNAL_ERROR' }),
     );
+    expect(loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'business.create.error',
+        userId: 'user-1',
+        error: 'duplicate key',
+      }),
+    );
+    expect(loggerError.mock.calls[0][0]).not.toHaveProperty('body');
+    expect(loggerError.mock.calls[0][0]).not.toHaveProperty('email');
   });
 });

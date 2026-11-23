@@ -15,15 +15,132 @@ vi.mock('../../../../src/repositories/business.js', () => ({
   },
 }))
 
+vi.mock('../../../../src/services/features/flags.js', () => ({
+  FlagKeys: {
+    SOROBAN_ATTESTATION_REVOCATION: 'soroban_attestation_revocation',
+  },
+  getBooleanFlag: vi.fn(),
+}))
+
+vi.mock('../../../../src/services/soroban/submitAttestation.js', () => ({
+  revokeAttestationOnChain: vi.fn(),
+}))
+
+vi.mock('../../../../src/repositories/auditLogRepository.js', () => ({
+  createAuditLog: vi.fn(),
+}))
+
 import { attestationRepository } from '../../../../src/repositories/attestation.js'
 import { businessRepository } from '../../../../src/repositories/business.js'
+import { getBooleanFlag } from '../../../../src/services/features/flags.js'
+import { revokeAttestationOnChain } from '../../../../src/services/soroban/submitAttestation.js'
+import { createAuditLog } from '../../../../src/repositories/auditLogRepository.js'
 
 describe('revokeAttestation', () => {
   const mockAttestationRepository = vi.mocked(attestationRepository)
   const mockBusinessRepository = vi.mocked(businessRepository)
+  const mockGetBooleanFlag = vi.mocked(getBooleanFlag)
+  const mockRevokeAttestationOnChain = vi.mocked(revokeAttestationOnChain)
+  const mockCreateAuditLog = vi.mocked(createAuditLog)
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockGetBooleanFlag.mockResolvedValue(false)
+    mockCreateAuditLog.mockResolvedValue({} as Awaited<ReturnType<typeof createAuditLog>>)
+  })
+
+  it('does not call Soroban when on-chain revocation is disabled', async () => {
+    mockAttestationRepository.findById.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'submitted',
+    })
+    mockBusinessRepository.findById.mockResolvedValue({ id: 'biz_1', userId: 'user_1' })
+    mockAttestationRepository.update.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'revoked',
+    })
+
+    await expect(revokeAttestation('att_1', 'user_1')).resolves.toBeUndefined()
+
+    expect(mockRevokeAttestationOnChain).not.toHaveBeenCalled()
+    expect(mockAttestationRepository.update).toHaveBeenCalledWith('att_1', {
+      status: 'revoked',
+      revokedAt: expect.any(String),
+    })
+  })
+
+  it('persists the Soroban transaction hash when on-chain revocation succeeds', async () => {
+    mockGetBooleanFlag.mockResolvedValue(true)
+    mockAttestationRepository.findById.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'submitted',
+    })
+    mockBusinessRepository.findById.mockResolvedValue({ id: 'biz_1', userId: 'user_1' })
+    mockAttestationRepository.update.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'revoked',
+    })
+    mockRevokeAttestationOnChain.mockResolvedValue('tx-hash')
+
+    await expect(revokeAttestation('att_1', 'user_1')).resolves.toBeUndefined()
+
+    expect(mockRevokeAttestationOnChain).toHaveBeenCalledWith({
+      business: 'biz_1',
+      period: '2025-10',
+    })
+    expect(mockAttestationRepository.update).toHaveBeenLastCalledWith('att_1', {
+      revokeTxHash: 'tx-hash',
+    })
+  })
+
+  it('keeps the local revocation and queues a retry when Soroban fails', async () => {
+    mockGetBooleanFlag.mockResolvedValue(true)
+    mockAttestationRepository.findById.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'submitted',
+    })
+    mockBusinessRepository.findById.mockResolvedValue({ id: 'biz_1', userId: 'user_1' })
+    mockAttestationRepository.update.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'revoked',
+    })
+    mockRevokeAttestationOnChain.mockRejectedValue(new Error('RPC unavailable'))
+
+    await expect(revokeAttestation('att_1', 'user_1')).resolves.toBeUndefined()
+
+    expect(mockAttestationRepository.update).toHaveBeenCalledWith('att_1', {
+      status: 'revoked',
+      revokedAt: expect.any(String),
+    })
+    expect(mockCreateAuditLog).toHaveBeenCalledWith({
+      userId: 'user_1',
+      action: 'ATTESTATION_REVOKE_RETRY_QUEUED',
+      resource: 'attestation',
+      resourceId: 'att_1',
+      metadata: {
+        businessId: 'biz_1',
+        period: '2025-10',
+        reason: 'RPC unavailable',
+      },
+    })
   })
 
   it('successfully revokes an attestation', async () => {

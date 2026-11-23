@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import http, { type Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
+import { logger } from "../utils/logger.js";
 
 vi.mock("../startup/readiness.js", () => ({
   runStartupDependencyReadinessChecks: vi.fn().mockResolvedValue({
@@ -66,10 +67,12 @@ describe("startServer listener lifecycle", () => {
     }
 
     process.removeListener("unhandledRejection", onUnhandledRejection);
+    vi.restoreAllMocks();
     expect(unhandledRejections).toHaveLength(0);
   });
 
   it("resolves with a listening server in non-mTLS mode on port 0 and returns an assigned port", async () => {
+    const loggerInfo = vi.spyOn(logger, "info").mockImplementation(() => {});
     const server = await startServer(0);
     openServers.push(server);
 
@@ -80,6 +83,10 @@ describe("startServer listener lifecycle", () => {
     expect(addr).not.toBeNull();
     expect(typeof addr?.port).toBe("number");
     expect(addr?.port).toBeGreaterThan(0);
+    expect(loggerInfo).toHaveBeenCalledWith(
+      { event: "server_listening", port: 0, mtls: false },
+      "[Server] Veritasor Backend listening",
+    );
   });
 
   it("rejects with EADDRINUSE when the port is already taken", async () => {
