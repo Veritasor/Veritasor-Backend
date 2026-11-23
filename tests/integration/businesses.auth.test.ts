@@ -1,9 +1,10 @@
 import express from 'express';
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import businessesRouter from '../../src/routes/businesses.js';
-import { clearAll as clearBusinesses } from '../../src/repositories/business.js';
+import { businessRepository, clearAll as clearBusinesses } from '../../src/repositories/business.js';
 import { clearAllUsers, createUser } from '../../src/repositories/userRepository.js';
+import * as webhookSubscriptionRepo from '../../src/repositories/webhookSubscriptionRepository.js';
 import { generateToken, JWT_AUDIENCE, JWT_ISSUER, sign } from '../../src/utils/jwt.js';
 
 const app = express();
@@ -14,6 +15,10 @@ describe('businesses JWT authentication', () => {
   beforeEach(() => {
     clearBusinesses();
     clearAllUsers();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   async function createAuthenticatedUser(email: string) {
@@ -73,5 +78,75 @@ describe('businesses JWT authentication', () => {
       .get('/api/businesses/me')
       .set('Authorization', `Bearer ${expiredToken}`)
       .expect(401);
+  });
+
+  it('rejects registering a webhook for another business with 403', async () => {
+    const owner = await createAuthenticatedUser('owner@example.test');
+    const attacker = await createAuthenticatedUser('attacker@example.test');
+    const ownerBiz = await businessRepository.create({
+      userId: owner.user.id,
+      name: 'Owner Biz',
+    });
+    const attackerBiz = await businessRepository.create({
+      userId: attacker.user.id,
+      name: 'Attacker Biz',
+    });
+
+    // Attacker targets owner's business ID directly
+    await request(app)
+      .post(`/api/businesses/${ownerBiz.id}/webhooks`)
+      .set('Authorization', `Bearer ${attacker.token}`)
+      .send({ url: 'https://example.com/webhook', secret: 'a'.repeat(32) })
+      .expect(403);
+
+    // Attacker passes their own x-business-id header while targeting owner's :id param
+    await request(app)
+      .post(`/api/businesses/${ownerBiz.id}/webhooks`)
+      .set('Authorization', `Bearer ${attacker.token}`)
+      .set('x-business-id', attackerBiz.id)
+      .send({ url: 'https://example.com/webhook', secret: 'a'.repeat(32) })
+      .expect(403);
+  });
+
+  it('forwards owned business webhook registration to persistent repository without echoing secret', async () => {
+    const owner = await createAuthenticatedUser('webhook-owner@example.test');
+    const ownerBiz = await businessRepository.create({
+      userId: owner.user.id,
+      name: 'Webhook Owner Biz',
+    });
+
+    const countSpy = vi.spyOn(webhookSubscriptionRepo, 'countByBusiness').mockResolvedValue(0);
+    const createSpy = vi.spyOn(webhookSubscriptionRepo, 'create').mockResolvedValue({
+      id: 'sub-123',
+      businessId: ownerBiz.id,
+      url: 'https://example.com/webhook',
+      secret: 'a'.repeat(32),
+      eventFilters: {},
+      enabled: true,
+      maxPayloadSize: null,
+      secretVersion: 1,
+      mtlsConfig: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+    });
+
+    const res = await request(app)
+      .post(`/api/businesses/${ownerBiz.id}/webhooks`)
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ url: 'https://example.com/webhook', secret: 'a'.repeat(32) })
+      .expect(201);
+
+    expect(res.headers.deprecation).toBe('true');
+    expect(countSpy).toHaveBeenCalledWith(ownerBiz.id);
+    expect(createSpy).toHaveBeenCalledWith(ownerBiz.id, {
+      url: 'https://example.com/webhook',
+      secret: 'a'.repeat(32),
+      eventFilters: {},
+      enabled: true,
+    });
+    expect(res.body.id).toBe('sub-123');
+    expect(res.body.businessId).toBe(ownerBiz.id);
+    expect(res.body.secret).toBeUndefined();
+    expect(res.body.secretLast4).toBe('aaaa');
   });
 });
