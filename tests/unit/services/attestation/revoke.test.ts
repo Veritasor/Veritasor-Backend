@@ -1,5 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { revokeAttestation } from '../../../../src/services/attestation/revoke.js'
+
+const { mockCdnPurge, mockRecordCdnPurgeStatus } = vi.hoisted(() => ({
+  mockCdnPurge: vi.fn(),
+  mockRecordCdnPurgeStatus: vi.fn(),
+}))
+
+vi.mock('../../../../src/services/cdn/cdnClientAdapter.js', () => ({
+  cdnClient: { purge: mockCdnPurge },
+}))
+
+vi.mock('../../../../src/services/audit/auditLog.js', () => ({
+  recordCdnPurgeStatus: mockRecordCdnPurgeStatus,
+}))
 
 // Mock repositories
 vi.mock('../../../../src/repositories/attestation.js', () => ({
@@ -45,9 +59,28 @@ describe('revokeAttestation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCdnPurge.mockResolvedValue(undefined)
     mockGetBooleanFlag.mockResolvedValue(false)
     mockCreateAuditLog.mockResolvedValue({} as Awaited<ReturnType<typeof createAuditLog>>)
   })
+
+  function seedRevocableAttestation() {
+    let current: Record<string, unknown> = {
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      attestedAt: '2025-11-01T12:00:00.000Z',
+      status: 'submitted',
+    }
+    mockAttestationRepository.findById.mockImplementation(() => current)
+    mockAttestationRepository.update.mockImplementation(
+      (_id: string, data: Record<string, unknown>) => {
+        current = { ...current, ...data }
+        return current
+      },
+    )
+    return () => current
+  }
 
   it('does not call Soroban when on-chain revocation is disabled', async () => {
     mockAttestationRepository.findById.mockReturnValue({
@@ -320,3 +353,56 @@ describe('revokeAttestation', () => {
     expect(recordCdnPurgeStatus).toHaveBeenCalledWith('att_1', 'failed', { error: 'CDN unavailable' });
   });
 });
+
+  it('stores the revoked status, timestamp and reason before purging the CDN', async () => {
+    const stored = seedRevocableAttestation()
+    mockBusinessRepository.findById.mockResolvedValue({ id: 'biz_1', userId: 'user_1' })
+
+    await revokeAttestation('att_1', 'user_1', 'leaked secret')
+
+    expect(stored()).toMatchObject({
+      status: 'revoked',
+      revokedAt: expect.any(String),
+      revokeReason: 'leaked secret',
+    })
+    expect(mockAttestationRepository.findById('att_1')).toMatchObject({
+      status: 'revoked',
+      revokedAt: expect.any(String),
+      revokeReason: 'leaked secret',
+    })
+    expect(mockCdnPurge).toHaveBeenCalledWith([
+      expect.stringContaining('/attestations/att_1'),
+    ])
+    expect(mockAttestationRepository.update.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCdnPurge.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('does not purge the CDN when the repository update fails', async () => {
+    mockAttestationRepository.findById.mockReturnValue({
+      id: 'att_1',
+      businessId: 'biz_1',
+      period: '2025-10',
+      status: 'submitted',
+    })
+    mockBusinessRepository.findById.mockResolvedValue({ id: 'biz_1', userId: 'user_1' })
+    mockAttestationRepository.update.mockReturnValue(null)
+
+    await expect(revokeAttestation('att_1', 'user_1', 'leaked secret')).rejects.toThrow(
+      'Failed to update attestation att_1',
+    )
+
+    expect(mockCdnPurge).not.toHaveBeenCalled()
+    expect(mockRecordCdnPurgeStatus).not.toHaveBeenCalled()
+  })
+
+  it('does not cast the typed update payload through any', () => {
+    const source = readFileSync(
+      new URL('../../../../src/services/attestation/revoke.ts', import.meta.url),
+      'utf8',
+    )
+
+    expect(source).not.toContain('(updateData as any)')
+    expect(source).not.toMatch(/revokeReason[^\n]*as any/)
+  })
+})

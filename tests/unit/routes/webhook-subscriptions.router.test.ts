@@ -16,6 +16,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { ConflictError } from '../../../src/types/errors.js';
+
+const BASE = '/api/v1/webhook-subscriptions';
+const BUSINESS_ID = 'biz-001';
+const VALID_SECRET = 'a-very-long-secret-key-that-is-over-32-chars-long';
 
 // Hoisted so the mocked `requireBusinessAuth` middleware and the tests can
 // share the business id without module-evaluation ordering issues.
@@ -26,11 +31,31 @@ const mockGetById = vi.fn();
 const mockCreate = vi.fn();
 const mockCountByBusiness = vi.fn();
 const mockUpdate = vi.fn();
+const mockRotateSecret = vi.fn();
 const mockRemove = vi.fn();
 const mockQueryDeliveryReceipts = vi.fn();
 
 // Stand-in for `requireBusinessAuth`: header-driven so a single app can
 // exercise both the authorized and unauthorized branches of every route.
+
+vi.mock('../../../src/services/business/resolveBusiness.js', () => ({
+  resolveBusinessIdForUser: mockResolveBusinessIdForUser,
+}));
+
+vi.mock('../../../src/repositories/webhookSubscriptionRepository.js', () => ({
+  list: mockList,
+  getById: mockGetById,
+  create: mockCreate,
+  countByBusiness: mockCountByBusiness,
+  update: mockUpdate,
+  rotateSecret: mockRotateSecret,
+  remove: mockRemove,
+  toPublicSubscription: (subscription: Record<string, unknown>) => {
+    const { secret: _secret, previousSecret: _previousSecret, ...publicFields } = subscription;
+    return publicFields;
+  },
+}));
+
 vi.mock('../../../src/middleware/requireBusinessAuth.js', () => ({
   requireBusinessAuth: async (
     req: {
@@ -46,8 +71,17 @@ vi.mock('../../../src/middleware/requireBusinessAuth.js', () => ({
       res.status(401).json({ error: 'Missing or invalid authorization header' });
       return;
     }
+    const businessId = await mockResolveBusinessIdForUser(userId);
+    if (!businessId) {
+      res.status(404).json({
+        vrtCode: 'VRT-0004',
+        message: 'Business not found for the authenticated user',
+      });
+      return;
+    }
     req.user = { id: userId, userId, role: 'user' };
     req.business = { id: h.BUSINESS_ID };
+    req.business = { id: businessId };
     next();
   },
 }));
@@ -113,6 +147,7 @@ describe('webhookSubscriptionsRouter', () => {
       mockCreate,
       mockCountByBusiness,
       mockUpdate,
+      mockRotateSecret,
       mockRemove,
       mockQueryDeliveryReceipts,
     ]) {
@@ -133,6 +168,7 @@ describe('webhookSubscriptionsRouter', () => {
     ['GET /:id/deliveries', () => request(app).get(`${BASE}/wh-1/deliveries`)],
     ['POST /', () => request(app).post(BASE).send({})],
     ['PATCH /:id', () => request(app).patch(`${BASE}/wh-1`).send({})],
+    ['POST /:id/rotate-secret', () => request(app).post(`${BASE}/wh-1/rotate-secret`).send({})],
     ['DELETE /:id', () => request(app).delete(`${BASE}/wh-1`)],
   ];
 
@@ -144,6 +180,7 @@ describe('webhookSubscriptionsRouter', () => {
     expect(mockGetById).not.toHaveBeenCalled();
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockRotateSecret).not.toHaveBeenCalled();
     expect(mockRemove).not.toHaveBeenCalled();
     expect(mockQueryDeliveryReceipts).not.toHaveBeenCalled();
   });
@@ -499,6 +536,88 @@ describe('webhookSubscriptionsRouter', () => {
     expect(res.status).toBe(400);
     expect(res.body.vrtCode).toBe('VRT-0002');
     expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // ── POST /:id/rotate-secret ────────────────────────────────────────────
+
+  it('returns the new secret once and never exposes it on later lists', async () => {
+    const newSecret = `whsec_${'z'.repeat(48)}`;
+    const previousSecretExpiresAt = new Date('2026-11-24T00:10:00.000Z');
+    mockRotateSecret.mockResolvedValue(
+      subscription({
+        secret: newSecret,
+        previousSecret: VALID_SECRET,
+        secretVersion: 2,
+        previousSecretExpiresAt,
+      }),
+    );
+    mockList.mockResolvedValue({ data: [subscription({ secret: newSecret })] });
+
+    const rotated = await request(app)
+      .post(`${BASE}/wh-1/rotate-secret`)
+      .set('x-test-user', 'u-1')
+      .send({ gracePeriodSeconds: 600 });
+
+    expect(rotated.status).toBe(200);
+    expect(rotated.body.data.secret).toBe(newSecret);
+    expect(rotated.body.data.secretVersion).toBe(2);
+    expect(rotated.body.data.previousSecret).toBeUndefined();
+    expect(mockRotateSecret).toHaveBeenCalledWith('wh-1', BUSINESS_ID, 600);
+
+    const listed = await request(app).get(BASE).set('x-test-user', 'u-1');
+
+    expect(listed.status).toBe(200);
+    expect(JSON.stringify(listed.body)).not.toContain(newSecret);
+    expect(listed.body.data[0]).not.toHaveProperty('secret');
+  });
+
+  it('defaults the grace window to 300 seconds', async () => {
+    mockRotateSecret.mockResolvedValue(subscription({ secretVersion: 2 }));
+
+    const res = await request(app)
+      .post(`${BASE}/wh-1/rotate-secret`)
+      .set('x-test-user', 'u-1')
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockRotateSecret).toHaveBeenCalledWith('wh-1', BUSINESS_ID, 300);
+  });
+
+  it('rejects a second rotation during an active grace window with 409', async () => {
+    mockRotateSecret.mockRejectedValue(
+      new ConflictError('A secret rotation is already in progress for this subscription'),
+    );
+
+    const res = await request(app)
+      .post(`${BASE}/wh-1/rotate-secret`)
+      .set('x-test-user', 'u-1')
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.vrtCode).toBe('VRT-0005');
+  });
+
+  it('returns 404 when rotating a subscription outside the caller business', async () => {
+    mockRotateSecret.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`${BASE}/wh-other/rotate-secret`)
+      .set('x-test-user', 'u-1')
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Webhook subscription not found');
+  });
+
+  it('rejects an out-of-range grace window with 400', async () => {
+    const res = await request(app)
+      .post(`${BASE}/wh-1/rotate-secret`)
+      .set('x-test-user', 'u-1')
+      .send({ gracePeriodSeconds: 90000 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.vrtCode).toBe('VRT-0002');
+    expect(mockRotateSecret).not.toHaveBeenCalled();
   });
 
   // ── DELETE /:id ────────────────────────────────────────────────────────

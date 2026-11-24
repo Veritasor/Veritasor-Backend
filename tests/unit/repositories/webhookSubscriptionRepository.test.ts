@@ -30,6 +30,7 @@ import {
   encryptStoredSecret,
   getById,
   getSigningSecret,
+  rotateSecret,
   toPublicSubscription,
   update,
   type WebhookSubscription,
@@ -195,6 +196,82 @@ describe('webhookSubscriptionRepository secret encryption', () => {
       expect(decryptStoredSecret(storedSecret)).toBe(ROTATED_SECRET);
       expect(updated?.secret).toBe(ROTATED_SECRET);
       expect(updated?.secretVersion).toBe(2);
+    });
+  });
+
+  describe('rotateSecret()', () => {
+    it('persists the previous secret encrypted with an expiry and returns the new secret once', async () => {
+      useEnvironmentKey(ENV_ENCRYPTION_KEY);
+      const currentStoredSecret = encryptStoredSecret(PLAINTEXT_SECRET);
+      const beforeRotation = Date.now();
+      mockDbQuery.mockImplementation(async (sql: string, params: unknown[]) => {
+        if (sql.startsWith('SELECT')) {
+          return {
+            rows: [rowWithSecret(currentStoredSecret, 3)],
+            rowCount: 1,
+          };
+        }
+        return {
+          rows: [
+            {
+              ...rowWithSecret(params[3] as string, 4),
+              previous_secret: currentStoredSecret,
+              previous_secret_version: 3,
+              previous_secret_expires_at: new Date(
+                beforeRotation + Number(params[2]) * 1000,
+              ),
+            },
+          ],
+          rowCount: 1,
+        };
+      });
+
+      const rotated = await rotateSecret('wh-1', BUSINESS_ID, 600);
+
+      const [sql, updateParams] = mockDbQuery.mock.calls[1] as [string, unknown[]];
+      expect(sql).toContain('previous_secret = secret');
+      expect(sql).toContain('previous_secret_expires_at = now() + make_interval');
+      expect(sql).toContain('secret_version = secret_version + 1');
+      expect(updateParams[0]).toBe('wh-1');
+      expect(updateParams[1]).toBe(BUSINESS_ID);
+      expect(updateParams[2]).toBe(600);
+      expect(updateParams[3]).not.toBe(rotated?.secret);
+      expect((updateParams[3] as string).startsWith('enc:v1:')).toBe(true);
+      expect(rotated?.secret).not.toBe(PLAINTEXT_SECRET);
+      expect(rotated?.secret).toHaveLength(43);
+      expect(rotated?.previousSecret).toBe(PLAINTEXT_SECRET);
+      expect(rotated?.previousSecretVersion).toBe(3);
+      expect(rotated?.secretVersion).toBe(4);
+      expect(rotated?.previousSecretExpiresAt?.getTime()).toBeGreaterThan(
+        beforeRotation + 500_000,
+      );
+    });
+
+    it('rejects a second rotation while the previous grace window is active', async () => {
+      useEnvironmentKey(ENV_ENCRYPTION_KEY);
+      mockDbQuery.mockResolvedValue({
+        rows: [
+          {
+            ...rowWithSecret(encryptStoredSecret(PLAINTEXT_SECRET), 2),
+            previous_secret: encryptStoredSecret(LEGACY_PLAINTEXT_SECRET),
+            previous_secret_version: 1,
+            previous_secret_expires_at: new Date(Date.now() + 300_000),
+          },
+        ],
+        rowCount: 1,
+      });
+
+      await expect(rotateSecret('wh-1', BUSINESS_ID)).rejects.toMatchObject({
+        status: 409,
+        message: 'A secret rotation is already in progress for this subscription',
+      });
+      expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for a subscription outside the caller business', async () => {
+      mockDbQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await expect(rotateSecret('wh-other', BUSINESS_ID)).resolves.toBeNull();
     });
   });
 

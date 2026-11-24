@@ -52,6 +52,13 @@ export const webhookDeadLetterWriteFailuresTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const kafkaRevenueEntriesTotal = new Counter({
+  name: "kafka_revenue_entries_total",
+  help: "Total number of normalized Kafka revenue entries handled by persistence outcome",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});
+
 export const rateLimitRejections = new Counter({
   name: "http_rate_limit_rejections_total",
   help: "Total number of requests rejected by the rate limiter (HTTP 429)",

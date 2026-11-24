@@ -23,6 +23,7 @@ import { secretLoader } from './utils/secret-loader.js';
 import { jwksManager } from './utils/jwks.js';
 import { createShutdownOrchestrator } from './shutdown.js';
 import { createRevenueConsumer } from './services/revenue/kafkaConsumer.js';
+import { persistRevenueEntry } from './services/revenue/persistRevenueEntry.js';
 import { stopStatsdDualWriteIfNeeded } from './services/metrics/statsdBootstrap.js';
 import { setTokenStore, createRedisTokenStore } from './utils/jwt.js';
 
@@ -58,11 +59,7 @@ export async function bootstrap(): Promise<void> {
   const { closeAttestationStream } = await import('./ws/attestationStream.js');
 
   // ── Kafka revenue consumer (opt-in via KAFKA_ENABLED=true) ──────────────
-  const kafkaConsumer = createRevenueConsumer(async (entry) => {
-    // Placeholder: wire to your persistence layer or broadcast.
-    // The normalized entry is ready for storage or downstream processing.
-    logger.info("[kafka] revenue entry received", { id: entry.id, source: entry.source });
-  });
+  const kafkaConsumer = createRevenueConsumer(persistRevenueEntry);
 
   if (kafkaConsumer) {
     await kafkaConsumer.start();

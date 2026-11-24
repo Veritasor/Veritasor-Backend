@@ -1,126 +1,249 @@
-import { sendWebhookDelivery, WebhookSubscription } from '../../../../src/services/webhooks/dispatcher';
-import { secretLoader } from '../../../../src/utils/secret-loader';
-import { createAuditLog } from '../../../../src/repositories/auditLogRepository';
-import { createDeliveryReceipt } from '../../../../src/repositories/deliveryReceiptRepository';
-import * as crypto from 'crypto';
-import fetch from 'node-fetch';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { createHmac } from 'node:crypto';
 
-jest.mock('node-fetch');
+const mocks = vi.hoisted(() => ({
+  secretLoaderGet: vi.fn(),
+  createAuditLog: vi.fn(),
+  createDeliveryReceipt: vi.fn(),
+  lookup: vi.fn(),
+  request: vi.fn(),
+  X509Certificate: vi.fn(function () {
+    return { validTo: '' };
+  }),
+}));
 
-jest.mock('../../../../src/utils/secret-loader', () => ({
-  secretLoader: {
-    get: jest.fn()
+vi.mock('node:dns/promises', () => ({ lookup: mocks.lookup }));
+
+vi.mock('node:https', () => {
+  class MockAgent {
+    options: Record<string, unknown>;
+    constructor(options: Record<string, unknown>) {
+      this.options = options;
+    }
   }
-}));
+  return { request: mocks.request, Agent: MockAgent };
+});
 
-jest.mock('../../../../src/repositories/auditLogRepository', () => ({
-  createAuditLog: jest.fn().mockResolvedValue(true)
-}));
+vi.mock('https', () => {
+  class MockAgent {
+    options: Record<string, unknown>;
+    constructor(options: Record<string, unknown>) {
+      this.options = options;
+    }
+  }
+  return { request: mocks.request, Agent: MockAgent };
+});
 
-jest.mock('../../../../src/repositories/deliveryReceiptRepository', () => ({
-  createDeliveryReceipt: jest.fn().mockResolvedValue(true)
-}));
-
-jest.mock('crypto', () => {
-  const original = jest.requireActual('crypto');
+vi.mock('crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('crypto')>();
   return {
-    ...original,
-    X509Certificate: jest.fn(),
+    ...actual,
+    default: { ...actual, X509Certificate: mocks.X509Certificate },
   };
 });
 
-describe('Webhook Dispatcher', () => {
-  const mockPayload = { event: 'test.created' };
-  
+vi.mock('../../../../src/utils/secret-loader.js', () => ({
+  secretLoader: { get: mocks.secretLoaderGet },
+}));
+
+vi.mock('../../../../src/repositories/auditLogRepository.js', () => ({
+  createAuditLog: mocks.createAuditLog,
+}));
+
+vi.mock('../../../../src/repositories/deliveryReceiptRepository.js', () => ({
+  createDeliveryReceipt: mocks.createDeliveryReceipt,
+}));
+
+import {
+  sendWebhookDelivery,
+  signAndPrepareDelivery,
+  verifyWebhookSignature,
+  type WebhookSubscription,
+} from '../../../../src/services/webhooks/dispatcher.js';
+
+const payload = { event: 'test.created', id: 'att-1' };
+const NOW = Date.UTC(2026, 10, 24, 12, 0, 0);
+
+function subscription(overrides: Partial<WebhookSubscription> = {}): WebhookSubscription {
+  return {
+    id: '1',
+    businessId: 'b1',
+    url: 'https://example.com/hook',
+    secret: 'new-secret',
+    secretVersion: 2,
+    ...overrides,
+  };
+}
+
+function installHttpMock(status = 200): void {
+  mocks.request.mockImplementation(
+    (_url: unknown, _options: unknown, callback: (res: EventEmitter & { statusCode?: number }) => void) => {
+      const req = new EventEmitter() as EventEmitter & {
+        write: (chunk: string) => void;
+        end: (chunk?: string) => void;
+      };
+      req.write = vi.fn();
+      req.end = vi.fn(() => {
+        const res = new EventEmitter() as EventEmitter & {
+          statusCode?: number;
+          setEncoding: (encoding: string) => void;
+        };
+        res.statusCode = status;
+        res.setEncoding = vi.fn();
+        callback(res);
+        queueMicrotask(() => {
+          res.emit('data', 'OK');
+          res.emit('end');
+        });
+      });
+      return req;
+    },
+  );
+}
+
+function signedData(headers: Record<string, string>): string {
+  return `${headers['X-Veritasor-Delivery-Id']}.${headers['X-Veritasor-Attempt']}.${headers['X-Veritasor-Timestamp']}.${JSON.stringify(payload)}`;
+}
+
+describe('webhook dispatcher signature rotation', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
-    (fetch as unknown as jest.Mock).mockResolvedValue({ 
-      ok: true, 
-      status: 200,
-      text: jest.fn().mockResolvedValue('OK') 
+    vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    mocks.lookup.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    installHttpMock();
+    mocks.createAuditLog.mockResolvedValue(true);
+    mocks.createDeliveryReceipt.mockResolvedValue(true);
+    mocks.secretLoaderGet.mockResolvedValue('mock-secret-value');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('signs with both secrets during the rotation grace window and both verify', () => {
+    const { headers } = signAndPrepareDelivery(
+      payload,
+      subscription({
+        previousSecret: 'old-secret',
+        previousSecretVersion: 1,
+        previousSecretExpiresAt: new Date(NOW + 300_000),
+      }),
+      2,
+    );
+
+    const data = signedData(headers);
+    expect(headers['X-Veritasor-Signature']).toBe(
+      createHmac('sha256', 'new-secret').update(data).digest('hex'),
+    );
+    expect(headers['X-Veritasor-Previous-Signature']).toBe(
+      createHmac('sha256', 'old-secret').update(data).digest('hex'),
+    );
+    expect(headers['X-Veritasor-Signature-Version']).toBe('2');
+    expect(headers['X-Veritasor-Previous-Signature-Version']).toBe('1');
+    expect(
+      verifyWebhookSignature({
+        payload: JSON.stringify(payload),
+        headers,
+        secret: 'new-secret',
+      }),
+    ).toBe(true);
+    expect(
+      verifyWebhookSignature({
+        payload: JSON.stringify(payload),
+        headers: {
+          ...headers,
+          'X-Veritasor-Signature': headers['X-Veritasor-Previous-Signature'],
+        },
+        secret: 'old-secret',
+      }),
+    ).toBe(true);
+  });
+
+  it('stops signing with the previous secret after its expiry', () => {
+    const { headers } = signAndPrepareDelivery(
+      payload,
+      subscription({
+        previousSecret: 'old-secret',
+        previousSecretVersion: 1,
+        previousSecretExpiresAt: new Date(NOW - 1_000),
+      }),
+    );
+
+    expect(headers).not.toHaveProperty('X-Veritasor-Previous-Signature');
+    expect(headers).not.toHaveProperty('X-Veritasor-Previous-Signature-Version');
+    expect(
+      verifyWebhookSignature({
+        payload: JSON.stringify(payload),
+        headers,
+        secret: 'old-secret',
+      }),
+    ).toBe(false);
+    expect(
+      verifyWebhookSignature({
+        payload: JSON.stringify(payload),
+        headers,
+        secret: 'new-secret',
+      }),
+    ).toBe(true);
+  });
+
+  it('reports the current secret version in the delivery receipt and headers', async () => {
+    const sub = subscription({
+      previousSecret: 'old-secret',
+      previousSecretVersion: 1,
+      previousSecretExpiresAt: new Date(NOW + 300_000),
     });
+
+    const result = await sendWebhookDelivery({ subscription: sub, payload });
+
+    expect(result.signatureVersion).toBe(2);
+    expect(mocks.createDeliveryReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ signatureVersion: 2 }),
+    );
+    expect(mocks.request).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'X-Veritasor-Previous-Signature': expect.any(String),
+        }),
+      }),
+      expect.any(Function),
+    );
   });
 
-  it('should deliver standard webhooks without mTLS', async () => {
-    const sub: WebhookSubscription = { 
-      id: '1', 
-      businessId: 'b1',
-      url: 'https://example.com/hook', 
-      secret: 'test-secret'
-    };
-    
-    await sendWebhookDelivery({ subscription: sub, payload: mockPayload });
-    
-    expect(secretLoader.get).not.toHaveBeenCalled();
-    expect(fetch).toHaveBeenCalledWith('https://example.com/hook', expect.objectContaining({
-      agent: undefined
-    }));
-    expect(createDeliveryReceipt).toHaveBeenCalled();
+  it('does not consult the secret loader for non-mTLS deliveries', async () => {
+    await sendWebhookDelivery({ subscription: subscription(), payload });
+
+    expect(mocks.secretLoaderGet).not.toHaveBeenCalled();
+    expect(mocks.createDeliveryReceipt).toHaveBeenCalledTimes(1);
   });
 
-  it('should deliver mTLS webhooks with valid pinned certs', async () => {
-    const sub: WebhookSubscription = { 
-      id: '2', 
-      businessId: 'b2',
-      url: 'https://secure.example.com/hook', 
-      secret: 'test-secret',
+  it('rejects an expired client certificate before dispatching', async () => {
+    mocks.X509Certificate.mockImplementation(function () {
+      return { validTo: new Date(NOW - 86_400_000).toISOString() };
+    });
+
+    const sub = subscription({
+      id: '3',
       mtlsConfig: {
         clientCertSecretId: 'cert-123',
         clientKeySecretId: 'key-123',
-        caPinSecretId: 'ca-123'
-      } 
-    };
+        caPinSecretId: 'ca-123',
+      },
+    });
 
-    (secretLoader.get as jest.Mock)
-      .mockResolvedValueOnce('mock-cert')
-      .mockResolvedValueOnce('mock-key')
-      .mockResolvedValueOnce('mock-ca');
+    await expect(sendWebhookDelivery({ subscription: sub, payload })).rejects.toThrow(
+      /Client certificate for subscription 3 expired/,
+    );
 
-    (crypto.X509Certificate as jest.Mock).mockImplementation(() => ({
-      validTo: new Date(Date.now() + 86400000).toISOString() // +1 day
-    }));
-
-    await sendWebhookDelivery({ subscription: sub, payload: mockPayload });
-
-    expect(secretLoader.get).toHaveBeenCalledTimes(3);
-    
-    const fetchCallArg = (fetch as unknown as jest.Mock).mock.calls[0][1];
-    expect(fetchCallArg.agent).toBeDefined();
-    expect(fetchCallArg.agent.options.cert).toBe('mock-cert');
-    expect(fetchCallArg.agent.options.ca).toBe('mock-ca');
-    expect(fetchCallArg.agent.options.rejectUnauthorized).toBe(true);
-  });
-
-  it('should reject delivery if client certificate has expired', async () => {
-    const sub: WebhookSubscription = { 
-      id: '3', 
-      businessId: 'b3',
-      url: 'https://secure.example.com/hook', 
-      secret: 'test-secret',
-      mtlsConfig: {
-        clientCertSecretId: 'cert-123',
-        clientKeySecretId: 'key-123',
-        caPinSecretId: 'ca-123'
-      } 
-    };
-
-    (secretLoader.get as jest.Mock).mockResolvedValue('mock-pem');
-
-    (crypto.X509Certificate as jest.Mock).mockImplementation(() => ({
-      validTo: new Date(Date.now() - 86400000).toISOString() // -1 day
-    }));
-
-    await expect(sendWebhookDelivery({ subscription: sub, payload: mockPayload }))
-      .rejects
-      .toThrow(/Client certificate for subscription 3 expired/);
-
-    expect(fetch).not.toHaveBeenCalled();
-    
-    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'webhook_delivery_rejected',
-      metadata: expect.objectContaining({
-        reason: 'MTLS_CERT_EXPIRED'
-      })
-    }));
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'webhook_delivery_rejected',
+        metadata: expect.objectContaining({ reason: 'MTLS_CERT_EXPIRED' }),
+      }),
+    );
   });
 });
