@@ -5,6 +5,7 @@ import * as integrationRepository from '../../../repositories/integration.js'
 import { executeWithRetry } from '../clientWrapper.js'
 import { GlobalRetryBudgetExceededError } from '../retryBudget.js'
 import { disconnectRazorpay } from './disconnect.js'
+import { logger } from '../../../utils/logger.js'
 
 const RAZORPAY_VERIFY_URL = 'https://api.razorpay.com/v1/payments'
 const RAZORPAY_OAUTH_URL = 'https://auth.razorpay.com/authorize'
@@ -233,7 +234,10 @@ export async function initiateRazorpayConnect(req: Request, res: Response) {
   if (!clientId) {
     // State token was stored — clean it up to avoid orphaned entries.
     oauthStateStore.delete(stateToken)
-    console.error('[razorpay] RAZORPAY_CLIENT_ID env var is not set')
+    logger.error(
+      { event: 'razorpay_oauth_unconfigured' },
+      '[razorpay] RAZORPAY_CLIENT_ID env var is not set',
+    )
     return res.status(503).json({ error: 'Razorpay OAuth is not configured' })
   }
 
@@ -244,10 +248,9 @@ export async function initiateRazorpayConnect(req: Request, res: Response) {
   authUrl.searchParams.set('state', stateToken)
   authUrl.searchParams.set('scope', 'read_write')
 
-  console.info({
+  logger.info({
     event: 'razorpay_oauth_initiate',
     userId,
-    stateToken: stateToken.slice(0, 8) + '…', // log only prefix — not the full token
     redirectOrigin: redirectValidation.url.origin,
     expiresAt: new Date(now + STATE_TTL_MS).toISOString(),
   })

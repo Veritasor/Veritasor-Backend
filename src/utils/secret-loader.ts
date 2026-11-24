@@ -681,10 +681,20 @@ class FailoverSecretLoader extends BaseSecretAdapter {
   get(key: string): string {
     this.ensureLoaded()
     const normalizedKey = BaseSecretAdapter.normalizeSecretKey(key)
-    if (this.secrets.has(normalizedKey)) {
-      return this.toSecretValue(this.secrets.get(normalizedKey), key)
+    const direct = this.secrets.get(normalizedKey)
+    if (direct !== undefined) {
+      return direct
     }
     return this.toSecretValue(this.primaryAdapter.get(key), key)
+
+    try {
+      return this.fallbackAdapter.get(key)
+    } catch (error) {
+      if (error instanceof SecretNotFoundError) {
+        return this.toSecretValue(undefined, key)
+      }
+      throw error
+    }
   }
 
   private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

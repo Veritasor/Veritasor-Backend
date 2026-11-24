@@ -20,6 +20,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "../../../src/utils/logger.js";
 
 const mocks = vi.hoisted(() => ({
   businessRepository: {} as Record<string, unknown>,
@@ -256,7 +257,7 @@ describe("DELETE/POST /:id/revoke — neighbouring normal and boundary paths", (
   });
 
   it("maps a repository throw during revoke onto the REVOKE_FAILED contract without leaking", async () => {
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const loggerError = vi.spyOn(logger, "error").mockImplementation(() => {});
     mocks.attestationRepository.getById.mockRejectedValue(new Error("DB connection lost"));
 
     const res = await request(app).post("/api/attestations/att_1/revoke").set(AUTH).send({});
@@ -265,7 +266,10 @@ describe("DELETE/POST /:id/revoke — neighbouring normal and boundary paths", (
     expect(res.body.vrtCode).toBe("REVOKE_FAILED");
     expect(JSON.stringify(res.body)).not.toContain("DB connection lost");
     expect(mocks.attestationRepository.updateStatus).not.toHaveBeenCalled();
-    consoleError.mockRestore();
+    expect(loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.any(Error) }),
+      "Revoke error",
+    );
   });
 });
 
@@ -316,7 +320,7 @@ describe("GET /:id — getById returns null (evidence line 227)", () => {
   });
 
   it("surfaces an unexpected repository error as a masked 500", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(logger, "error").mockImplementation(() => {});
     mocks.attestationRepository.getById.mockRejectedValue(new Error("relation does not exist"));
 
     const res = await request(app).get("/api/attestations/att_1").set(AUTH);

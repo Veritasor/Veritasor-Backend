@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Server } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createShutdownOrchestrator } from '../src/shutdown.js';
+import { logger } from '../src/utils/logger.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -121,6 +122,8 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 describe('createShutdownOrchestrator', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.spyOn(logger, 'error').mockImplementation(() => {});
+    vi.spyOn(logger, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -246,8 +249,6 @@ describe('createShutdownOrchestrator', () => {
       const { server, triggerClose } = makeServer();
       const { pool } = makePool({ rejects: true });
       const { proc, exitCalls, emit } = makeProc();
-      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 5_000 });
       orchestrator.register(server, proc);
 
@@ -256,9 +257,12 @@ describe('createShutdownOrchestrator', () => {
       triggerClose();
       await flush();
 
-      expect(stderrSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[Shutdown] Error while closing DB pool:'),
-        expect.any(Error),
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'shutdown_pool_close_failed',
+          error: expect.any(Error),
+        }),
+        '[Shutdown] Error while closing DB pool',
       );
       // Pool error is swallowed — exit code must still be 0
       expect(exitCalls).toEqual([0]);
@@ -273,8 +277,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer({ closeError });
       const { pool } = makePool();
       const { proc, exitCalls, emit } = makeProc();
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 5_000 });
       orchestrator.register(server, proc);
 
@@ -295,8 +297,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer(); // triggerClose never called
       const { pool } = makePool({ hangs: true });
       const { proc, exitCalls, emit } = makeProc();
-      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 3_000 });
       orchestrator.register(server, proc);
 
@@ -307,9 +307,12 @@ describe('createShutdownOrchestrator', () => {
       vi.advanceTimersByTime(3_001);
       await flush();
 
-      expect(stderrSpy).toHaveBeenCalledWith(
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'shutdown_deadline_exceeded',
+          timeoutMs: 3_000,
+        }),
         expect.stringContaining('exceeded'),
-        // The message includes the timeout value
       );
       expect(exitCalls).toEqual([1]);
     });
@@ -344,8 +347,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer();
       const { pool } = makePool({ hangs: true });
       const { proc, exitCalls, emit } = makeProc();
-      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 30_000 });
       orchestrator.register(server, proc);
 
@@ -359,7 +360,11 @@ describe('createShutdownOrchestrator', () => {
       emit('SIGTERM');
       await flush();
 
-      expect(stderrSpy).toHaveBeenCalledWith(
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'shutdown_repeated_signal',
+          signal: 'SIGTERM',
+        }),
         expect.stringContaining('second'),
       );
       expect(exitCalls).toEqual([1]);
@@ -369,8 +374,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer();
       const { pool } = makePool({ hangs: true });
       const { proc, exitCalls, emit } = makeProc();
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 30_000 });
       orchestrator.register(server, proc);
 
@@ -387,8 +390,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer();
       const { pool } = makePool({ hangs: true });
       const { proc, exitCalls, emit } = makeProc();
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const orchestrator = createShutdownOrchestrator({ pool, timeoutMs: 30_000 });
       orchestrator.register(server, proc);
 
@@ -409,8 +410,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer();
       const { pool } = makePool({ hangs: true });
       const { proc, exitCalls, emit } = makeProc();
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-
       const originalEnv = process.env.SHUTDOWN_TIMEOUT_MS;
       process.env.SHUTDOWN_TIMEOUT_MS = '2000';
 
@@ -438,9 +437,6 @@ describe('createShutdownOrchestrator', () => {
       const { server } = makeServer();
       const { pool } = makePool({ hangs: true });
       const { proc, exitCalls, emit } = makeProc();
-      const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
-
       const originalEnv = process.env.SHUTDOWN_TIMEOUT_MS;
       process.env.SHUTDOWN_TIMEOUT_MS = 'not-a-number';
 
@@ -459,6 +455,13 @@ describe('createShutdownOrchestrator', () => {
       vi.advanceTimersByTime(10_001);
       await flush();
       expect(exitCalls).toEqual([1]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'invalid_shutdown_timeout',
+          value: 'not-a-number',
+        }),
+        '[Shutdown] Invalid SHUTDOWN_TIMEOUT_MS — using default 15 000 ms.',
+      );
 
       if (originalEnv === undefined) {
         delete process.env.SHUTDOWN_TIMEOUT_MS;

@@ -1,5 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { hash, verify, hashPassword } from "../../../src/utils/password.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import bcrypt from "bcryptjs";
+import {
+  hash,
+  verify,
+  hashPassword,
+  verifyPassword,
+} from "../../../src/utils/password.js";
+import { logger } from "../../../src/utils/logger.js";
 import { resetPassword } from "../../../src/services/auth/resetPassword.js";
 import * as userRepository from "../../../src/repositories/userRepository.js";
 import * as passwordUtils from "../../../src/utils/password.js";
@@ -58,6 +65,126 @@ describe("password utility", () => {
       const hashed = await hash(plain);
       expect(await verify(plain, hashed)).toBe(true);
       expect(await verify("パスワード", hashed)).toBe(false); // Japanese for 'password'
+    });
+  });
+
+  describe("BCRYPT_SALT_ROUNDS configuration", () => {
+    const originalSaltRounds = process.env.BCRYPT_SALT_ROUNDS;
+
+    beforeEach(() => {
+      delete process.env.BCRYPT_SALT_ROUNDS;
+      vi.restoreAllMocks();
+    });
+
+    afterEach(() => {
+      if (originalSaltRounds === undefined) {
+        delete process.env.BCRYPT_SALT_ROUNDS;
+      } else {
+        process.env.BCRYPT_SALT_ROUNDS = originalSaltRounds;
+      }
+      vi.restoreAllMocks();
+    });
+
+    it("uses default 10 rounds when BCRYPT_SALT_ROUNDS is unset", async () => {
+      const hashSpy = vi
+        .spyOn(bcrypt, "hash")
+        .mockResolvedValue("mocked-hash" as never);
+
+      await hash("secret");
+      expect(hashSpy).toHaveBeenCalledWith("secret", 10);
+    });
+
+    it("uses configured rounds for valid values within 10..31 without warning", async () => {
+      const hashSpy = vi
+        .spyOn(bcrypt, "hash")
+        .mockResolvedValue("mocked-hash" as never);
+      const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+      process.env.BCRYPT_SALT_ROUNDS = "12";
+      await hash("secret");
+      expect(hashSpy).toHaveBeenLastCalledWith("secret", 12);
+
+      process.env.BCRYPT_SALT_ROUNDS = "31";
+      await hash("secret");
+      expect(hashSpy).toHaveBeenLastCalledWith("secret", 31);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it("accepts rounds between 4 and 9 with a warning", async () => {
+      const hashSpy = vi
+        .spyOn(bcrypt, "hash")
+        .mockResolvedValue("mocked-hash" as never);
+      const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+      process.env.BCRYPT_SALT_ROUNDS = "4";
+      await hash("secret");
+      expect(hashSpy).toHaveBeenLastCalledWith("secret", 4);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "password_salt_rounds_below_recommended",
+          rounds: 4,
+          recommendedRounds: 10,
+        }),
+        "[password] BCRYPT_SALT_ROUNDS is below the recommended minimum.",
+      );
+
+      process.env.BCRYPT_SALT_ROUNDS = "8";
+      await hash("secret");
+      expect(hashSpy).toHaveBeenLastCalledWith("secret", 8);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["abc", "12abc", "10.5", "", "   "])(
+      "falls back to default 10 for invalid string '%s'",
+      async (invalidValue) => {
+        const hashSpy = vi
+          .spyOn(bcrypt, "hash")
+          .mockResolvedValue("mocked-hash" as never);
+
+        process.env.BCRYPT_SALT_ROUNDS = invalidValue;
+        await hash("secret");
+        expect(hashSpy).toHaveBeenCalledWith("secret", 10);
+      }
+    );
+
+    it.each(["0", "-1", "-10"])(
+      "falls back to default 10 for zero or negative value '%s'",
+      async (nonPositiveValue) => {
+        const hashSpy = vi
+          .spyOn(bcrypt, "hash")
+          .mockResolvedValue("mocked-hash" as never);
+
+        process.env.BCRYPT_SALT_ROUNDS = nonPositiveValue;
+        await hash("secret");
+        expect(hashSpy).toHaveBeenCalledWith("secret", 10);
+      }
+    );
+
+    it.each(["1", "2", "3", "32", "100"])(
+      "falls back to default 10 for out-of-range value '%s'",
+      async (outOfRangeValue) => {
+        const hashSpy = vi
+          .spyOn(bcrypt, "hash")
+          .mockResolvedValue("mocked-hash" as never);
+
+        process.env.BCRYPT_SALT_ROUNDS = outOfRangeValue;
+        await hash("secret");
+        expect(hashSpy).toHaveBeenCalledWith("secret", 10);
+      }
+    );
+  });
+
+  describe("backward-compatibility aliases", () => {
+    it("exports hashPassword and verifyPassword aliases", async () => {
+      expect(hashPassword).toBe(hash);
+      expect(verifyPassword).toBe(verify);
+      expect(passwordUtils.default.hashPassword).toBe(hash);
+      expect(passwordUtils.default.verifyPassword).toBe(verify);
+
+      const hashed = await hashPassword("alias-test");
+      expect(await verifyPassword("alias-test", hashed)).toBe(true);
+      expect(await verifyPassword("wrong", hashed)).toBe(false);
     });
   });
 });

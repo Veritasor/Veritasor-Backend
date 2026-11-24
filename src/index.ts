@@ -84,7 +84,10 @@ export async function bootstrap(): Promise<void> {
         try {
           await kafkaConsumer.stop();
         } catch (err) {
-          console.warn(`[Shutdown] Kafka consumer stop error: ${err instanceof Error ? err.message : String(err)}`);
+          logger.warn(
+            { event: 'shutdown_worker_stop_failed', worker: 'kafka_consumer', error: err },
+            '[Shutdown] Kafka consumer stop error',
+          );
         }
       }
       // Stop the cooperative idempotency sweeper. The handle is
@@ -93,24 +96,36 @@ export async function bootstrap(): Promise<void> {
       try {
         await stopIdempotencySweeper();
       } catch (err) {
-        console.warn(`[Shutdown] Idempotency sweeper stop error: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(
+          { event: 'shutdown_worker_stop_failed', worker: 'idempotency_sweeper', error: err },
+          '[Shutdown] Idempotency sweeper stop error',
+        );
       }
       // Stop the PgBouncer stats scraper
       try {
         await stopPgBouncerScraperIfNeeded();
       } catch (err) {
-        console.warn(`[Shutdown] PgBouncer scraper stop error: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(
+          { event: 'shutdown_worker_stop_failed', worker: 'pgbouncer_scraper', error: err },
+          '[Shutdown] PgBouncer scraper stop error',
+        );
       }
       try {
         const { stopSpiffeSvidProviderIfNeeded } = await import('./app.js');
         stopSpiffeSvidProviderIfNeeded();
       } catch (err) {
-        console.warn(`[Shutdown] SPIFFE SVID provider stop error: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(
+          { event: 'shutdown_worker_stop_failed', worker: 'spiffe_svid_provider', error: err },
+          '[Shutdown] SPIFFE SVID provider stop error',
+        );
       }
       try {
         await stopStatsdDualWriteIfNeeded();
       } catch (err) {
-        console.warn(`[Shutdown] StatsD dual-write stop error: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(
+          { event: 'shutdown_worker_stop_failed', worker: 'statsd_dual_write', error: err },
+          '[Shutdown] StatsD dual-write stop error',
+        );
       }
     },
   });
@@ -150,7 +165,10 @@ process.on('SIGHUP', async () => {
 if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
   bootstrap().catch((error) => {
     const message = error instanceof Error ? error.message : 'Unknown startup error';
-    console.error(`[Startup] ${message}`);
+    logger.error(
+      { event: 'startup_failed', error: message },
+      `[Startup] ${message}`,
+    );
     process.exit(1);
   });
 }

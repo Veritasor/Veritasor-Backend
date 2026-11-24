@@ -13,6 +13,8 @@ export const rawEnvSchema = z.object({
   TRUST_PROXY: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
+  METRICS_ENABLED: z.string().optional(),
+  METRICS_AUTH_TOKEN: z.string().optional(),
   DATABASE_URL: z.string({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
@@ -70,7 +72,30 @@ export const rawEnvSchema = z.object({
   OTEL_MTLS_CA_PATH: z.string().optional(),
   OTEL_MTLS_CERT_PATH: z.string().optional(),
   OTEL_MTLS_KEY_PATH: z.string().optional(),
-}).superRefine((data, ctx) => {
+  MTLS_ENABLED: z.string().optional(),
+  MTLS_SPIFFE_ENABLED: z.string().optional(),
+  SPIFFE_TRUST_DOMAIN: z.string().optional(),
+  MTLS_CA_PATH: z.string().optional(),
+  MTLS_CERT_PATH: z.string().optional(),
+  MTLS_KEY_PATH: z.string().optional(),
+  MTLS_CN_ALLOWLIST: z.string().optional(),
+  MTLS_SPIFFE_ID_ALLOWLIST: z.string().optional(),
+  SPIFFE_WORKLOAD_API_SOCKET: z.string().optional(),
+  REDIS_URL: z
+    .string()
+    .url("REDIS_URL must be a valid URL")
+    .refine(
+      (value) => value.startsWith("redis://") || value.startsWith("rediss://"),
+      "REDIS_URL must use redis:// or rediss://",
+    )
+    .optional(),
+  REDIS_CLUSTER_NODES: z.string().optional(),
+  REDIS_TLS: z.string().optional(),
+  REDIS_FORCE_SINGLE_NODE: z.string().optional(),
+  EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
+});
+
+export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
   if (data.SECRET_LOADER && data.SECRET_PROVIDER && data.SECRET_LOADER !== data.SECRET_PROVIDER) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -590,5 +615,30 @@ export const config = {
   },
   auth: {
     exposeResetLinkInResponse: exposeResetLink && !isProduction,
+  },
+  metrics: {
+    get authToken(): string | undefined {
+      return process.env.METRICS_AUTH_TOKEN ?? parsedEnv.METRICS_AUTH_TOKEN;
+    },
+    set authToken(val: string | undefined) {
+      if (val === undefined) {
+        delete process.env.METRICS_AUTH_TOKEN;
+      } else {
+        process.env.METRICS_AUTH_TOKEN = val;
+      }
+    },
+    get enabled(): boolean {
+      return process.env.METRICS_ENABLED === "true";
+    },
+  },
+  get metricsAuthToken(): string | undefined {
+    return process.env.METRICS_AUTH_TOKEN ?? parsedEnv.METRICS_AUTH_TOKEN;
+  },
+  set metricsAuthToken(val: string | undefined) {
+    if (val === undefined) {
+      delete process.env.METRICS_AUTH_TOKEN;
+    } else {
+      process.env.METRICS_AUTH_TOKEN = val;
+    }
   },
 } as const;

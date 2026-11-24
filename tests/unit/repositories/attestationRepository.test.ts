@@ -154,15 +154,18 @@ class MockDbClient implements DbClient {
     if (sqlUpper.startsWith('UPDATE')) {
       if (!params || params.length === 0) return { rows: [] };
 
-      const id = params[params.length - 1];
+      const idMatch = sql.match(/WHERE\s+id\s*=\s*\$(\d+)/i);
+      if (!idMatch) return { rows: [] };
+
+      const id = params[parseInt(idMatch[1], 10) - 1];
       const row = this.data.get(id);
       if (!row || typeof row === 'string') return { rows: [] };
 
       const updatedRow = { ...row };
 
-      const whereMatch = sql.match(/WHERE.*version\s*=\s*\$(\d+)/i);
-      if (whereMatch) {
-        const versionParamIndex = parseInt(whereMatch[1]) - 1;
+      const versionMatch = sql.match(/WHERE[\s\S]*?\bversion\s*=\s*\$(\d+)/i);
+      if (versionMatch) {
+        const versionParamIndex = parseInt(versionMatch[1], 10) - 1;
         const expectedVersion = params[versionParamIndex];
         if (row.version !== expectedVersion) return { rows: [] };
       }
@@ -406,7 +409,7 @@ describe('Attestation Repository - Write Conflict Handling', () => {
       expect(await updateStatus(mockClient, 'non-existent-id', 'confirmed')).toBeNull();
     });
 
-    it('should throw ConflictError when version mismatch (optimistic locking)', async () => {
+    it('should reject a stale version without modifying the attestation', async () => {
       const input: CreateAttestationInput = {
         businessId: 'business-version',
         period: '2025-06',
@@ -415,13 +418,17 @@ describe('Attestation Repository - Write Conflict Handling', () => {
         status: 'pending',
       };
       const created = await create(mockClient, input);
-      const error = await updateStatus(mockClient, created.id, 'confirmed', 999).catch(e => e);
+      const error = await updateStatus(mockClient, created.id, 'confirmed', 0).catch(e => e);
       expect(error).toBeInstanceOf(ConflictError);
       expect(error.type).toBe(ConflictErrorType.CONFLICT_TYPE_VERSION);
-      expect(error.details.expectedVersion).toBe(999);
+      expect(error.details.expectedVersion).toBe(0);
+
+      const unchanged = await getById(mockClient, created.id);
+      expect(unchanged!.status).toBe('pending');
+      expect(unchanged!.version).toBe(1);
     });
 
-    it.skip('should successfully update when version matches', async () => {
+    it('should successfully update when version matches', async () => {
       const input: CreateAttestationInput = {
         businessId: 'business-version',
         period: '2025-07',

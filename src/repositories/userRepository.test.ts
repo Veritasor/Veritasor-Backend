@@ -13,6 +13,7 @@ import {
   setResetToken,
   updateUser,
   updateUserPassword,
+  updateUserProfile,
 } from './userRepository.js'
 
 describe('userRepository user lifecycle', () => {
@@ -118,5 +119,28 @@ describe('userRepository user lifecycle', () => {
     expect(results[0]).toEqual(new Error(`User not found: ${first.id}`))
     expect(results[1]).toMatchObject({ id: second.id, role: 'user' })
     expect(await getAllUsers()).toHaveLength(1)
+  })
+
+  it('updateUserProfile updates allowlisted fields and preserves auth material', async () => {
+    const user = await createUser('profile@example.com', 'hash-1')
+
+    const updated = await updateUserProfile(user.id, {
+      name: 'New Name',
+      profile: { theme: 'dark' },
+    })
+
+    expect(updated).toMatchObject({
+      id: user.id,
+      email: 'profile@example.com',
+      name: 'New Name',
+      profile: { theme: 'dark' },
+      passwordHash: 'hash-1',
+      role: 'user',
+    })
+    expect((await findUserById(user.id))?.name).toBe('New Name')
+  })
+
+  it('updateUserProfile returns null for unknown users', async () => {
+    expect(await updateUserProfile('missing', { name: 'x' })).toBeNull()
   })
 })
