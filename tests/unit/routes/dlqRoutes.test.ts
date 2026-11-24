@@ -4,6 +4,7 @@ import express from 'express';
 
 const mockDlqInstance = vi.hoisted(() => ({
   getEntries: vi.fn(),
+  getEntryById: vi.fn(),
   archiveEntry: vi.fn(),
   restoreEntry: vi.fn(),
   archiveOldEntries: vi.fn(),
@@ -36,12 +37,16 @@ vi.mock('../../../src/middleware/errorHandler.js', () => ({
 }));
 
 import dlqRouter from '../../../src/routes/dlqRoutes.js';
-import { AppError } from '../../../src/types/errors.js';
+import { AppError, ValidationError } from '../../../src/types/errors.js';
 
 const app = express();
 app.use(express.json());
 app.use('/api/v1/admin/dlq', dlqRouter);
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err instanceof ValidationError) {
+    res.status(err.status).json({ error: err.message, code: err.vrtCode, details: err.details });
+    return;
+  }
   if (err instanceof AppError) {
     res.status(err.status).json({ error: err.message, code: err.vrtCode });
     return;
@@ -129,29 +134,46 @@ describe('DLQ Admin Routes (/api/v1/admin/dlq)', () => {
   });
 
   describe('GET /entries/:id', () => {
-    it('returns 200 when entry exists', async () => {
+    it('returns 200 for any existing entry id without paging through the list', async () => {
       authAs('admin');
-      const entry = { id: 'dlq-42', type: 'stripe.invoice' };
-      mockDlqInstance.getEntries.mockResolvedValue({ entries: [entry], total: 1 });
+      // A non-newest entry: the old page-1/size-1 lookup could never return it.
+      const entry = { id: 42, type: 'stripe.invoice' };
+      mockDlqInstance.getEntryById.mockResolvedValue(entry);
 
       const res = await request(app)
-        .get('/api/v1/admin/dlq/entries/dlq-42')
+        .get('/api/v1/admin/dlq/entries/42')
         .set('Authorization', 'Bearer admin-token');
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ success: true, data: entry });
+      expect(mockDlqInstance.getEntryById).toHaveBeenCalledTimes(1);
+      expect(mockDlqInstance.getEntryById).toHaveBeenCalledWith('42');
+      expect(mockDlqInstance.getEntries).not.toHaveBeenCalled();
     });
 
-    it('returns 404 when entry is not found', async () => {
+    it('returns 404 when the id does not exist', async () => {
       authAs('admin');
-      mockDlqInstance.getEntries.mockResolvedValue({ entries: [], total: 0 });
+      mockDlqInstance.getEntryById.mockResolvedValue(null);
 
       const res = await request(app)
-        .get('/api/v1/admin/dlq/entries/missing-id')
+        .get('/api/v1/admin/dlq/entries/999')
         .set('Authorization', 'Bearer admin-token');
 
       expect(res.status).toBe(404);
       expect(res.body.error).toMatch(/not found/i);
+      expect(mockDlqInstance.getEntries).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed id before querying the database', async () => {
+      authAs('admin');
+
+      const res = await request(app)
+        .get('/api/v1/admin/dlq/entries/not-a-number')
+        .set('Authorization', 'Bearer admin-token');
+
+      expect(res.status).toBe(400);
+      expect(mockDlqInstance.getEntryById).not.toHaveBeenCalled();
+      expect(mockDlqInstance.getEntries).not.toHaveBeenCalled();
     });
   });
 
