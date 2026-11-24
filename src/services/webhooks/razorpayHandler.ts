@@ -178,8 +178,10 @@ export function parseRazorpayEvent(
 }
 
 // In-memory store for processed events (for simplicity; in production, use DB)
+const processedEvents = new Set<string>()
+
 export function resetProcessedRazorpayEvents(): void {
-  resetIdempotencyStore()
+  processedEvents.clear()
 }
 
 async function processRazorpayEvent(event: RazorpayEvent): Promise<{ status: string; message: string }> {
@@ -201,18 +203,6 @@ async function processRazorpayEvent(event: RazorpayEvent): Promise<{ status: str
   const tsCheck = checkTimestampTolerance(event.created_at)
   if (!tsCheck.valid) {
     throw new RazorpayWebhookError('invalid_timestamp', 400, tsCheck.reason ?? 'Event timestamp out of tolerance')
-  }
-  try {
-    const reserved = await reserveWebhookEvent(event.id)
-    if (!reserved) {
-      logger.info(JSON.stringify({ type: 'razorpay_webhook_duplicate', eventId: event.id, eventType: event.event }))
-      return { status: 'duplicate', message: `Event ${event.id} already processed` }
-    }
-  } catch (err: any) {
-    if (err?.name === 'RedisCircuitBreakerError') {
-      throw new RazorpayWebhookError('secret_not_configured', 503, 'Redis unavailable')
-    }
-    throw err
   }
   logger.info(
     JSON.stringify({
@@ -280,7 +270,7 @@ export async function handleRazorpayEvent(
   }
 
   // Check duplicate once before entering withBackoff
-  if (isEventProcessed(event.id)) {
+  if (await isEventProcessed(event.id)) {
     logger.info(
       JSON.stringify({
         type: 'razorpay_webhook_duplicate',

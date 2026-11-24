@@ -9,6 +9,8 @@ import { createAuditLog } from "../../repositories/auditLogRepository.js";
 import { createDeliveryReceipt } from "../../repositories/deliveryReceiptRepository.js";
 import { evaluateEventFilter } from "../../schemas/webhookSubscription.js";
 import { logger } from "../../utils/logger.js";
+import { BackoffError, DEFAULT_BACKOFF_OPTIONS, withBackoff } from "../../utils/backoff.js";
+import { saveDeadLetter } from "./deadLetterQueue.js";
 
 export class WebhookPayloadTooLargeError extends Error {
   public readonly code = 'PAYLOAD_TOO_LARGE';
@@ -186,6 +188,9 @@ export interface SendWebhookDeliveryOptions {
   subscription: WebhookSubscription;
   payload: object;
   attempt?: number;
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
 }
 
 export interface SendWebhookDeliveryResult {
@@ -218,14 +223,60 @@ export function shouldDeliverEvent(
   );
 }
 
-export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): Promise<SendWebhookDeliveryResult> {
-  const { subscription, payload, attempt = 1 } = options;
+function parsePositiveIntEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
-  const { headers, receipt } = signAndPrepareDelivery(payload, subscription, attempt);
+function isRetryableStatusCode(statusCode: number): boolean {
+  return statusCode === 0 || statusCode === 408 || statusCode === 429 || (statusCode >= 500 && statusCode < 600);
+}
+
+class WebhookAttemptError extends Error {
+  public readonly code: string;
+  public readonly result: SendWebhookDeliveryResult;
+  public readonly retryable: boolean;
+
+  constructor(result: SendWebhookDeliveryResult, retryable: boolean, cause?: unknown) {
+    const code =
+      result.statusCode > 0
+        ? `HTTP_${result.statusCode}`
+        : cause instanceof Error && "code" in cause && typeof (cause as { code?: unknown }).code === "string"
+          ? (cause as { code: string }).code
+          : "NETWORK_ERROR";
+    super(result.responseBody || `Webhook delivery failed with status ${result.statusCode}`);
+    this.name = "WebhookAttemptError";
+    this.code = code;
+    this.result = result;
+    this.retryable = retryable;
+  }
+}
+
+export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): Promise<SendWebhookDeliveryResult> {
+  const {
+    subscription,
+    payload,
+    attempt = 1,
+    maxAttempts = parsePositiveIntEnv(
+      process.env.WEBHOOK_DELIVERY_MAX_ATTEMPTS,
+      DEFAULT_BACKOFF_OPTIONS.maxAttempts,
+    ),
+    baseDelayMs = parsePositiveIntEnv(
+      process.env.WEBHOOK_DELIVERY_BASE_DELAY_MS,
+      DEFAULT_BACKOFF_OPTIONS.baseDelayMs,
+    ),
+    maxDelayMs = parsePositiveIntEnv(
+      process.env.WEBHOOK_DELIVERY_MAX_DELAY_MS,
+      DEFAULT_BACKOFF_OPTIONS.maxDelayMs,
+    ),
+  } = options;
 
   const url = subscription.url;
   const serializedPayload = JSON.stringify(payload);
-  
+
+  // Validate payload size before any network / mTLS work.
+  signAndPrepareDelivery(payload, subscription, attempt);
+
   let agent: https.Agent | undefined;
 
   if (subscription.mtlsConfig) {
@@ -266,66 +317,123 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
     });
   }
 
-  const startedAt = Date.now();
-
-  let statusCode = 0;
-  let responseBody: string | undefined;
+  let lastResult: SendWebhookDeliveryResult | undefined;
 
   try {
-    if (!isValidWebhookUrl(url) || !url.startsWith('https://')) throw new Error('Webhook URL is not allowed');
-    const parsed = new URL(url);
-    const records = isIP(parsed.hostname.replace(/^\[|\]$/g, ''))
-      ? [{ address: parsed.hostname.replace(/^\[|\]$/g, ''), family: isIP(parsed.hostname.replace(/^\[|\]$/g, '')) }]
-      : await lookup(parsed.hostname, { all: true, verbatim: true });
-    if (!records.length || records.some((record) => isBlockedAddress(record.address))) throw new Error('Webhook host resolves to a restricted address');
-    const vetted = records[0];
-    const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
-      const request = https.request(parsed, {
-        method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-        agent, timeout: 10_000,
-        lookup: ((_hostname: string, options: any, callback: any) => {
-          if (options?.all) callback(null, records);
-          else callback(null, vetted.address, vetted.family);
-        }) as any,
-      }, (response) => {
-        let body = '';
-        response.setEncoding('utf8');
-        response.on('data', (chunk: string) => { if (body.length < 2048) body += chunk.slice(0, 2048 - body.length); });
-        response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
-      });
-      request.on('timeout', () => request.destroy(new Error('Webhook request timed out')));
-      request.on('error', reject);
-      request.end(serializedPayload);
-    });
-    statusCode = result.status;
-    responseBody = result.body;
+    return await withBackoff(
+      async (retryIndex) => {
+        const attemptNumber = attempt + retryIndex - 1;
+        const { headers, receipt } = signAndPrepareDelivery(payload, subscription, attemptNumber);
+        const startedAt = Date.now();
+
+        let statusCode = 0;
+        let responseBody: string | undefined;
+        let ssrfBlocked = false;
+        let networkError: unknown;
+
+        try {
+          if (!isValidWebhookUrl(url) || !url.startsWith('https://')) {
+            ssrfBlocked = true;
+            throw new Error('Webhook URL is not allowed');
+          }
+          const parsed = new URL(url);
+          const records = isIP(parsed.hostname.replace(/^\[|\]$/g, ''))
+            ? [{ address: parsed.hostname.replace(/^\[|\]$/g, ''), family: isIP(parsed.hostname.replace(/^\[|\]$/g, '')) }]
+            : await lookup(parsed.hostname, { all: true, verbatim: true });
+          if (!records.length || records.some((record) => isBlockedAddress(record.address))) {
+            ssrfBlocked = true;
+            throw new Error('Webhook host resolves to a restricted address');
+          }
+          const vetted = records[0];
+          const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+            const request = https.request(parsed, {
+              method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+              agent, timeout: 10_000,
+              lookup: ((_hostname: string, options: any, callback: any) => {
+                if (options?.all) callback(null, records);
+                else callback(null, vetted.address, vetted.family);
+              }) as any,
+            }, (response) => {
+              let body = '';
+              response.setEncoding('utf8');
+              response.on('data', (chunk: string) => { if (body.length < 2048) body += chunk.slice(0, 2048 - body.length); });
+              response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+            });
+            request.on('timeout', () => request.destroy(new Error('Webhook request timed out')));
+            request.on('error', reject);
+            request.end(serializedPayload);
+          });
+          statusCode = result.status;
+          responseBody = result.body;
+        } catch (error) {
+          networkError = error;
+          statusCode = 0;
+          responseBody = error instanceof Error ? error.message : "Unknown networking error";
+        }
+
+        const latencyMs = Date.now() - startedAt;
+
+        await createDeliveryReceipt({
+          deliveryId: receipt.delivery_id,
+          attemptNumber,
+          subscriptionId: subscription.id,
+          businessId: subscription.businessId,
+          url,
+          statusCode,
+          latencyMs,
+          signatureVersion: 1,
+          signature: receipt.signature,
+          responseBody,
+        });
+
+        const attemptResult: SendWebhookDeliveryResult = {
+          deliveryId: receipt.delivery_id,
+          attempt: attemptNumber,
+          statusCode,
+          latencyMs,
+          signature: receipt.signature,
+          signatureVersion: 1,
+          responseBody,
+        };
+        lastResult = attemptResult;
+
+        if (!ssrfBlocked && isRetryableStatusCode(statusCode)) {
+          throw new WebhookAttemptError(attemptResult, true, networkError);
+        }
+
+        return attemptResult;
+      },
+      {
+        baseDelayMs,
+        maxDelayMs,
+        maxAttempts,
+        shouldRetry: (error) => error instanceof WebhookAttemptError && error.retryable,
+      },
+    );
   } catch (error) {
-    statusCode = 0;
-    responseBody = error instanceof Error ? error.message : "Unknown networking error";
+    const attemptError =
+      error instanceof BackoffError && error.cause instanceof WebhookAttemptError
+        ? error.cause
+        : error instanceof WebhookAttemptError
+          ? error
+          : undefined;
+
+    if (attemptError && lastResult) {
+      await saveDeadLetter(
+        'webhook',
+        lastResult.deliveryId,
+        {
+          subscriptionId: subscription.id,
+          businessId: subscription.businessId,
+          url: subscription.url,
+          payload,
+        },
+        attemptError,
+        error instanceof BackoffError ? error.attemptCount : maxAttempts,
+      );
+      return lastResult;
+    }
+
+    throw error;
   }
-
-  const latencyMs = Date.now() - startedAt;
-
-  await createDeliveryReceipt({
-    deliveryId: receipt.delivery_id,
-    attemptNumber: attempt,
-    subscriptionId: subscription.id,
-    businessId: subscription.businessId,
-    url,
-    statusCode,
-    latencyMs,
-    signatureVersion: 1,
-    signature: receipt.signature,
-    responseBody,
-  });
-
-  return {
-    deliveryId: receipt.delivery_id,
-    attempt,
-    statusCode,
-    latencyMs,
-    signature: receipt.signature,
-    signatureVersion: 1,
-    responseBody,
-  };
 }

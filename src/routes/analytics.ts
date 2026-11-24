@@ -78,7 +78,7 @@ analyticsRouter.get(
   analyticsRateLimiter,
   setBusinessLocals,
 
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const businessId = res.locals.businessId as string
 
     logger.info(JSON.stringify({
@@ -87,15 +87,19 @@ analyticsRouter.get(
       path: req.path,
     }))
 
-    const periods = listAttestedPeriodsForBusiness(businessId)
+    try {
+      const periods = await listAttestedPeriodsForBusiness(businessId)
 
-    logger.info(JSON.stringify({
-      event: 'analytics.periods.response',
-      businessId,
-      count: periods.length,
-    }))
+      logger.info(JSON.stringify({
+        event: 'analytics.periods.response',
+        businessId,
+        count: periods.length,
+      }))
 
-    res.json({ periods })
+      res.json({ periods })
+    } catch (err) {
+      next(err)
+    }
   },
 
 )
@@ -130,6 +134,7 @@ analyticsRouter.get(
   setBusinessLocals,
   validateQuery(revenueReportQuerySchema),
 
+  async (req: Request, res: Response) => {
   async (req: Request, res: Response, next: NextFunction) => {
     const businessId = res.locals.businessId as string
     const { period, from, to } = req.query as Record<string, string | undefined>

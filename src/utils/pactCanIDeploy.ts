@@ -86,7 +86,8 @@ async function resolveBrokerBaseUrl(): Promise<string> {
 }
 
 async function defaultRunner(command: string, args: string[], options: ExecFileOptions): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync(command, args, options);
+  const { stdout, stderr } = await execFileAsync(command, args, options);
+  return { stdout: String(stdout), stderr: String(stderr) };
 }
 
 function delay(ms: number): Promise<void> {
