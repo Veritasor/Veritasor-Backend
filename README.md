@@ -25,7 +25,7 @@ Request flow: request logger and security headers, mTLS, API-version negotiation
 
 ## API surface
 
-Routers are mounted in `src/app.ts`. Some are also reachable under `/api/v1/...`; negotiate via the version middleware. Auto-generated map: [docs/api-routes.md](docs/api-routes.md) (`npm run docs:routes`); OpenAPI: `docs/openapi/` (`npm run docs:openapi`).
+Routers are mounted in `src/app.ts`. Some are also reachable under `/api/v1/...`; negotiate via the version middleware. Auto-generated map: [docs/api-routes.md](docs/api-routes.md) (`pnpm docs:routes`); OpenAPI: `docs/openapi/` (`pnpm docs:openapi`).
 
 | Mount | Endpoints (from router files) |
 | --- | --- |
@@ -68,6 +68,7 @@ The file is the authoritative, commented reference.
 - Docker for the local development stack
 
 CI uses pnpm (`pnpm-lock.yaml`); `package-lock.json` also exists and the Dockerfile uses `npm ci`.
+Requires Node.js 22 (as in CI) and Docker for the dev stack. The repo standardizes on pnpm (`pnpm-lock.yaml`).
 
 ```bash
 docker compose -f ops/dev/docker-compose.yml up -d   # Postgres, Redis, mock Soroban RPC (seeded dev data)
@@ -76,6 +77,9 @@ pnpm install            # or: npm install
 pnpm run typecheck      # run strict TypeScript type check (tsc --noEmit)
 pnpm run migrate        # apply SQL migrations
 pnpm run dev            # http://localhost:3000
+pnpm install            # install dependencies
+pnpm migrate            # apply SQL migrations
+pnpm dev                # http://localhost:3000
 ```
 
 Other scripts: `typecheck`, `build`, `start`, `lint`, `migrate:rollback`, `migrate:verify-rollback`, `docs:routes`, `docs:openapi`, `sbom:generate`, `perf:k6:*`, `soak`, `pact:test`, `test:mutation`. Reset the dev stack with `docker compose -f ops/dev/docker-compose.yml down -v`.
@@ -92,7 +96,7 @@ Before opening a pull request, run `pnpm lint` (configured via `eslint.config.js
 
 `.github/workflows/ci.yml` (push/PR to `main`) installs with `pnpm install --frozen-lockfile --ignore-scripts` and runs `tsc --noCheck --noEmit`. It is a minimal build gate, not the full test suite.
 
-The `Dockerfile` builds with `npm ci` and `npm run build`, and its `HEALTHCHECK` targets `/api/health/live`. For Kubernetes use `/api/health/live` for liveness and `/api/health/ready` for readiness. Production requires `JWT_SECRET`, `ALLOWED_ORIGINS` and `DATABASE_URL`. Operational runbooks: [docs/runbooks/](docs/runbooks/README.md).
+The `Dockerfile` builds the application, and its `HEALTHCHECK` targets `/api/health/live`. For Kubernetes use `/api/health/live` for liveness and `/api/health/ready` for readiness. Production requires `JWT_SECRET`, `ALLOWED_ORIGINS` and `DATABASE_URL`. Operational runbooks: [docs/runbooks/](docs/runbooks/README.md).
 
 ## Documentation
 
