@@ -17,6 +17,28 @@ import { execSync } from "node:child_process";
 import { RevenueKafkaConsumer } from "../../src/services/revenue/kafkaConsumer.js";
 import type { NormalizedRevenue } from "../../src/services/revenue/normalize.js";
 
+const { revenueRows, upsertCalls } = vi.hoisted(() => ({
+  revenueRows: new Map<string, { id: string; source: string }>(),
+  upsertCalls: [] as string[],
+}));
+
+vi.mock("../../src/repositories/revenueEntryRepository.js", () => ({
+  revenueEntryRepository: {
+    upsert: async (entry: { id: string; source: string }) => {
+      const key = `${entry.source}|${entry.id}`;
+      upsertCalls.push(key);
+      if (revenueRows.has(key)) {
+        return { entry: null, inserted: false };
+      }
+      const row = { id: entry.id, source: entry.source };
+      revenueRows.set(key, row);
+      return { entry: row, inserted: true };
+    },
+  },
+}));
+
+import { persistRevenueEntry } from "../../src/services/revenue/persistRevenueEntry.js";
+
 // ---------------------------------------------------------------------------
 // Docker availability guard
 // ---------------------------------------------------------------------------
@@ -239,4 +261,41 @@ describeFn("Kafka revenue consumer — integration (real Kafka)", () => {
     await consumer.start();
     await expect(consumer.stop()).resolves.toBeUndefined();
   }, 15_000);
+
+  it("stores a redelivered message only once through the persistence handler", async () => {
+    revenueRows.clear();
+    upsertCalls.length = 0;
+
+    const consumer = new RevenueKafkaConsumer({
+      brokers: [brokerUrl],
+      topic: TOPIC,
+      groupId: `${GROUP_ID}-idempotent`,
+      onRevenue: persistRevenueEntry,
+    });
+
+    await consumer.start();
+
+    const value = JSON.stringify({
+      id: "duplicate-001",
+      amount: 100,
+      currency: "USD",
+      source: "erp",
+    });
+    await produce([
+      { key: "duplicate-001", value },
+      { key: "duplicate-001", value },
+    ]);
+
+    await new Promise<void>((resolve) => {
+      const poll = setInterval(() => {
+        if (upsertCalls.length >= 2) { clearInterval(poll); resolve(); }
+      }, 200);
+      setTimeout(() => { clearInterval(poll); resolve(); }, 15_000);
+    });
+
+    await consumer.stop();
+
+    expect(upsertCalls).toEqual(["erp|duplicate-001", "erp|duplicate-001"]);
+    expect(revenueRows.size).toBe(1);
+  }, 40_000);
 });

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Attestation } from "../../types/attestation.js";
 
 const mocks = vi.hoisted(() => ({
-  connect: vi.fn(),
+  getClient: vi.fn(),
   query: vi.fn(),
   release: vi.fn(),
   getById: vi.fn(),
@@ -10,10 +10,40 @@ const mocks = vi.hoisted(() => ({
   createAuditLog: vi.fn(),
   getSorobanConfig: vi.fn(),
   createSorobanRpcServer: vi.fn(),
+  getAccount: vi.fn(),
+  prepareTransaction: vi.fn(),
+  sendTransaction: vi.fn(),
+  Contract: vi.fn(function () {
+    return {
+      call: vi.fn(() => ({})),
+    };
+  }),
+  TransactionBuilder: vi.fn(function () {
+    const builder = {
+      addOperation: vi.fn(() => builder),
+      setTimeout: vi.fn(() => builder),
+      build: vi.fn(() => ({})),
+    };
+    return builder;
+  }),
+  Keypair: {
+    fromSecret: vi.fn(() => ({ publicKey: () => "GTESTPUBLICKEY" })),
+  },
+  validateSendTransactionResponse: vi.fn(),
+  waitForConfirmation: vi.fn(),
+  SorobanSubmissionError: class SorobanSubmissionError extends Error {
+    code: string;
+    response: unknown;
+    constructor(message: string, code: string, response: unknown) {
+      super(message);
+      this.code = code;
+      this.response = response;
+    }
+  },
 }));
 
 vi.mock("../../db/client.js", () => ({
-  db: { connect: mocks.connect },
+  getPgClient: () => ({ getClient: mocks.getClient }),
 }));
 
 vi.mock("../../repositories/attestationRepository.js", () => ({
@@ -28,6 +58,20 @@ vi.mock("../../repositories/auditLogRepository.js", () => ({
 vi.mock("../soroban/client.js", () => ({
   getSorobanConfig: mocks.getSorobanConfig,
   createSorobanRpcServer: mocks.createSorobanRpcServer,
+}));
+
+vi.mock("../soroban/submitAttestation.js", () => ({
+  validateSendTransactionResponse: mocks.validateSendTransactionResponse,
+  waitForConfirmation: mocks.waitForConfirmation,
+  SorobanSubmissionError: mocks.SorobanSubmissionError,
+}));
+
+vi.mock("@stellar/stellar-sdk", () => ({
+  Contract: mocks.Contract,
+  TransactionBuilder: mocks.TransactionBuilder,
+  BASE_FEE: "100",
+  Keypair: mocks.Keypair,
+  nativeToScVal: (value: unknown) => value,
 }));
 
 import { revokeBatchAttestations } from "./revokeBatch.js";
@@ -52,9 +96,10 @@ const attestation: Attestation = {
 describe("revokeBatchAttestations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("SOROBAN_SOURCE_SECRET", "");
-    mocks.connect.mockResolvedValue(client);
+    vi.stubEnv("SOROBAN_SOURCE_SECRET", "test-source-secret");
+    mocks.getClient.mockResolvedValue(client);
     mocks.query.mockResolvedValue(undefined);
+    mocks.release.mockReturnValue(undefined);
     mocks.getById.mockImplementation(async (_client, id: string) => ({
       ...attestation,
       id,
@@ -66,7 +111,22 @@ describe("revokeBatchAttestations", () => {
       networkPassphrase: "network-passphrase",
       rpcUrl: "http://localhost",
     });
-    mocks.createSorobanRpcServer.mockReturnValue({});
+    mocks.getAccount.mockResolvedValue({ accountId: () => "GTESTPUBLICKEY" });
+    mocks.prepareTransaction.mockImplementation((tx: unknown) => ({
+      ...(tx as object),
+      sign: vi.fn(),
+    }));
+    mocks.sendTransaction.mockResolvedValue({
+      status: "PENDING",
+      hash: "transaction-hash",
+    });
+    mocks.validateSendTransactionResponse.mockReturnValue(undefined);
+    mocks.waitForConfirmation.mockResolvedValue(undefined);
+    mocks.createSorobanRpcServer.mockReturnValue({
+      getAccount: mocks.getAccount,
+      prepareTransaction: mocks.prepareTransaction,
+      sendTransaction: mocks.sendTransaction,
+    });
   });
 
   afterEach(() => {
@@ -77,7 +137,7 @@ describe("revokeBatchAttestations", () => {
     await expect(revokeBatchAttestations([], "admin-1")).rejects.toThrow(
       "No attestations provided for revocation.",
     );
-    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.getClient).not.toHaveBeenCalled();
   });
 
   it("rejects batches larger than 500 before opening a database connection", async () => {
@@ -86,7 +146,7 @@ describe("revokeBatchAttestations", () => {
     await expect(revokeBatchAttestations(ids, "admin-1")).rejects.toThrow(
       "Batch size capped at 500",
     );
-    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.getClient).not.toHaveBeenCalled();
   });
 
   it("rolls back and releases the connection when an attestation is missing", async () => {
@@ -114,26 +174,34 @@ describe("revokeBatchAttestations", () => {
     expect(mocks.release).toHaveBeenCalledOnce();
   });
 
-  it("returns the attestations and commits a successful batch", async () => {
+  it("persists revoked status for every successful on-chain revocation before committing", async () => {
     const ids = ["attestation-1", "attestation-2"];
 
-    await expect(revokeBatchAttestations(ids, "admin-1")).resolves.toEqual(
-      ids.map((id) => ({ ...attestation, id })),
-    );
+    await expect(revokeBatchAttestations(ids, "admin-1")).resolves.toEqual({
+      revoked: ids,
+      failed: [],
+    });
 
     expect(mocks.updateStatus).toHaveBeenCalledTimes(2);
+    for (const id of ids) {
+      expect(mocks.updateStatus).toHaveBeenCalledWith(client, id, "revoked");
+    }
     expect(mocks.createAuditLog).toHaveBeenCalledTimes(2);
     expect(mocks.query).toHaveBeenNthCalledWith(1, "BEGIN");
     expect(mocks.query).toHaveBeenNthCalledWith(2, "COMMIT");
+    expect(mocks.updateStatus.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.query.mock.invocationCallOrder[1],
+    );
     expect(mocks.release).toHaveBeenCalledOnce();
   });
 
   it("accepts the maximum batch size of 500", async () => {
     const ids = Array.from({ length: 500 }, (_, index) => `attestation-${index}`);
 
-    await expect(revokeBatchAttestations(ids, "admin-1")).resolves.toHaveLength(
-      500,
-    );
+    const result = await revokeBatchAttestations(ids, "admin-1");
+
+    expect(result.revoked).toHaveLength(500);
+    expect(result.failed).toEqual([]);
     expect(mocks.getById).toHaveBeenCalledTimes(500);
     expect(mocks.query).toHaveBeenLastCalledWith("COMMIT");
   });

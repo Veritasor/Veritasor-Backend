@@ -9,39 +9,20 @@ import { logger } from "../../utils/logger.js";
 // Typed error class — replaces the (err as any).transient hack
 // ---------------------------------------------------------------------------
 
-/**
- * Thrown by {@link FastlyClient.purge} when a request fails.
- *
- * `transient` is `true` for errors that may succeed on retry (5xx, 429,
- * connection-level errors like ECONNRESET). It is `false` for permanent
- * failures (4xx other than 429).
- */
 export class FastlyPurgeError extends Error {
+  public readonly status?: number;
   public readonly transient: boolean;
 
-  constructor(message: string, transient: boolean) {
+  constructor(message: string, transient: boolean, status?: number) {
     super(message);
     this.name = "FastlyPurgeError";
     this.transient = transient;
+    this.status = status;
   }
 }
 
 /** Node.js network error codes that should be retried. */
 const RETRYABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTCONN"]);
-
-/**
- * Typed error thrown when a Fastly purge request fails with a non-2xx HTTP status.
- */
-export class FastlyPurgeError extends Error {
-  constructor(
-    message: string,
-    public readonly status?: number,
-    public readonly transient = false,
-  ) {
-    super(message);
-    this.name = "FastlyPurgeError";
-  }
-}
 
 /**
  * Fastly CDN client implementation.
@@ -102,18 +83,12 @@ export class FastlyClient implements CdnClient {
               if (status >= 200 && status < 300) {
                 resolve();
               } else {
-                const isTransient = Boolean(res.statusCode && res.statusCode >= 500);
-                reject(
-                  new FastlyPurgeError(
-                    `Fastly purge failed with status ${res.statusCode}: ${data}`,
-                    res.statusCode,
-                    isTransient,
-                // 429 Too Many Requests is transient; all other 4xx are not.
                 const transient = status >= 500 || status === 429;
                 reject(
                   new FastlyPurgeError(
                     `Fastly purge failed with status ${status}: ${data}`,
                     transient,
+                    status,
                   ),
                 );
               }
@@ -137,14 +112,9 @@ export class FastlyClient implements CdnClient {
         // Success — exit retry loop.
         return;
       } catch (err) {
-        const isTransient = err instanceof FastlyPurgeError ? err.transient : false;
-        const message = err instanceof Error ? err.message : String(err);
-        logger.error(`Fastly purge attempt ${attempt} failed: ${message}`);
-        if (!isTransient || attempt >= maxAttempts) {
-          throw err;
         const purgeErr = err instanceof FastlyPurgeError
           ? err
-          : new FastlyPurgeError((err as Error).message, false);
+          : new FastlyPurgeError(err instanceof Error ? err.message : String(err), false);
 
         logger.error(`Fastly purge attempt ${attempt} failed: ${purgeErr.message}`);
 

@@ -9,6 +9,7 @@
  *   GET    /api/v1/webhook-subscriptions          - List subscriptions
  *   GET    /api/v1/webhook-subscriptions/:id      - Get a subscription
  *   PATCH  /api/v1/webhook-subscriptions/:id      - Update a subscription
+ *   POST   /api/v1/webhook-subscriptions/:id/rotate-secret - Rotate the signing secret
  *   DELETE /api/v1/webhook-subscriptions/:id      - Delete a subscription
  *
  * @module routes/webhook-subscriptions
@@ -22,6 +23,7 @@ import { NotFoundError, ConflictError } from "../types/errors.js";
 import {
   createWebhookSubscriptionSchema,
   updateWebhookSubscriptionSchema,
+  rotateWebhookSubscriptionSecretSchema,
   listWebhookSubscriptionsQuerySchema,
 } from "../schemas/webhookSubscription.js";
 import * as repo from "../repositories/webhookSubscriptionRepository.js";
@@ -132,6 +134,37 @@ webhookSubscriptionsRouter.patch(
     }
 
     res.status(200).json({ status: "success", data: repo.toPublicSubscription(updated) });
+  }),
+);
+
+/**
+ * POST /api/v1/webhook-subscriptions/:id/rotate-secret
+ *
+ * Generate a new signing secret and keep the previous one verifiable for the
+ * requested grace window. The plaintext secret is returned only by this call.
+ */
+webhookSubscriptionsRouter.post(
+  "/:id/rotate-secret",
+  requireBusinessAuth,
+  validateBody(rotateWebhookSubscriptionSecretSchema),
+  asyncErrorHandler(async (req, res) => {
+    const rotated = await repo.rotateSecret(
+      req.params.id,
+      req.business!.id,
+      req.body.gracePeriodSeconds,
+    );
+    if (!rotated) {
+      throw new NotFoundError("Webhook subscription not found");
+    }
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        ...repo.toPublicSubscription(rotated),
+        secret: rotated.secret,
+        previousSecretExpiresAt: rotated.previousSecretExpiresAt,
+      },
+    });
   }),
 );
 

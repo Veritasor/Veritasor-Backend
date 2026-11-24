@@ -7,6 +7,7 @@ import type {
   ListWebhookSubscriptionsQuery,
 } from "../schemas/webhookSubscription.js";
 import { secretLoader } from "../utils/secret-loader.js";
+import { ConflictError } from "../types/errors.js";
 
 export interface WebhookMTLSConfig {
   clientCertSecretId: string;
@@ -23,6 +24,9 @@ export interface WebhookSubscription {
   enabled: boolean;
   maxPayloadSize: number | null;
   secretVersion: number;
+  previousSecret?: string | null;
+  previousSecretVersion?: number | null;
+  previousSecretExpiresAt?: Date | null;
   mtlsConfig: WebhookMTLSConfig | null;
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +47,8 @@ export interface PublicWebhookSubscription {
 }
 
 const WEBHOOK_SECRET_ENCRYPTION_KEY = "WEBHOOK_SUBSCRIPTION_ENCRYPTION_KEY";
+const DEFAULT_ROTATION_GRACE_PERIOD_SECONDS = 300;
+const GENERATED_SECRET_BYTES = 32;
 
 // Webhook signing secrets are encrypted at rest using the app's secret loader.
 // Existing plaintext rows are still readable via decryptStoredSecret() and are re-encrypted
@@ -135,6 +141,16 @@ function mapRow(row: Record<string, unknown>): WebhookSubscription {
     enabled: (row.enabled as boolean) ?? true,
     maxPayloadSize: (row.max_payload_size as number) ?? null,
     secretVersion: (row.secret_version as number) ?? 1,
+    previousSecret: row.previous_secret
+      ? decryptStoredSecret(row.previous_secret as string)
+      : null,
+    previousSecretVersion:
+      row.previous_secret_version === null || row.previous_secret_version === undefined
+        ? null
+        : Number(row.previous_secret_version),
+    previousSecretExpiresAt: row.previous_secret_expires_at
+      ? new Date(row.previous_secret_expires_at as string | Date)
+      : null,
     mtlsConfig: (row.mtls_config as WebhookMTLSConfig) ?? null,
     createdAt: new Date(row.created_at as string),
     updatedAt: new Date(row.updated_at as string),
@@ -298,6 +314,52 @@ export async function update(
   );
 
   if (result.rows.length === 0) return null;
+  return mapRow(result.rows[0] as Record<string, unknown>);
+}
+
+/**
+ * Rotate a subscription's signing secret and keep the previous secret valid
+ * for a bounded dual-signing window. The new plaintext secret is returned only
+ * to the caller; persisted values remain encrypted when a key is configured.
+ */
+export async function rotateSecret(
+  id: string,
+  businessId: string,
+  gracePeriodSeconds: number = DEFAULT_ROTATION_GRACE_PERIOD_SECONDS,
+): Promise<WebhookSubscription | null> {
+  const existing = await getById(id, businessId);
+  if (!existing) return null;
+
+  if (
+    existing.previousSecretExpiresAt &&
+    existing.previousSecretExpiresAt.getTime() > Date.now()
+  ) {
+    throw new ConflictError(
+      "A secret rotation is already in progress for this subscription",
+    );
+  }
+
+  const newSecret = randomBytes(GENERATED_SECRET_BYTES).toString("base64url");
+  const result = await db.query(
+    `UPDATE webhook_subscriptions
+     SET previous_secret = secret,
+         previous_secret_version = secret_version,
+         previous_secret_expires_at = now() + make_interval(secs => $3::double precision),
+         secret = $4,
+         secret_version = secret_version + 1,
+         updated_at = now()
+     WHERE id = $1 AND business_id = $2
+       AND (previous_secret_expires_at IS NULL OR previous_secret_expires_at <= now())
+     RETURNING *`,
+    [id, businessId, gracePeriodSeconds, encryptStoredSecret(newSecret)],
+  );
+
+  if (result.rows.length === 0) {
+    throw new ConflictError(
+      "A secret rotation is already in progress for this subscription",
+    );
+  }
+
   return mapRow(result.rows[0] as Record<string, unknown>);
 }
 

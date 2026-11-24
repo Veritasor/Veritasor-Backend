@@ -33,6 +33,12 @@ export interface WebhookSubscription {
   maxPayloadSize?: number;
   /** Monotonically increasing version of the webhook secret, used for rotation tracking. */
   secretVersion?: number;
+  /** Previous secret kept verifiable during a rotation grace window. */
+  previousSecret?: string | null;
+  /** Version of the previous secret. */
+  previousSecretVersion?: number | null;
+  /** Expiry of the rotation grace window. */
+  previousSecretExpiresAt?: Date | string | null;
   /** Per-event filter DSL. Maps event types to boolean or filter objects. */
   eventFilters?: Record<string, boolean | Record<string, string>>;
   mtlsConfig?: WebhookMTLSConfig | null;
@@ -43,6 +49,31 @@ export interface WebhookDeliveryReceipt {
   attempt: number;
   signature: string;
   timestamp: string;
+}
+
+function computeSignature(
+  secret: string,
+  deliveryId: string,
+  attempt: number | string,
+  timestamp: string,
+  serializedPayload: string,
+): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update(`${deliveryId}.${attempt}.${timestamp}.${serializedPayload}`)
+    .digest("hex");
+}
+
+function previousSecretUsable(
+  subscription: WebhookSubscription,
+  now: number,
+): boolean {
+  if (!subscription.previousSecret || !subscription.previousSecretExpiresAt) {
+    return false;
+  }
+
+  const expiresAt = new Date(subscription.previousSecretExpiresAt).getTime();
+  return Number.isFinite(expiresAt) && expiresAt > now;
 }
 
 /**
@@ -80,19 +111,37 @@ export function signAndPrepareDelivery(
   const deliveryId = crypto.randomUUID();
   const timestamp = Math.floor(Date.now() / 1000).toString();
   
-  // Compute standard HMAC-SHA256 signature over the payload with the business subscription secret
-  const signature = crypto
-    .createHmac("sha256", subscription.secret)
-    .update(`${deliveryId}.${attempt}.${timestamp}.${serializedPayload}`)
-    .digest("hex");
+  const now = Date.now();
+  const signature = computeSignature(
+    subscription.secret,
+    deliveryId,
+    attempt,
+    timestamp,
+    serializedPayload,
+  );
 
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Veritasor-Delivery-Id": deliveryId,
     "X-Veritasor-Attempt": attempt.toString(),
     "X-Veritasor-Timestamp": timestamp,
     "X-Veritasor-Signature": signature,
+    "X-Veritasor-Signature-Alg": "hmac-sha256",
+    "X-Veritasor-Signature-Version": String(subscription.secretVersion ?? 1),
   };
+
+  if (previousSecretUsable(subscription, now)) {
+    headers["X-Veritasor-Previous-Signature"] = computeSignature(
+      subscription.previousSecret as string,
+      deliveryId,
+      attempt,
+      timestamp,
+      serializedPayload,
+    );
+    headers["X-Veritasor-Previous-Signature-Version"] = String(
+      subscription.previousSecretVersion ?? (subscription.secretVersion ?? 1) - 1,
+    );
+  }
 
   const receipt: WebhookDeliveryReceipt = {
     delivery_id: deliveryId,
@@ -108,6 +157,7 @@ export interface VerifyWebhookOptions {
   payload: string;
   headers: Record<string, string | string[] | undefined>;
   secret: string;
+  previousSecret?: string | null;
   toleranceMs?: number; // default 5 minutes
 }
 
@@ -130,7 +180,13 @@ export interface VerifyWebhookOptions {
  * 6. To protect against reorder attacks across delivery attempts, track the highest `attempt` seen for a given `deliveryId`.
  */
 export function verifyWebhookSignature(options: VerifyWebhookOptions): boolean {
-  const { payload, headers, secret, toleranceMs = 5 * 60 * 1000 } = options;
+  const {
+    payload,
+    headers,
+    secret,
+    previousSecret,
+    toleranceMs = 5 * 60 * 1000,
+  } = options;
 
   const getHeader = (name: string) => headers[name] ?? headers[name.toLowerCase()];
   
@@ -161,13 +217,6 @@ export function verifyWebhookSignature(options: VerifyWebhookOptions): boolean {
     return false;
   }
 
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(`${deliveryIdStr}.${attemptStr}.${timestampStr}.${payload}`)
-    .digest("hex");
-
-  const expectedBuffer = Buffer.from(expectedSignature, "hex");
-  
   let providedBuffer: Buffer;
   try {
     providedBuffer = Buffer.from(signatureStr, "hex");
@@ -175,11 +224,27 @@ export function verifyWebhookSignature(options: VerifyWebhookOptions): boolean {
     return false;
   }
 
-  if (expectedBuffer.length !== providedBuffer.length) {
-    return false;
+  const secrets = [secret, ...(previousSecret ? [previousSecret] : [])];
+  for (const candidate of secrets) {
+    const expectedBuffer = Buffer.from(
+      computeSignature(
+        candidate,
+        deliveryIdStr,
+        attemptStr,
+        timestampStr,
+        payload,
+      ),
+      "hex",
+    );
+    if (
+      expectedBuffer.length === providedBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, providedBuffer)
+    ) {
+      return true;
+    }
   }
 
-  return crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+  return false;
 }
 
 export interface SendWebhookDeliveryOptions {
@@ -314,7 +379,7 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
     url,
     statusCode,
     latencyMs,
-    signatureVersion: 1,
+    signatureVersion: subscription.secretVersion ?? 1,
     signature: receipt.signature,
     responseBody,
   });
@@ -325,7 +390,7 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
     statusCode,
     latencyMs,
     signature: receipt.signature,
-    signatureVersion: 1,
+    signatureVersion: subscription.secretVersion ?? 1,
     responseBody,
   };
 }
