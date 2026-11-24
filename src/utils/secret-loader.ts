@@ -1,7 +1,9 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import dotenv from 'dotenv'
-import { logger } from './logger.js'
+/**
+ * Public facade and provider selection. Provider adapters live in secrets/{env,
+ * file,aws,gsm,vault}.ts; base.ts owns the shared contract/errors, failover.ts
+ * coordinates reload/fallback, and kms-disk-cache.ts owns encrypted caching.
+ * Cloud SDK imports stay inside provider reload/client methods and cache I/O.
+ */
 import { config } from '../config/index.js'
 import {
   vaultLeaseSecondsRemaining,
@@ -713,6 +715,20 @@ class FailoverSecretLoader extends BaseSecretAdapter {
     ])
   }
 }
+import { BaseSecretAdapter, SecretLoadError } from './secrets/base.js'
+import type { SecretAdapter, SecretLoader, SecretLoaderOptions, SecretProvider } from './secrets/base.js'
+import { EnvAdapter } from './secrets/env.js'
+import { FileAdapter } from './secrets/file.js'
+import { AwsSecretsAdapter } from './secrets/aws.js'
+import { GsmSecretAdapter } from './secrets/gsm.js'
+import { VaultAdapter } from './secrets/vault.js'
+import { KmsDiskCache } from './secrets/kms-disk-cache.js'
+import { FailoverSecretLoader } from './secrets/failover.js'
+
+export type { SecretAdapter, SecretLoader, SecretLoaderOptions, SecretProvider } from './secrets/base.js'
+export { SecretLoaderError, SecretNotFoundError, SecretNotLoadedError, SecretLoadError } from './secrets/base.js'
+export { EnvAdapter, FileAdapter, AwsSecretsAdapter, GsmSecretAdapter, VaultAdapter }
+export type { VaultLease, VaultAdapterOptions } from './secrets/vault.js'
 
 export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAdapter {
   const provider =
