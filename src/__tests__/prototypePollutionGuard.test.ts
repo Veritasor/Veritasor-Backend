@@ -153,7 +153,7 @@ describe("Prototype Pollution Guard", () => {
       expect(hasForbiddenKeys(obj1)).toBe(true);
 
       const obj2: Record<string, unknown> = { a: { b: {} } };
-      Object.defineProperty(obj2.a.b, "constructor", {
+      Object.defineProperty((obj2.a as Record<string, unknown>).b, "constructor", {
         value: 1,
         enumerable: true,
         configurable: true,
@@ -161,7 +161,7 @@ describe("Prototype Pollution Guard", () => {
       expect(hasForbiddenKeys(obj2)).toBe(true);
 
       const obj3: Record<string, unknown> = { a: [{}] };
-      Object.defineProperty(obj3.a[0], "prototype", {
+      Object.defineProperty((obj3.a as unknown[])[0], "prototype", {
         value: {},
         enumerable: true,
         configurable: true,
