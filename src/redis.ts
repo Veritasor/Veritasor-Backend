@@ -367,28 +367,12 @@ export class RedisCircuitBreaker {
     if (redisCircuitBreakerFailuresTotal && typeof redisCircuitBreakerFailuresTotal.inc === "function") {
       redisCircuitBreakerFailuresTotal.inc();
     }
-    
-    if (this.state === CircuitState.HALF_OPEN) {
-      // Probe failed, go back to OPEN
+    this.failures++;
+    if (this.state === CircuitState.HALF_OPEN || this.failures >= this.failureThreshold) {
       this.transition(CircuitState.OPEN);
-      return;
-    }
-    
-    if (this.state === CircuitState.CLOSED) {
-      this.failures++;
-      if (this.failures >= this.failureThreshold) {
-        this.transition(CircuitState.OPEN);
-      }
     }
   }
 
-  /**
-   * Reset the circuit breaker (for tests).
-   */
-  reset(): void {
-    this.transition(CircuitState.CLOSED);
-  }
-  
   getState(): CircuitState {
     return this.state;
   }
