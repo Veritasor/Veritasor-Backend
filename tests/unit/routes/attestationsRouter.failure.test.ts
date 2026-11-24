@@ -64,6 +64,17 @@ vi.mock("../../../src/middleware/rateLimiter.js", () => ({
   rateLimiter: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
 
+vi.mock("../../../src/middleware/requireAuth.js", () => ({
+  requireAuth: (
+    req: { user?: unknown },
+    _res: unknown,
+    next: () => void,
+  ) => {
+    req.user = { id: "user_1", userId: "user_1", email: "user@example.com", role: "admin" };
+    next();
+  },
+}));
+
 vi.mock("../../../src/services/attestation/revoke.js", () => ({
   revokeAttestation: vi.fn(),
 }));
@@ -234,6 +245,76 @@ describe("DELETE/POST /:id/revoke — neighbouring normal and boundary paths", (
       "att_1",
       "revoked",
     );
+  });
+
+  it("publishes exactly one attestation.revoked event for the revoked business", async () => {
+    mocks.attestationRepository.getById.mockResolvedValue(row());
+    mocks.attestationRepository.updateStatus.mockResolvedValue(
+      row({
+        status: "revoked",
+        version: 4,
+        updatedAt: new Date("2026-01-07T09:30:00.000Z"),
+      }),
+    );
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/revoke")
+      .set(AUTH)
+      .send({ reason: "confirmed fraud" });
+
+    expect(res.status).toBe(200);
+    expect(mocks.broadcasterPublish).toHaveBeenCalledTimes(1);
+    expect(mocks.broadcasterPublish).toHaveBeenCalledWith({
+      type: "attestation.revoked",
+      businessId: BUSINESS_ID,
+      attestationId: "att_1",
+      period: "2026-01",
+      timestamp: expect.any(String),
+    });
+    // The timestamp is a real ISO-8601 instant, not an opaque value.
+    const event = mocks.broadcasterPublish.mock.calls[0][0] as { timestamp: string };
+    expect(new Date(event.timestamp).toISOString()).toBe(event.timestamp);
+  });
+
+  it("also publishes when revoking via DELETE", async () => {
+    mocks.attestationRepository.getById.mockResolvedValue(row());
+    mocks.attestationRepository.updateStatus.mockResolvedValue(
+      row({ status: "revoked", version: 4 }),
+    );
+
+    const res = await request(app).delete("/api/attestations/att_1/revoke").set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(mocks.broadcasterPublish).toHaveBeenCalledTimes(1);
+    expect(mocks.broadcasterPublish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "attestation.revoked",
+        businessId: BUSINESS_ID,
+        attestationId: "att_1",
+        period: "2026-01",
+      }),
+    );
+  });
+
+  it("does not fail the response when publishing the event throws", async () => {
+    const loggerWarn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    mocks.attestationRepository.getById.mockResolvedValue(row());
+    mocks.attestationRepository.updateStatus.mockResolvedValue(
+      row({ status: "revoked", version: 4 }),
+    );
+    mocks.broadcasterPublish.mockImplementation(() => {
+      throw new Error("socket server unavailable");
+    });
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/revoke")
+      .set(AUTH)
+      .send({ reason: "confirmed fraud" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("success");
+    expect(res.body.data).toMatchObject({ id: "att_1", status: "revoked" });
+    expect(loggerWarn).toHaveBeenCalled();
   });
 
   it("returns 400 ALREADY_REVOKED without performing a second transition", async () => {

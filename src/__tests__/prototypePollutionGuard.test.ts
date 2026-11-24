@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../app.js";
+import { hasForbiddenKeys, scanForForbiddenKeys } from "../middleware/prototypePollution.js";
 import { hasForbiddenKeys, hasForbiddenQuery } from "../middleware/prototypePollution.js";
 import type { StartupReadinessReport } from "../startup/readiness.js";
 
@@ -144,6 +145,9 @@ describe("Prototype Pollution Guard", () => {
 
   describe("hasForbiddenKeys unit validation", () => {
     it("detects forbidden keys in arbitrary objects and arrays", () => {
+      expect(hasForbiddenKeys(JSON.parse('{"__proto__":{}}'))).toBe(true);
+      expect(hasForbiddenKeys({ a: { b: { constructor: 1 } } })).toBe(true);
+      expect(hasForbiddenKeys({ a: [{ prototype: {} }] })).toBe(true);
       const obj1: Record<string, unknown> = {};
       Object.defineProperty(obj1, "__proto__", {
         value: {},
@@ -419,6 +423,160 @@ describe("Prototype Pollution Guard", () => {
       } as any;
 
       expect(hasForbiddenQuery(mockReq)).toBe(false);
+    });
+  });
+
+  describe("scanForForbiddenKeys tri-state validation", () => {
+    it("reports clean for benign payloads within limits", () => {
+      expect(scanForForbiddenKeys({ a: 1, b: [1, 2, 3] })).toBe("clean");
+      expect(
+        scanForForbiddenKeys({ nested: { deep: { value: "ok" } } }, 5, 20),
+      ).toBe("clean");
+    });
+
+    it("reports forbidden when a forbidden key is found", () => {
+      expect(
+        scanForForbiddenKeys(JSON.parse('{"__proto__":{"polluted":true}}')),
+      ).toBe("forbidden");
+      expect(scanForForbiddenKeys({ a: { b: { constructor: 1 } } })).toBe(
+        "forbidden",
+      );
+    });
+
+    it("reports limit_exceeded when the key budget is exceeded", () => {
+      const payload: Record<string, unknown> = {};
+      for (let i = 0; i < 2001; i++) {
+        payload[`k${i}`] = i;
+      }
+      Object.defineProperty(payload, "__proto__", {
+        value: { polluted: true },
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+      expect(scanForForbiddenKeys(payload)).toBe("limit_exceeded");
+    });
+
+    it("reports limit_exceeded when the depth budget is exceeded", () => {
+      const root: Record<string, unknown> = {};
+      let current = root;
+      for (let i = 0; i < 31; i++) {
+        const next: Record<string, unknown> = {};
+        Object.defineProperty(current, "a", {
+          value: next,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+        current = next;
+      }
+      Object.defineProperty(current, "__proto__", {
+        value: { polluted: true },
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+      expect(scanForForbiddenKeys(root)).toBe("limit_exceeded");
+    });
+
+    it("honors configurable depth and key limits", () => {
+      expect(scanForForbiddenKeys({ a: { b: 1 } }, 1, 10)).toBe(
+        "limit_exceeded",
+      );
+      expect(scanForForbiddenKeys({ a: { b: 1 } }, 2, 10)).toBe("clean");
+      expect(scanForForbiddenKeys({ a: { b: 1, c: 2 } }, 30, 2)).toBe(
+        "limit_exceeded",
+      );
+    });
+  });
+
+  describe("Fail-closed budget limits", () => {
+    it("rejects with 400 VALIDATION_ERROR when 2001 benign siblings exhaust the key budget before a __proto__ key", async () => {
+      const payload: Record<string, unknown> = {};
+      for (let i = 0; i < 2001; i++) {
+        payload[`k${i}`] = i;
+      }
+      Object.defineProperty(payload, "__proto__", {
+        value: { polluted: true },
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+
+      expect(scanForForbiddenKeys(payload)).toBe("limit_exceeded");
+
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send(payload);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+    });
+
+    it("rejects with 400 VALIDATION_ERROR when nesting reaches depth 31 with the forbidden key beyond the maxDepth budget", async () => {
+      const root: Record<string, unknown> = {};
+      let current = root;
+      for (let i = 0; i < 31; i++) {
+        const next: Record<string, unknown> = {};
+        Object.defineProperty(current, "a", {
+          value: next,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+        current = next;
+      }
+      Object.defineProperty(current, "__proto__", {
+        value: { polluted: true },
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+
+      expect(scanForForbiddenKeys(root)).toBe("limit_exceeded");
+
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send(root);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+    });
+
+    it("passes a large benign payload through to the next middleware under the limits", async () => {
+      const payload: Record<string, unknown> = {
+        email: "benign@example.com",
+        password: "benign-password-1234",
+      };
+      for (let i = 0; i < 1500; i++) {
+        payload[`bulk_${i}`] = i;
+      }
+      payload.nested = { a: { b: { c: { d: "leaf" } } } };
+
+      expect(scanForForbiddenKeys(payload)).toBe("clean");
+      expect(hasForbiddenKeys(payload)).toBe(false);
+
+      const res = await request(app)
+        .post("/api/auth/login")
+        .set("Content-Type", "application/json")
+        .send(payload);
+
+      expect(res.body).not.toEqual({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+      expect(res.status).not.toBe(500);
     });
   });
 });

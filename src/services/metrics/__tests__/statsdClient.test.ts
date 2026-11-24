@@ -250,19 +250,19 @@ describe('StatsDClient', () => {
   });
 
   describe('close', () => {
-    it('closes the underlying StatsD client', () => {
+    it('closes the underlying StatsD client', async () => {
       await client.close();
       const instance = getInstance();
       expect(instance.close).toHaveBeenCalled();
     });
 
-    it('can be called multiple times safely', () => {
+    it('can be called multiple times safely', async () => {
       await client.close();
       await client.close();
       // Should not throw
     });
 
-    it('resolves even when the underlying close fails', () => {
+    it('resolves even when the underlying close fails', async () => {
       const instance = getInstance();
       instance.close.mockImplementation(() => {
         throw new Error('close failed');

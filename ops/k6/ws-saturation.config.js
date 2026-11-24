@@ -86,13 +86,15 @@ export function createWsSaturationRuntimeConfig(env = {}) {
   };
 }
 
-export function buildWsUrl(baseUrl, path, token) {
+export function buildWsUrl(baseUrl, path) {
   const wsProtocol = baseUrl.startsWith("https://") ? "wss://" : "ws://";
   const host = baseUrl.replace(/^https?:\/\//, "");
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const url = `${wsProtocol}${host}${cleanPath}`;
-  if (!token) return url;
-  return `${url}?token=${encodeURIComponent(token)}`;
+  return `${wsProtocol}${host}${cleanPath}`;
+}
+
+export function buildWsAuthHeaders(token) {
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export function validateMessagePayload(payload) {

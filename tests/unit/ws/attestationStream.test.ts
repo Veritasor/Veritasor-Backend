@@ -23,9 +23,31 @@ vi.mock("../../../src/metrics.js", () => ({
   wsMessagesDroppedTotal: { inc: vi.fn() },
 }));
 
+const wsConfigState = vi.hoisted(() => ({ allowQueryToken: true }));
+
+vi.mock("../../../src/config/index.js", () => ({
+  config: {
+    ws: {
+      get allowQueryToken() {
+        return wsConfigState.allowQueryToken;
+      },
+    },
+  },
+}));
+
+vi.mock("../../../src/utils/logger.js", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 import { verifyToken } from "../../../src/utils/jwt.js";
 import { businessRepository } from "../../../src/repositories/business.js";
 import { wsConnections, wsMessagesTotal, wsMessagesDroppedTotal } from "../../../src/metrics.js";
+import { logger } from "../../../src/utils/logger.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — minimal WebSocket stub
@@ -342,6 +364,8 @@ describe("attachAttestationStream live server integration", () => {
   let port: number;
 
   beforeEach(async () => {
+    vi.clearAllMocks();
+    wsConfigState.allowQueryToken = true;
     server = createServer();
     wss = attachAttestationStream(server);
     await new Promise<void>((resolve) => {
@@ -389,6 +413,106 @@ describe("attachAttestationStream live server integration", () => {
       client.on("close", (c) => resolve(c));
     });
     expect(code).toBe(1008);
+  });
+
+  it.each([true, false])(
+    "accepts Authorization Bearer header when WS_ALLOW_QUERY_TOKEN=%s",
+    async (allowQueryToken) => {
+      wsConfigState.allowQueryToken = allowQueryToken;
+      (verifyToken as any).mockReturnValue({ userId: "u-header", email: "header@test.com" });
+      (businessRepository.getByUserId as any).mockResolvedValue({ id: "biz-header" });
+
+      const client = new WebSocket(
+        `ws://127.0.0.1:${port}/api/v1/ws/attestations`,
+        { headers: { Authorization: "Bearer header-jwt-token" } },
+      );
+
+      const opened = await new Promise<boolean>((resolve) => {
+        client.on("open", () => {
+          client.close();
+          resolve(true);
+        });
+        client.on("error", () => resolve(false));
+        client.on("close", () => resolve(false));
+      });
+
+      expect(opened).toBe(true);
+      expect(verifyToken).toHaveBeenCalledWith("header-jwt-token");
+    },
+  );
+
+  it("ignores and rejects ?token= when WS_ALLOW_QUERY_TOKEN=false", async () => {
+    wsConfigState.allowQueryToken = false;
+    (verifyToken as any).mockReturnValue({ userId: "u-query", email: "query@test.com" });
+    (businessRepository.getByUserId as any).mockResolvedValue({ id: "biz-query" });
+
+    const client = new WebSocket(
+      `ws://127.0.0.1:${port}/api/v1/ws/attestations?token=query-jwt-token`,
+    );
+    const code = await new Promise<number>((resolve) => {
+      client.on("close", (c) => resolve(c));
+    });
+
+    expect(code).toBe(1008);
+    expect(verifyToken).not.toHaveBeenCalled();
+  });
+
+  it("accepts ?token= when WS_ALLOW_QUERY_TOKEN=true and logs a redacted deprecation warning", async () => {
+    wsConfigState.allowQueryToken = true;
+    (verifyToken as any).mockReturnValue({ userId: "u-query", email: "query@test.com" });
+    (businessRepository.getByUserId as any).mockResolvedValue({ id: "biz-query" });
+
+    const rawToken = "query-jwt-token";
+    const client = new WebSocket(
+      `ws://127.0.0.1:${port}/api/v1/ws/attestations?token=${rawToken}`,
+    );
+    const opened = await new Promise<boolean>((resolve) => {
+      client.on("open", () => {
+        client.close();
+        resolve(true);
+      });
+      client.on("error", () => resolve(false));
+      client.on("close", () => resolve(false));
+    });
+
+    expect(opened).toBe(true);
+    expect(verifyToken).toHaveBeenCalledWith(rawToken);
+
+    expect(logger.warn).toHaveBeenCalled();
+    const logged = JSON.stringify((logger.warn as ReturnType<typeof vi.fn>).mock.calls);
+    expect(logged).toContain("deprecated");
+    expect(logged).toContain("ws.query_token_deprecated");
+    expect(logged).not.toContain(rawToken);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS_ALLOW_QUERY_TOKEN config resolution (real config module)
+// ---------------------------------------------------------------------------
+
+describe("WS_ALLOW_QUERY_TOKEN production default", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    vi.resetModules();
+  });
+
+  it("defaults to false with NODE_ENV=production and WS_ALLOW_QUERY_TOKEN unset", async () => {
+    vi.resetModules();
+    process.env.NODE_ENV = "production";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+    process.env.ALLOWED_ORIGINS = "https://example.com";
+    process.env.JWT_SECRET = "a-very-long-and-secure-secret-that-is-over-32-chars";
+    process.env.PERSISTED_QUERY_SECRET =
+      "a-very-long-and-secure-persisted-query-secret-over-32-chars";
+    delete process.env.WS_ALLOW_QUERY_TOKEN;
+
+    const actual = await vi.importActual<typeof import("../../../src/config/index.js")>(
+      "../../../src/config/index.js",
+    );
+
+    expect(actual.config.ws.allowQueryToken).toBe(false);
   });
 });
 

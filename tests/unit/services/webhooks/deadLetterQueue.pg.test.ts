@@ -26,6 +26,27 @@ describe('dead-letter PostgreSQL access', () => {
     expect(params).toEqual(['razorpay', 'evt-1', expect.any(String), 'Error', 3])
   })
 
+  describe('getEntryById', () => {
+    it('returns the entry for the requested id using a parameterized query', async () => {
+      const row = { id: 42, provider: 'stripe', event_id: 'evt-42' }
+      query.mockResolvedValueOnce({ rows: [row], rowCount: 1 } as any)
+
+      const result = await new DeadLetterQueue().getEntryById('42')
+
+      expect(result).toEqual(row)
+      expect(query).toHaveBeenCalledTimes(1)
+      const [sql, params] = query.mock.calls[0]
+      expect(sql).toContain('WHERE id = $1::integer LIMIT 1')
+      expect(params).toEqual(['42'])
+    });
+
+    it('returns null when no entry matches the id', async () => {
+      query.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any)
+
+      await expect(new DeadLetterQueue().getEntryById('999')).resolves.toBeNull()
+    });
+  });
+
   it('paginates DLQ entries using the requested page and page size', async () => {
     const row = { id: 11, provider: 'razorpay', event_id: 'evt-11' }
     query
