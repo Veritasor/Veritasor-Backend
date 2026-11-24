@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { logger } from "./logger.js";
 
 const DEFAULT_SALT_ROUNDS = 10;
 const MIN_SALT_ROUNDS = 4;
@@ -20,8 +21,13 @@ function getSaltRounds(): number {
   }
 
   if (parsed < DEFAULT_SALT_ROUNDS) {
-    console.warn(
-      `[password] BCRYPT_SALT_ROUNDS=${parsed} is below the recommended minimum of ${DEFAULT_SALT_ROUNDS}.`
+    logger.warn(
+      {
+        event: "password_salt_rounds_below_recommended",
+        rounds: parsed,
+        recommendedRounds: DEFAULT_SALT_ROUNDS,
+      },
+      "[password] BCRYPT_SALT_ROUNDS is below the recommended minimum."
     );
   }
 

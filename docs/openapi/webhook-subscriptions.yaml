@@ -1,0 +1,393 @@
+openapi: "3.0.0"
+info:
+  title: Veritasor Webhook Subscriptions API
+  version: 1.0.0
+  description: CRUD API for managing webhook subscriptions with per-event filter DSL.
+
+paths:
+  /v1/webhook-subscriptions:
+    get:
+      summary: List webhook subscriptions
+      operationId: listWebhookSubscriptions
+      description: >
+        Lists webhook subscriptions for the authenticated business with optional
+        cursor pagination and enabled filtering (`listWebhookSubscriptionsQuerySchema`).
+      tags: [webhook-subscriptions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: enabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Filter by enabled/disabled status.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Cursor for keyset pagination.
+      responses:
+        "200":
+          description: List of webhook subscriptions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscriptionListResponse"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      summary: Create a webhook subscription
+      operationId: createWebhookSubscription
+      description: >
+        Creates a new webhook subscription (`createWebhookSubscriptionSchema`).
+        Maximum 10 subscriptions per business.
+      tags: [webhook-subscriptions]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookSubscriptionInput"
+      responses:
+        "201":
+          description: Webhook subscription created (includes initial signing secret).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateWebhookSubscriptionResponse"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Maximum webhook subscriptions per business (10) reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/webhook-subscriptions/{id}:
+    get:
+      summary: Get a webhook subscription by ID
+      operationId: getWebhookSubscriptionById
+      tags: [webhook-subscriptions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Webhook subscription details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscriptionResponse"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Webhook subscription not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    patch:
+      summary: Update a webhook subscription
+      operationId: updateWebhookSubscription
+      description: >
+        Partially updates an existing webhook subscription (`updateWebhookSubscriptionSchema`).
+        Rotating `secret` increments `secretVersion`.
+      tags: [webhook-subscriptions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWebhookSubscriptionInput"
+      responses:
+        "200":
+          description: Webhook subscription updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscriptionResponse"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Webhook subscription not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      summary: Delete a webhook subscription
+      operationId: deleteWebhookSubscription
+      tags: [webhook-subscriptions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Webhook subscription deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteWebhookSubscriptionResponse"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Webhook subscription not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    EventFilterValue:
+      oneOf:
+        - type: boolean
+        - type: object
+          additionalProperties:
+            type: string
+            maxLength: 500
+
+    EventFilters:
+      type: object
+      description: Map of event-type patterns (max 50 rules) to boolean or field-level match objects.
+      maxProperties: 50
+      additionalProperties:
+        $ref: "#/components/schemas/EventFilterValue"
+
+    CreateWebhookSubscriptionInput:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          description: Valid public HTTPS endpoint URL.
+          example: "https://hooks.example.com/veritasor"
+        secret:
+          type: string
+          minLength: 32
+          maxLength: 512
+          description: Cryptographically strong signing secret (32-512 chars).
+        eventFilters:
+          $ref: "#/components/schemas/EventFilters"
+        maxPayloadSize:
+          type: integer
+          minimum: 1024
+          maximum: 10485760
+          description: Maximum webhook payload size in bytes (1 KB to 10 MB).
+        enabled:
+          type: boolean
+          default: true
+      required:
+        - url
+        - secret
+
+    UpdateWebhookSubscriptionInput:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+        secret:
+          type: string
+          minLength: 32
+          maxLength: 512
+        eventFilters:
+          $ref: "#/components/schemas/EventFilters"
+        enabled:
+          type: boolean
+        maxPayloadSize:
+          type: integer
+          minimum: 1024
+          maximum: 10485760
+
+    PublicWebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        businessId:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        eventFilters:
+          $ref: "#/components/schemas/EventFilters"
+        enabled:
+          type: boolean
+        maxPayloadSize:
+          type: integer
+          nullable: true
+        secretVersion:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - businessId
+        - url
+        - enabled
+
+    WebhookSubscriptionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          $ref: "#/components/schemas/PublicWebhookSubscription"
+      required:
+        - status
+        - data
+
+    CreateWebhookSubscriptionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          allOf:
+            - $ref: "#/components/schemas/PublicWebhookSubscription"
+            - type: object
+              properties:
+                secret:
+                  type: string
+              required:
+                - secret
+      required:
+        - status
+        - data
+
+    WebhookSubscriptionListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicWebhookSubscription"
+        nextCursor:
+          type: string
+      required:
+        - status
+        - data
+
+    DeleteWebhookSubscriptionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+          example: "Webhook subscription deleted"
+      required:
+        - status
+        - message
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+tags:
+  - name: webhook-subscriptions
+    description: Webhook Subscriptions — outbound webhook subscription CRUD management

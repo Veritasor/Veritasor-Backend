@@ -8,6 +8,7 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import { setOAuthState, consumeOAuthState } from '../services/integrations/stripe/store.js';
 import { generateAuthUrl } from '../services/integrations/oauth.js';
+import { logger } from '../utils/logger.js';
 
 export { generateAuthUrl };
 
@@ -82,13 +83,16 @@ export function isAllowedRedirectUri(redirectUri: string): boolean {
   return allowed.includes(redirectUri)
 }
 
+const genericOAuthStates = new Map<string, { userId: string; businessId: string; expiresAt: number }>();
+
 /**
  * @notice Consume and validate a generic integration OAuth state for the caller.
  * @returns true only if the state exists, has not expired, and is bound to the caller's user/business.
  */
 export function consumeGenericOAuthState(state: string, userId: string, businessId: string): boolean {
-  const record = consumeOAuthState(state)
-  if (!record) return false
+  const record = genericOAuthStates.get(state)
+  genericOAuthStates.delete(state)
+  if (!record || record.expiresAt < Date.now()) return false
   if (record.userId !== userId || record.businessId !== businessId) return false
   return true
 }
@@ -104,7 +108,7 @@ export function generateGenericOAuthState(): string {
  * @notice Persist the generic OAuth state bound to the initiating user/business.
  */
 export function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): void {
-  setOAuthState(state, { userId, businessId, expiresAt })
+  genericOAuthStates.set(state, { userId, businessId, expiresAt })
 }
 
 /**
@@ -171,7 +175,7 @@ router.get('/', async (req: Request, res: Response) => {
 
     res.json({ available });
   } catch (error) {
-    console.error('Error fetching integrations:', error);
+    logger.error({ error }, 'Error fetching integrations');
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to fetch integrations',
@@ -214,7 +218,7 @@ router.get('/connected',
         count: connectedSafe.length,
       });
     } catch (error) {
-      console.error('Error fetching connected integrations:', error);
+      logger.error({ error }, 'Error fetching connected integrations');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to fetch connected integrations',
@@ -295,7 +299,7 @@ router.post('/connect',
           details: error.errors,
         });
       }
-      console.error('Error initiating integration connection', error);
+      logger.error({ error }, 'Error initiating integration connection');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to initiate connection',
@@ -311,7 +315,7 @@ router.post('/connect',
  */
 router.delete('/:id',
   requireBusinessAuth,
-  requirePermissions(IntegrationPermission.DISCONNECT),
+  requirePermissions(IntegrationPermission.DISCONNECT_OWN),
   requirePolicy('delete', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {
@@ -342,7 +346,7 @@ router.delete('/:id',
           details: error.errors,
         });
       }
-      console.error('Error disconnecting integration:', error);
+      logger.error({ error }, 'Error disconnecting integration');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Failed to disconnect integration',

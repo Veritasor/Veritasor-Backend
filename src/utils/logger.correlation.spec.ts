@@ -16,6 +16,7 @@ import {
   type SpanContext,
   type Tracer,
 } from "@opentelemetry/api";
+// @ts-expect-error — @opentelemetry/context-async-hooks is a transitive dependency of @opentelemetry/sdk-node
 import { AsyncHooksContextManager } from "@opentelemetry/context-async-hooks";
 import { requestLogger } from "../middleware/requestLogger.js";
 import { logger } from "./logger.js";
@@ -98,7 +99,7 @@ describe("logger trace correlation", () => {
       .mockImplementation(() => undefined);
 
     const mockTracer: Pick<Tracer, "startActiveSpan"> = {
-      startActiveSpan: (
+      startActiveSpan: ((
         _name: string,
         _options: unknown,
         callback: (activeSpan: Span) => unknown,
@@ -106,7 +107,7 @@ describe("logger trace correlation", () => {
         return context.with(trace.setSpan(context.active(), span), () =>
           callback(span),
         );
-      },
+      }) as Tracer["startActiveSpan"],
     };
 
     vi.spyOn(trace, "getTracer").mockReturnValue(mockTracer as Tracer);
@@ -126,7 +127,7 @@ describe("logger trace correlation", () => {
     expect(response.status).toBe(200);
 
     const entries = consoleLogSpy.mock.calls.map(
-      ([line]: [unknown, ...unknown[]]) => JSON.parse(String(line)) as LogEntry,
+      (call) => JSON.parse(String(call[0])) as LogEntry,
     );
     const requestLogEntry = entries.find(
       (entry: LogEntry) =>

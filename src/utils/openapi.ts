@@ -113,9 +113,20 @@ const TAG_DESCRIPTIONS: Record<string, string> = {
   users: 'Users — user profile and account management',
   admin: 'Admin — administrative operations (restricted)',
   webhooks: 'Webhooks — inbound webhook receivers',
+  'webhook-subscriptions': 'Webhook Subscriptions — outbound webhook subscription CRUD management',
+  'public-attestations': 'Public Attestations — unauthenticated attestation verification and lookup',
 };
 
 function tagFromPath(path: string): string {
+  if (path.startsWith('/api/v1/webhook-subscriptions')) {
+    return 'webhook-subscriptions';
+  }
+  if (path.startsWith('/api/v1/public/attestations')) {
+    return 'public-attestations';
+  }
+  if (path.startsWith('/api/v1/admin')) {
+    return 'admin';
+  }
   // /api/integrations/shopify → integrations
   // /api/webhooks/razorpay   → webhooks
   const segment = path.split('/').find((s, i) => i > 0 && s.length > 0 && s !== 'api') ?? 'misc';
@@ -176,6 +187,21 @@ function buildOperation(method: string, path: string): OpenApiOperation {
   // Admin routes
   if (tag === 'admin') {
     return buildAdminOperation(httpMethod, path, pathParams);
+  }
+
+  // Users routes
+  if (tag === 'users') {
+    return buildUsersOperation(httpMethod, openApiPath, pathParams);
+  }
+
+  // Webhook subscriptions routes
+  if (tag === 'webhook-subscriptions') {
+    return buildWebhookSubscriptionsOperation(httpMethod, openApiPath, pathParams);
+  }
+
+  // Public attestations routes
+  if (tag === 'public-attestations') {
+    return buildPublicAttestationsOperation(httpMethod, openApiPath, pathParams);
   }
 
   // Default operation for all other routes
@@ -622,6 +648,129 @@ function buildAdminOperation(
     responses: known.responses ?? {
       '200': { description: 'Success' },
       '401': UNAUTHORIZED_RESPONSE,
+      '429': RATE_LIMIT_RESPONSE,
+    },
+  };
+}
+
+function buildUsersOperation(
+  method: string,
+  path: string,
+  pathParams: OpenApiParameter[],
+): OpenApiOperation {
+  if (method === 'patch' && path === '/api/users/me') {
+    return {
+      summary: 'Update current user profile',
+      tags: ['users'],
+      security: [{ bearerAuth: [] }],
+      parameters: pathParams,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string' },
+                profile: { type: 'object', additionalProperties: true },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': { description: 'Updated user profile', content: { 'application/json': { schema: { type: 'object' } } } },
+        '400': { description: 'Invalid input', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '401': UNAUTHORIZED_RESPONSE,
+        '429': RATE_LIMIT_RESPONSE,
+      },
+    };
+  }
+
+  return {
+    summary: `${method.toUpperCase()} ${path}`,
+    tags: ['users'],
+    security: [{ bearerAuth: [] }],
+    parameters: pathParams,
+    responses: {
+      '200': { description: 'Success' },
+      '401': UNAUTHORIZED_RESPONSE,
+      '429': RATE_LIMIT_RESPONSE,
+    },
+  };
+}
+
+function buildWebhookSubscriptionsOperation(
+  method: string,
+  path: string,
+  pathParams: OpenApiParameter[],
+): OpenApiOperation {
+  const isCollection = !path.includes('{');
+  if (method === 'post' && isCollection) {
+    return {
+      summary: 'Create a webhook subscription',
+      tags: ['webhook-subscriptions'],
+      security: [{ bearerAuth: [] }],
+      parameters: pathParams,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['url', 'secret'],
+              additionalProperties: false,
+              properties: {
+                url: { type: 'string', format: 'uri' },
+                secret: { type: 'string' },
+                eventFilters: { type: 'object', additionalProperties: true },
+                maxPayloadSize: { type: 'integer' },
+                enabled: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '201': { description: 'Webhook subscription created', content: { 'application/json': { schema: { type: 'object' } } } },
+        '400': { description: 'Validation error', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '401': UNAUTHORIZED_RESPONSE,
+        '409': { description: 'Maximum subscriptions reached', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+        '429': RATE_LIMIT_RESPONSE,
+      },
+    };
+  }
+
+  return {
+    summary: `${method.toUpperCase()} ${path}`,
+    tags: ['webhook-subscriptions'],
+    security: [{ bearerAuth: [] }],
+    parameters: pathParams,
+    responses: {
+      '200': { description: 'Success' },
+      '401': UNAUTHORIZED_RESPONSE,
+      '404': { description: 'Webhook subscription not found', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+      '429': RATE_LIMIT_RESPONSE,
+    },
+  };
+}
+
+function buildPublicAttestationsOperation(
+  method: string,
+  path: string,
+  pathParams: OpenApiParameter[],
+): OpenApiOperation {
+  return {
+    summary: 'Lookup public attestation by Merkle root hash or ID',
+    tags: ['public-attestations'],
+    security: [],
+    parameters: pathParams,
+    responses: {
+      '200': { description: 'Public attestation payload', content: { 'application/json': { schema: { type: 'object' } } } },
+      '304': { description: 'Not Modified' },
+      '404': { description: 'Attestation not found', content: { 'application/json': { schema: ERROR_SCHEMA } } },
+      '410': { description: 'Attestation has been revoked', content: { 'application/json': { schema: ERROR_SCHEMA } } },
       '429': RATE_LIMIT_RESPONSE,
     },
   };

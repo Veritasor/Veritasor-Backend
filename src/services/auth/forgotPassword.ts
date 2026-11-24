@@ -37,6 +37,7 @@ import { sendPasswordResetEmail } from '../email/sendReset.js'
 import { AppError } from '../../types/errors.js'
 import { hashResetToken, tokenLogPrefix } from '../../utils/tokenHash.js'
 import { normalizeStoredEmail } from '../../utils/abusePrevention.js'
+import { passwordResetEmailFailuresTotal } from '../../metrics.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

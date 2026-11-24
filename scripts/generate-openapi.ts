@@ -9,8 +9,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const OUT_PATH = path.resolve(__dirname, '../docs/openapi/openapi.json');
+const DOCS_DIR = path.dirname(OUT_PATH);
+
+export const OPENAPI_YAML_FILES = [
+  'analytics.yaml',
+  'attestations.yaml',
+  'auth.yaml',
+  'businesses.yaml',
+  'health.yaml',
+  'integrations.yaml',
+  'public-attestations.yaml',
+  'users.yaml',
+  'webhook-subscriptions.yaml',
+] as const;
+
+export function verifyRegisteredOpenApiYamlFiles(): string[] {
+  const resolved: string[] = [];
+  for (const file of OPENAPI_YAML_FILES) {
+    const fullPath = path.join(DOCS_DIR, file);
+    if (!fs.existsSync(fullPath)) {
+      throw new Error(`Registered OpenAPI YAML file not found: ${fullPath}`);
+    }
+    resolved.push(fullPath);
+  }
+  return resolved;
+}
 
 export function getOpenApiSpec() {
+  verifyRegisteredOpenApiYamlFiles();
   const routes = generateRouteMap(app);
   return generateOpenApiSpec(routes);
 }
