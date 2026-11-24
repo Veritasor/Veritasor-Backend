@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto'
 import crypto from 'node:crypto'
 import { logger } from './logger.js'
 import { jwksManager } from './jwks.js'
+import { getRedisClient } from '../redis.js'
 
 // ===========================================================================
 // CONFIGURATION
@@ -131,7 +132,117 @@ interface TokenRotationFamily {
   createdAt: number
 }
 
-// In-memory token rotation tracking
+/**
+ * Pluggable store for revocation state. The default in-memory implementation
+ * is process-local; {@link RedisTokenStore} shares state across instances and
+ * survives restarts. Redis keys carry TTLs equal to the maximum token lifetime
+ * so key space cannot grow without bound.
+ */
+export interface TokenRevocationStore {
+  isBlacklisted(jti: string): Promise<boolean>
+  blacklist(jti: string, ttlSeconds: number): Promise<void>
+  isFamilyCompromised(familyId: string): Promise<boolean>
+  markFamilyCompromised(familyId: string, ttlSeconds: number): Promise<void>
+  isConsumed(familyId: string, jti: string): Promise<boolean>
+  markConsumed(familyId: string, jti: string, ttlSeconds: number): Promise<void>
+  recordIssued(familyId: string, jti: string, ttlSeconds: number): Promise<void>
+  listIssued(familyId: string): Promise<string[]>
+}
+
+export class InMemoryTokenStore implements TokenRevocationStore {
+  private readonly blacklistSet = new Set<string>()
+  private readonly compromised = new Set<string>()
+  private readonly consumed = new Map<string, Set<string>>()
+  private readonly issued = new Map<string, Set<string>>()
+
+  async isBlacklisted(jti: string): Promise<boolean> {
+    return this.blacklistSet.has(jti)
+  }
+  async blacklist(jti: string): Promise<void> {
+    this.blacklistSet.add(jti)
+  }
+  async isFamilyCompromised(familyId: string): Promise<boolean> {
+    return this.compromised.has(familyId)
+  }
+  async markFamilyCompromised(familyId: string): Promise<void> {
+    this.compromised.add(familyId)
+  }
+  async isConsumed(familyId: string, jti: string): Promise<boolean> {
+    return this.consumed.get(familyId)?.has(jti) ?? false
+  }
+  async markConsumed(familyId: string, jti: string): Promise<void> {
+    let set = this.consumed.get(familyId)
+    if (!set) this.consumed.set(familyId, (set = new Set()))
+    set.add(jti)
+  }
+  async recordIssued(familyId: string, jti: string): Promise<void> {
+    let set = this.issued.get(familyId)
+    if (!set) this.issued.set(familyId, (set = new Set()))
+    set.add(jti)
+  }
+  async listIssued(familyId: string): Promise<string[]> {
+    return [...(this.issued.get(familyId) ?? [])]
+  }
+}
+
+/**
+ * Redis-backed revocation store. Every key is written with an expiry equal to
+ * the token lifetime, so stale revocation entries age out automatically.
+ * Callers must treat Redis errors as fail-closed (see refresh path).
+ */
+export class RedisTokenStore implements TokenRevocationStore {
+  private key(kind: string, id: string): string {
+    return `jwt:${kind}:${id}`
+  }
+  private async client() {
+    const client = await getRedisClient()
+    if (!client) throw new Error('Redis unavailable')
+    return client
+  }
+  async isBlacklisted(jti: string): Promise<boolean> {
+    return (await (await this.client()).exists(this.key('jti', jti))) === 1
+  }
+  async blacklist(jti: string, ttlSeconds: number): Promise<void> {
+    await (await this.client()).set(this.key('jti', jti), '1', { EX: ttlSeconds })
+  }
+  async isFamilyCompromised(familyId: string): Promise<boolean> {
+    return (await (await this.client()).exists(this.key('compromised', familyId))) === 1
+  }
+  async markFamilyCompromised(familyId: string, ttlSeconds: number): Promise<void> {
+    await (await this.client()).set(this.key('compromised', familyId), '1', { EX: ttlSeconds })
+  }
+  async isConsumed(familyId: string, jti: string): Promise<boolean> {
+    return (await (await this.client()).sIsMember(this.key('consumed', familyId), jti)) === true
+  }
+  async markConsumed(familyId: string, jti: string, ttlSeconds: number): Promise<void> {
+    const c = await this.client()
+    const k = this.key('consumed', familyId)
+    await c.sAdd(k, jti)
+    await c.expire(k, ttlSeconds)
+  }
+  async recordIssued(familyId: string, jti: string, ttlSeconds: number): Promise<void> {
+    const c = await this.client()
+    const k = this.key('issued', familyId)
+    await c.sAdd(k, jti)
+    await c.expire(k, ttlSeconds)
+  }
+  async listIssued(familyId: string): Promise<string[]> {
+    return (await (await this.client()).sMembers(this.key('issued', familyId))) as string[]
+  }
+}
+
+let tokenStore: TokenRevocationStore = new InMemoryTokenStore()
+
+/**
+ * Install the revocation store (call from startServer, mirroring
+ * setUsedTokenStore). Defaults to the in-memory store.
+ */
+export function setTokenRevocationStore(store: TokenRevocationStore): void {
+  tokenStore = store
+}
+
+// Process-local family metadata (userId/createdAt/currentJti) used for
+// cleanup and ownership checks. Revocation state lives in tokenStore.
 const tokenFamilies = new Map<string, TokenRotationFamily>()
 const jtiBlacklist = new Set<string>()
 
@@ -187,15 +298,17 @@ function getOrCreateFamily(familyId: string, userId: string): TokenRotationFamil
 /**
  * Check if a jti is blacklisted
  */
-export function isTokenBlacklisted(jti: string): boolean {
-  return jtiBlacklist.has(jti)
+export async function isTokenBlacklisted(jti: string): Promise<boolean> {
+  if (jtiBlacklist.has(jti)) return true
+  return tokenStore.isBlacklisted(jti)
 }
 
 /**
  * Blacklist a token by jti (for logout/revocation)
  */
-export function blacklistToken(jti: string, familyId?: string): void {
+export async function blacklistToken(jti: string, familyId?: string, ttlSeconds: number = JWT_REFRESH_TOKEN_TTL): Promise<void> {
   jtiBlacklist.add(jti)
+  await tokenStore.blacklist(jti, ttlSeconds)
   if (familyId) {
     const family = tokenFamilies.get(familyId)
     if (family) {
@@ -539,6 +652,7 @@ export function generateAccessToken(
   // revocation can revoke every token (access + refresh) in the family.
   const tracking = getOrCreateFamily(family, payload.userId)
   tracking.issuedJtis.add(jti)
+  void tokenStore.recordIssued(family, jti, JWT_REFRESH_TOKEN_TTL).catch(() => {})
 
   const tokenPayload = {
     ...payload,
@@ -571,6 +685,7 @@ export function generateRefreshTokenWithFamily(
   // Initialize or update the family tracking
   const tracking = getOrCreateFamily(family, payload.userId)
   tracking.issuedJtis.add(jti)
+  void tokenStore.recordIssued(family, jti, JWT_REFRESH_TOKEN_TTL).catch(() => {})
 
   const tokenPayload = {
     ...payload,
@@ -620,7 +735,7 @@ export function verifyAccessToken(token: string): EnhancedTokenPayload {
     assertRotationClaims(decoded)
 
     // Check if token is blacklisted
-    if (decoded.jti && isTokenBlacklisted(decoded.jti)) {
+    if (decoded.jti && jtiBlacklist.has(decoded.jti)) {
       throw new JWTError('Token has been revoked', 'TOKEN_REVOKED', 401)
     }
 
@@ -669,7 +784,7 @@ export function verifyRefreshTokenRotationAware(
     }
 
     // Check blacklist
-    if (jti && isTokenBlacklisted(jti)) {
+    if (jti && jtiBlacklist.has(jti)) {
       throw new JWTError('Token has been revoked', 'TOKEN_REVOKED', 401)
     }
 
@@ -706,8 +821,10 @@ export function verifyRefreshTokenRotationAware(
         }
       )
       family.concurrentRefreshDetected = true
+      void tokenStore.markFamilyCompromised(familyId, JWT_REFRESH_TOKEN_TTL).catch(() => {})
       for (const compromisedJti of family.issuedJtis) {
         jtiBlacklist.add(compromisedJti)
+        void tokenStore.blacklist(compromisedJti, JWT_REFRESH_TOKEN_TTL).catch(() => {})
       }
       throw new TokenReusedError()
     }
@@ -766,6 +883,8 @@ export async function refreshTokenPair(refreshToken: string): Promise<{
     // Mark old token as used (consumed) BEFORE minting the replacement so a
     // concurrent call presenting the same token is rejected as reuse.
     family.blacklistedJtis.add(oldJti)
+    await tokenStore.markConsumed(tokenFamilyId, oldJti, JWT_REFRESH_TOKEN_TTL)
+    await tokenStore.blacklist(oldJti, JWT_REFRESH_TOKEN_TTL)
     family.lastRotation = Date.now()
 
     // Generate new token pair with same family
@@ -801,11 +920,17 @@ export async function refreshTokenPair(refreshToken: string): Promise<{
  * current jti) before removing the in-memory entry, so previously-issued
  * tokens from the family are unusable even after a process restart.
  */
-export function revokeTokenFamily(familyId: string): void {
+export async function revokeTokenFamily(familyId: string): Promise<void> {
   const family = tokenFamilies.get(familyId)
+  const issued = await tokenStore.listIssued(familyId).catch(() => [] as string[])
+  for (const jti of issued) {
+    jtiBlacklist.add(jti)
+    void tokenStore.blacklist(jti, JWT_REFRESH_TOKEN_TTL).catch(() => {})
+  }
   if (family) {
     for (const jti of family.issuedJtis) {
       jtiBlacklist.add(jti)
+      await tokenStore.blacklist(jti, JWT_REFRESH_TOKEN_TTL)
     }
     family.blacklistedJtis.forEach((jti) => jtiBlacklist.add(jti))
     tokenFamilies.delete(familyId)

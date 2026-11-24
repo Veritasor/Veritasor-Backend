@@ -49,6 +49,9 @@ const victim: TokenPayload = {
   email: 'victim@example.com',
 };
 
+// Redis-backed token store coverage is tracked in the JWT store issue; this spec
+// exercises the in-memory default store and must continue to pass unchanged.
+
 describe('JWT refresh-token reuse detection (theft response)', () => {
   it('a replayed consumed refresh token is rejected and the family is revoked wholesale', async () => {
     // 1. Victim logs in → token pair is minted.

@@ -63,7 +63,9 @@ export class InMemoryUsedTokenStore implements UsedTokenStore {
   }
 
   async mark(jti: string, _userId: string, _expiresAt: Date): Promise<boolean> {
-    return this.store.add(jti) === undefined ? false : true
+    if (this.store.has(jti)) return false
+    this.store.add(jti)
+    return true
   }
 
   clear(): void {
