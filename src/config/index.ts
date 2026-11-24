@@ -95,6 +95,7 @@ export const rawEnvSchema = z.object({
   EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
   BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS: z.string().optional(),
   BUSINESSES_PUBLIC_RATE_LIMIT_MAX: z.string().optional(),
+  WS_ALLOW_QUERY_TOKEN: z.string().optional(),
 });
 
 export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
@@ -601,6 +602,22 @@ export const config = {
         10_000,
       ),
     ),
+  },
+  ws: {
+    /**
+     * Controls whether the attestation WebSocket stream accepts a JWT from the
+     * `?token=` query string. Header-based (`Authorization: Bearer`) auth is
+     * always accepted.
+     *
+     * - WS_ALLOW_QUERY_TOKEN env var overrides NODE_ENV when set.
+     * - Defaults to false in production and true in development/test.
+     *
+     * Query-string tokens are deprecated (they leak via URL logs/history) and
+     * will be removed; when enabled, their use emits a deprecation warning.
+     */
+    allowQueryToken: parsedEnv.WS_ALLOW_QUERY_TOKEN !== undefined
+      ? parseBooleanEnv("WS_ALLOW_QUERY_TOKEN", parsedEnv.WS_ALLOW_QUERY_TOKEN, false)
+      : !isProduction,
   },
   graphql: {
     /**

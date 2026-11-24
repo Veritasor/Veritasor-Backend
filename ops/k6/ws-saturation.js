@@ -2,6 +2,7 @@ import ws from "k6/ws";
 import { check, fail } from "k6";
 import { Rate, Trend, Counter, Gauge } from "k6/metrics";
 import {
+  buildWsAuthHeaders,
   buildWsUrl,
   createWsSaturationOptions,
   createWsSaturationRuntimeConfig,
@@ -29,10 +30,11 @@ export function setup() {
 }
 
 export default function (config) {
-  const url = buildWsUrl(config.baseUrl, config.path, config.authToken);
+  const url = buildWsUrl(config.baseUrl, config.path);
 
   const params = {
     tags: { endpoint: "ws_attestations" },
+    headers: buildWsAuthHeaders(config.authToken),
   };
 
   const res = ws.connect(url, params, function (socket) {
