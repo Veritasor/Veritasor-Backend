@@ -1,0 +1,164 @@
+openapi: "3.0.0"
+info:
+  title: Veritasor Health API
+  version: 1.0.0
+  description: Liveness, readiness, and dependency health check probes.
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      description: >
+        Checks database and Redis connectivity in shallow mode, and additionally
+        Soroban RPC and SMTP connectivity in deep mode (`?mode=deep`).
+        Response conforms to `HealthResponseSchema`.
+      tags: [health]
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          description: Shallow (default) or deep dependency check.
+          schema:
+            type: string
+            enum: [shallow, deep]
+            default: shallow
+      responses:
+        "200":
+          description: Service healthy or degraded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Service unhealthy (critical dependency down in deep mode).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /health/live:
+    get:
+      summary: Liveness probe
+      operationId: getHealthLive
+      description: Lightweight liveness probe that avoids external dependency checks.
+      tags: [health]
+      responses:
+        "200":
+          description: Process is alive and serving HTTP.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthLivenessResponse"
+
+  /health/ready:
+    get:
+      summary: Readiness probe
+      operationId: getHealthReady
+      description: Checks database readiness for load balancers and rollout controllers.
+      tags: [health]
+      responses:
+        "200":
+          description: Required dependencies are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReadinessResponse"
+        "503":
+          description: Required dependencies are unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthReadinessResponse"
+
+components:
+  schemas:
+    HealthDependencyStatus:
+      type: string
+      enum:
+        - ok
+        - down
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+            - degraded
+            - unhealthy
+        service:
+          type: string
+          enum:
+            - veritasor-backend
+          example: "veritasor-backend"
+        timestamp:
+          type: string
+          format: date-time
+        mode:
+          type: string
+          enum:
+            - shallow
+            - deep
+        db:
+          $ref: "#/components/schemas/HealthDependencyStatus"
+        redis:
+          $ref: "#/components/schemas/HealthDependencyStatus"
+        soroban:
+          $ref: "#/components/schemas/HealthDependencyStatus"
+        email:
+          $ref: "#/components/schemas/HealthDependencyStatus"
+        dependencies:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/HealthDependencyStatus"
+      required:
+        - status
+        - service
+        - timestamp
+        - mode
+
+    HealthLivenessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          enum: [veritasor-backend]
+        timestamp:
+          type: string
+          format: date-time
+      required:
+        - status
+        - service
+        - timestamp
+
+    HealthReadinessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, unhealthy]
+        service:
+          type: string
+          enum: [veritasor-backend]
+        timestamp:
+          type: string
+          format: date-time
+        db:
+          $ref: "#/components/schemas/HealthDependencyStatus"
+        dependencies:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/HealthDependencyStatus"
+      required:
+        - status
+        - service
+        - timestamp
+
+tags:
+  - name: health
+    description: Health — liveness and readiness probes

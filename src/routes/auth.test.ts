@@ -283,7 +283,7 @@ describe("signupErrorToAppError", () => {
   });
 
   it("preserves error type in AppError for non-standard types", () => {
-    const signupErr = new SignupError("Custom error", "CUSTOM_ERROR", 400);
+    const signupErr = new SignupError("Custom error", "CUSTOM_ERROR" as any, 400);
     const result = signupErrorToAppError(signupErr);
     
     expect(result).toBeInstanceOf(AppError);
@@ -292,7 +292,7 @@ describe("signupErrorToAppError", () => {
   });
 
   it("handles different status codes", () => {
-    const signupErr = new SignupError("Service unavailable", "SERVICE_ERROR", 503);
+    const signupErr = new SignupError("Service unavailable", "SERVICE_ERROR" as any, 503);
     const result = signupErrorToAppError(signupErr);
     
     expect(result).toBeInstanceOf(AppError);

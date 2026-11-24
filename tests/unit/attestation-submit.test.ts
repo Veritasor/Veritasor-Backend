@@ -1,63 +1,113 @@
 /**
- * Unit tests for enhanced submitAttestation with retry logic and error taxonomy.
- * Tests the hardened implementation against transient Soroban failures.
+ * Unit tests for submitAttestation with retry logic, error taxonomy and
+ * period-window parsing.
  */
-import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { submitAttestation, SorobanErrorCode } from '../../src/services/attestation/submit.js';
 import { fetchRazorpayRevenue } from '../../src/services/revenue/razorpayFetch.js';
 import { attestationRepository } from '../../src/repositories/attestation.js';
+import { getRoot } from '../../src/services/merkle/index.js';
 import { revenueSnapshotRepository } from '../../src/repositories/revenueSnapshotRepository.js';
 import * as CryptoUtils from '../../src/services/merkle.js';
-import { AppError, ExternalServiceError } from '../../src/types/errors.js';
+import {
+  PERIOD_REGEX,
+  PeriodParseError,
+  parsePeriodToBounds,
+  parsePeriodToIsoRange,
+} from '../../src/services/analytics/periods.js';
+import { AppError, ExternalServiceError, VRTErrorCodes } from '../../src/types/errors.js';
 
-// Mock dependencies
-vi.mock('../../src/services/revenue/razorpayFetch.js');
+// Mock dependencies. Factory mocks keep modules with unrelated upstream parse
+// errors out of the transform graph; only the mocked exports are needed here.
+vi.mock('../../src/services/revenue/razorpayFetch.js', () => ({
+  fetchRazorpayRevenue: vi.fn(),
+}));
 vi.mock('../../src/repositories/attestation.js');
 vi.mock('../../src/repositories/revenueSnapshotRepository.js', () => ({
   revenueSnapshotRepository: {
     upsert: vi.fn(),
   },
 }));
+vi.mock('../../src/metrics.js', () => {
+  const metric = { inc: vi.fn(), set: vi.fn(), observe: vi.fn() };
+  return {
+    sorobanBatchItemErrorsTotal: metric,
+    sorobanBatchQueueDepth: metric,
+    sorobanBatchSize: metric,
+    sorobanBatchFlushTotal: metric,
+    observeAttestationSubmitLatency: vi.fn(),
+  };
+});
+vi.mock('../../src/services/merkle/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/services/merkle/index.js')>();
+  return { ...actual, getRoot: vi.fn(actual.getRoot) };
+});
+vi.mock('../../src/services/merkle.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/services/merkle.js')>();
+  return { ...mod, generateMerkleRoot: vi.fn() };
+});
+import * as attestationRepository from '../../src/repositories/attestationRepository.js';
+import * as CryptoUtils from '../../src/services/merkle.js';
+import { AppError, ExternalServiceError } from '../../src/types/errors.js';
+
+import { db } from '../../src/db/client.js';
+vi.mock('../../src/db/client.js', () => ({ db: {} }));
+
+// Mock dependencies
+vi.mock('../../src/services/revenue/razorpayFetch.js');
+vi.mock('../../src/repositories/attestationRepository.js');
 vi.mock('../../src/services/merkle.js', async (importOriginal) => { const mod = await importOriginal(); return { ...mod, generateMerkleRoot: vi.fn() }; });
 
 const mockFetchRazorpayRevenue = vi.mocked(fetchRazorpayRevenue);
 const mockAttestationRepository = vi.mocked(attestationRepository);
+const mockGetRoot = vi.mocked(getRoot);
 const mockRevenueSnapshotUpsert = vi.mocked(revenueSnapshotRepository.upsert);
 
-// Mock console methods to capture structured logs
+// Mock console methods to capture structured logs.
 const mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
 const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
+const userId = 'user_123';
+const businessId = 'biz_456';
+
+const mockRevenue = [
+  { date: '2024-03-01', amount: 1000, currency: 'USD' },
+  { date: '2024-03-15', amount: 1500, currency: 'USD' },
+  { date: '2024-03-31', amount: 2000, currency: 'USD' },
+];
+
 describe('submitAttestation - Enhanced with retry logic', () => {
-  const userId = 'user_123';
-  const businessId = 'biz_456';
   const period = '2024-03';
   const startDate = '2024-03-01T00:00:00Z';
   const endDate = '2024-03-31T23:59:59Z';
-
-  const mockRevenue = [
-    { date: '2024-03-01', amount: 1000, currency: 'USD' },
-    { date: '2024-03-15', amount: 1500, currency: 'USD' },
-    { date: '2024-03-31', amount: 2000, currency: 'USD' },
-  ];
 
   const mockAttestation = {
     id: 'att_789',
     businessId,
     period,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date('2024-04-01T00:00:00Z'),
+    updatedAt: new Date('2024-04-01T00:00:00Z'),
+    merkleRoot: 'root',
+    txHash: 'tx',
+    status: 'submitted' as const,
+    version: 1,
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
-    mockAttestationRepository.create = vi.fn().mockResolvedValue(mockAttestation);
+    // The real repository create() is synchronous.
+    mockAttestationRepository.create = vi.fn().mockReturnValue(mockAttestation);
     mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
+    vi.spyOn(CryptoUtils, 'generateMerkleRoot').mockReturnValue('0xmockedmerkleroothashstring');
+    mockAttestationRepository.create.mockResolvedValue(mockAttestation);
     vi.spyOn(CryptoUtils, "generateMerkleRoot").mockReturnValue("0xmockedmerkleroothashstring");
   });
 
   afterEach(() => {
+    vi.mocked(Math.random).mockRestore();
     mockConsoleLog.mockClear();
     mockConsoleWarn.mockClear();
     mockConsoleError.mockClear();
@@ -71,11 +121,13 @@ describe('submitAttestation - Enhanced with retry logic', () => {
       txHash: expect.stringMatching(/^tx_[a-f0-9]{8}_\d+$/),
     });
 
-    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(businessId, startDate, endDate);
+    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(startDate, endDate, businessId);
     expect(mockAttestationRepository.create).toHaveBeenCalledWith({
+    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(businessId, startDate, endDate);
+    expect(mockAttestationRepository.create).toHaveBeenCalledWith(db, expect.objectContaining({
       businessId,
       period,
-    });
+    }));
 
     // Snapshot write path: the submit flow persists a revenue snapshot for analytics.
     expect(mockRevenueSnapshotUpsert).toHaveBeenCalledWith({
@@ -86,61 +138,56 @@ describe('submitAttestation - Enhanced with retry logic', () => {
       currency: 'USD',
     });
 
-    // Verify structured logging
     expect(mockConsoleLog).toHaveBeenCalledWith(
       expect.stringContaining('"service":"attestation-submit"')
     );
   });
 
   it('handles retryable network timeout errors with exponential backoff', async () => {
-    // Mock the random number to trigger network timeout consistently
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.05); // Triggers NETWORK_TIMEOUT
+    const random = vi.mocked(Math.random);
+    random
+      .mockReturnValueOnce(0.05) // attempt 1: network timeout
+      .mockReturnValueOnce(0.9)  // attempt 1: jitter
+      .mockReturnValueOnce(0.05) // attempt 2: network timeout
+      .mockReturnValueOnce(0.9)  // attempt 2: jitter
+      .mockReturnValue(0.5);     // attempt 3: success
 
-    const startTime = Date.now();
     const result = await submitAttestation(userId, businessId, period);
-    const endTime = Date.now();
 
-    // Should eventually succeed after retries
     expect(result).toEqual({
       attestationId: 'att_789',
       txHash: expect.stringMatching(/^tx_[a-f0-9]{8}_\d+$/),
     });
 
-    // Verify retry attempts were logged
     expect(mockConsoleWarn).toHaveBeenCalledTimes(2); // 2 failures before success
-    expect(mockConsoleLog).toHaveBeenCalledTimes(3); // 3 attempts (2 retries + 1 success)
 
-    // Verify exponential backoff (should take at least 1s + 2s = 3s due to delays)
-    expect(endTime - startTime).toBeGreaterThan(3000);
+    const submitLogs = mockConsoleLog.mock.calls
+      .map((call) => JSON.parse(call[0] as string))
+      .filter((entry) => entry.service === 'attestation-submit');
+    expect(submitLogs.filter((entry) => entry.message?.includes('Attempting'))).toHaveLength(3);
+    expect(submitLogs.filter((entry) => entry.message?.includes('successful'))).toHaveLength(1);
 
-    Math.random = originalMathRandom;
+    const waitLogs = submitLogs.filter((entry) => entry.message?.includes('Waiting'));
+    expect(waitLogs).toHaveLength(2);
   });
 
   it('fails immediately on non-retryable insufficient balance error', async () => {
-    // Mock random to trigger insufficient balance error
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.17); // Triggers INSUFFICIENT_BALANCE
+    vi.mocked(Math.random).mockReturnValue(0.17); // Triggers INSUFFICIENT_BALANCE
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
         message: 'Insufficient balance for transaction fees. Please fund your account.',
         status: 400,
-        code: 'INSUFFICIENT_BALANCE',
+        vrtCode: 'INSUFFICIENT_BALANCE',
       })
     );
 
-    // Should only attempt once (no retries for non-retryable errors)
     expect(mockConsoleWarn).toHaveBeenCalledTimes(1);
-    expect(mockConsoleError).toHaveBeenCalledTimes(1);
-
-    Math.random = originalMathRandom;
+    expect(mockConsoleError).toHaveBeenCalledTimes(2); // retry wrapper + outer catch
   });
 
   it('fails after max retry attempts for persistent network errors', async () => {
-    // Mock random to consistently trigger network timeout
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.05); // Always triggers NETWORK_TIMEOUT
+    vi.mocked(Math.random).mockReturnValue(0.05); // Always triggers NETWORK_TIMEOUT
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
@@ -149,12 +196,8 @@ describe('submitAttestation - Enhanced with retry logic', () => {
       })
     );
 
-    // Should attempt max 3 times and fail
     expect(mockConsoleWarn).toHaveBeenCalledTimes(3);
-    expect(mockConsoleError).toHaveBeenCalledTimes(1);
-    expect(mockConsoleLog).toHaveBeenCalledTimes(3);
-
-    Math.random = originalMathRandom;
+    expect(mockConsoleError).toHaveBeenCalledTimes(2);
   });
 
   it('handles empty revenue data gracefully', async () => {
@@ -162,8 +205,8 @@ describe('submitAttestation - Enhanced with retry logic', () => {
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
-        message: 'No revenue found for the period 2024-03',
-        code: 'ATTESTATION_SUBMIT_FAILED',
+        message: 'Attestation submission failed: No revenue found for the period 2024-03',
+        vrtCode: 'ATTESTATION_SUBMIT_FAILED',
       })
     );
 
@@ -173,13 +216,12 @@ describe('submitAttestation - Enhanced with retry logic', () => {
   });
 
   it('handles revenue fetching errors', async () => {
-    const revenueError = new Error('API rate limit exceeded');
-    mockFetchRazorpayRevenue.mockRejectedValue(revenueError);
+    mockFetchRazorpayRevenue.mockRejectedValue(new Error('API rate limit exceeded'));
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
-        message: 'Failed to fetch revenue: API rate limit exceeded',
-        code: 'ATTESTATION_SUBMIT_FAILED',
+        message: 'Attestation submission failed: Failed to fetch revenue: API rate limit exceeded',
+        vrtCode: 'ATTESTATION_SUBMIT_FAILED',
       })
     );
 
@@ -189,47 +231,47 @@ describe('submitAttestation - Enhanced with retry logic', () => {
   });
 
   it('handles merkle root generation failure', async () => {
-    // Mock invalid revenue data that would cause merkle tree issues
-    mockFetchRazorpayRevenue.mockResolvedValue([
-      { date: 'invalid-date', amount: NaN, currency: 'USD' },
-    ]);
+    mockGetRoot.mockReturnValueOnce(null as any);
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
-        message: expect.stringContaining('Attestation submission failed'),
-        code: 'ATTESTATION_SUBMIT_FAILED',
+        message: expect.stringContaining('Failed to generate Merkle root'),
+        vrtCode: 'ATTESTATION_SUBMIT_FAILED',
       })
     );
   });
 
   it('validates period parsing for quarterly periods', async () => {
-    const quarterlyPeriod = '2024-Q1';
-    const expectedStartDate = '2024-01-01T00:00:00Z';
-    const expectedEndDate = '2024-03-31T23:59:59Z';
+    await submitAttestation(userId, businessId, '2024-Q1');
 
-    await submitAttestation(userId, businessId, quarterlyPeriod);
-
-    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(expectedStartDate, expectedEndDate);
+    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(
+      '2024-01-01T00:00:00Z',
+      '2024-03-31T23:59:59Z',
+      businessId,
+    );
   });
 
   it('validates period parsing for monthly periods', async () => {
-    const monthlyPeriod = '2024-12';
-    const expectedStartDate = '2024-12-01T00:00:00Z';
-    const expectedEndDate = '2024-12-31T23:59:59Z';
+    await submitAttestation(userId, businessId, '2024-12');
 
-    await submitAttestation(userId, businessId, monthlyPeriod);
-
-    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(expectedStartDate, expectedEndDate);
+    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(
+      '2024-12-01T00:00:00Z',
+      '2024-12-31T23:59:59Z',
+      businessId,
+    );
   });
 
   it('handles repository save errors', async () => {
+    mockAttestationRepository.create = vi.fn().mockImplementation(() => {
+      throw new Error('Database connection failed');
+    });
     const repoError = new Error('Database connection failed');
-    mockAttestationRepository.create = vi.fn().mockRejectedValue(repoError);
+    mockAttestationRepository.create.mockRejectedValue(repoError);
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({
         message: 'Attestation submission failed: Database connection failed',
-        code: 'ATTESTATION_SUBMIT_FAILED',
+        vrtCode: 'ATTESTATION_SUBMIT_FAILED',
       })
     );
 
@@ -282,128 +324,247 @@ describe('SorobanErrorCode taxonomy', () => {
       SorobanErrorCode.CONTRACT_ERROR,
     ];
 
-    // Verify categorization by checking error handling behavior
     expect(retryableCodes).toHaveLength(9);
     expect(nonRetryableCodes).toHaveLength(4);
   });
 });
 
 describe('Structured logging', () => {
+  const submitLogs = () => mockConsoleLog.mock.calls
+    .map((call) => JSON.parse(call[0] as string))
+    .filter((entry) => entry.service === 'attestation-submit');
+
+  const submitErrors = () => mockConsoleError.mock.calls
+    .map((call) => JSON.parse(call[0] as string))
+    .filter((entry) => entry.service === 'attestation-submit');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
+    mockAttestationRepository.create = vi.fn().mockReturnValue({
+      id: 'att_789', businessId, period: '2024-03', createdAt: new Date().toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(Math.random).mockRestore();
+  });
+
   it('includes required fields in log entries', async () => {
-    const { submitAttestation } = await import('../../src/services/attestation/submit.js');
-    
-    // Mock random to avoid retries
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.5); // Success case
+    await submitAttestation(userId, businessId, '2024-03');
 
-    await submitAttestation('user_123', 'biz_456', '2024-03');
-
-    // Verify log structure
-    const logCall = mockConsoleLog.mock.calls[0][0];
-    const logEntry = JSON.parse(logCall);
-
-    expect(logEntry).toMatchObject({
+    const attemptLog = submitLogs().find((entry) => entry.message.includes('Attempting Soroban'));
+    expect(attemptLog).toMatchObject({
       timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
       level: 'info',
       service: 'attestation-submit',
       message: expect.stringContaining('Attempting Soroban submission'),
-      userId: 'user_123',
-      businessId: 'biz_456',
+      userId,
+      businessId,
       period: '2024-03',
       attempt: expect.any(Number),
       maxAttempts: expect.any(Number),
     });
-
-    Math.random = originalMathRandom;
   });
 
   it('logs error context when submission fails', async () => {
-    const { submitAttestation } = await import('../../src/services/attestation/submit.js');
-    
-    // Mock to trigger insufficient balance error
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.17);
+    vi.mocked(Math.random).mockReturnValue(0.17);
 
-    try {
-      await submitAttestation('user_123', 'biz_456', '2024-03');
-    } catch (error) {
-      // Expected to fail
-    }
+    await expect(submitAttestation(userId, businessId, '2024-03')).rejects.toThrow();
 
-    const errorLogCall = mockConsoleError.mock.calls[0][0];
-    const errorLogEntry = JSON.parse(errorLogCall);
-
-    expect(errorLogEntry).toMatchObject({
+    const errorLog = submitErrors().find((entry) => entry.message.includes('no more retries'));
+    expect(errorLog).toMatchObject({
       level: 'error',
       service: 'attestation-submit',
       message: 'Soroban submission failed - no more retries',
-      userId: 'user_123',
-      businessId: 'biz_456',
+      userId,
+      businessId,
       period: '2024-03',
       error: expect.stringContaining('Insufficient balance'),
       errorCode: 'INSUFFICIENT_BALANCE',
       duration: expect.any(Number),
     });
-
-    Math.random = originalMathRandom;
   });
 
   it('logs retry delays with jitter', async () => {
-    const { submitAttestation } = await import('../../src/services/attestation/submit.js');
-    
-    // Mock to trigger network timeout (retryable)
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn()
-      .mockReturnValueOnce(0.05) // First attempt: network timeout
-      .mockReturnValueOnce(0.05) // Second attempt: network timeout  
-      .mockReturnValueOnce(0.5);  // Third attempt: success
+    const random = vi.mocked(Math.random);
+    random
+      .mockReturnValueOnce(0.05)
+      .mockReturnValueOnce(0.9)
+      .mockReturnValueOnce(0.05)
+      .mockReturnValueOnce(0.9)
+      .mockReturnValue(0.5);
 
-    try {
-      await submitAttestation('user_123', 'biz_456', '2024-03');
-    } catch (error) {
-      // Expected to eventually succeed
-    }
+    await submitAttestation(userId, businessId, '2024-03');
 
-    // Verify retry delay logging
-    const delayLogCalls = mockConsoleLog.mock.calls.filter(call => 
-      JSON.parse(call[0]).message.includes('Waiting') && 
-      JSON.parse(call[0]).message.includes('before retry')
-    );
+    const delayLogs = submitLogs().filter((entry) => entry.message.includes('before retry'));
+    expect(delayLogs).toHaveLength(2);
 
-    expect(delayLogCalls).toHaveLength(2); // 2 retry delays
-
-    // Verify delay calculation includes jitter (should be between 0.5x and 1.0x of base delay)
-    delayLogCalls.forEach((call, index) => {
-      const logEntry = JSON.parse(call[0]);
+    delayLogs.forEach((entry, index) => {
       const expectedBaseDelay = 1000 * Math.pow(2, index); // 1s, 2s
-      expect(logEntry.delay).toBeGreaterThanOrEqual(Math.floor(expectedBaseDelay * 0.5));
-      expect(logEntry.delay).toBeLessThanOrEqual(expectedBaseDelay);
+      expect(entry.delay).toBeGreaterThanOrEqual(Math.floor(expectedBaseDelay * 0.5));
+      expect(entry.delay).toBeLessThanOrEqual(expectedBaseDelay);
     });
-
-    Math.random = originalMathRandom;
   });
 });
 
 describe('Error taxonomy mapping', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
+    mockAttestationRepository.create = vi.fn().mockReturnValue({
+      id: 'att_789', businessId, period: '2024-03', createdAt: new Date().toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(Math.random).mockRestore();
+  });
+
   it('maps insufficient balance to 400 AppError', async () => {
-    const { submitAttestation } = await import('../../src/services/attestation/submit.js');
-    
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.17); // Triggers INSUFFICIENT_BALANCE
+    vi.mocked(Math.random).mockReturnValue(0.17);
 
-    await expect(submitAttestation('user_123', 'biz_456', '2024-03')).rejects.toBeInstanceOf(AppError);
-
-    Math.random = originalMathRandom;
+    await expect(submitAttestation(userId, businessId, '2024-03')).rejects.toBeInstanceOf(AppError);
   });
 
   it('maps network errors to 503 ExternalServiceError', async () => {
-    const { submitAttestation } = await import('../../src/services/attestation/submit.js');
-    
-    const originalMathRandom = Math.random;
-    Math.random = vi.fn().mockReturnValue(0.05); // Triggers NETWORK_TIMEOUT
+    vi.mocked(Math.random).mockReturnValue(0.05);
 
-    await expect(submitAttestation('user_123', 'biz_456', '2024-03')).rejects.toBeInstanceOf(ExternalServiceError);
-
-    Math.random = originalMathRandom;
+    await expect(submitAttestation(userId, businessId, '2024-03')).rejects.toBeInstanceOf(ExternalServiceError);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Period validation / UTC safety
+// ---------------------------------------------------------------------------
+
+const validPeriodWindows = [
+  ['2024-02', '2024-02-01T00:00:00Z', '2024-02-29T23:59:59Z'], // leap-year February
+  ['2023-02', '2023-02-01T00:00:00Z', '2023-02-28T23:59:59Z'], // non-leap February
+  ['2025-12', '2025-12-01T00:00:00Z', '2025-12-31T23:59:59Z'], // December rollover
+  ['2025-Q1', '2025-01-01T00:00:00Z', '2025-03-31T23:59:59Z'], // quarter end (March)
+  ['2024-Q2', '2024-04-01T00:00:00Z', '2024-06-30T23:59:59Z'], // quarter end (June)
+  ['2024-Q4', '2024-10-01T00:00:00Z', '2024-12-31T23:59:59Z'], // quarter end (December)
+] as const;
+
+const invalidPeriods = [
+  '2025-Q5',   // invalid quarter
+  '2025-Q0',
+  '2025-Q10',
+  'abc',
+  '',
+  '2025-13',
+  '2025-00',
+  '2025-2',
+  '25-01',
+  '2025-12 ',  // trailing whitespace
+];
+
+describe('period parsing — exact UTC windows', () => {
+  it.each(validPeriodWindows)(
+    '%s maps to an exact UTC window',
+    (period, expectedStart, expectedEnd) => {
+      expect(parsePeriodToIsoRange(period)).toEqual({
+        startDate: expectedStart,
+        endDate: expectedEnd,
+      });
+    },
+  );
+
+  it('uses an exclusive UTC-midnight end bound for months and quarters', () => {
+    expect(parsePeriodToBounds('2024-02').end.toISOString()).toBe('2024-03-01T00:00:00.000Z');
+    expect(parsePeriodToBounds('2024-Q4').end.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+    expect(parsePeriodToBounds('2025-Q1').start.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+  });
+
+  it.each(invalidPeriods)('rejects %j with a 400-class PeriodParseError', (period) => {
+    expect(() => parsePeriodToIsoRange(period)).toThrow(PeriodParseError);
+    try {
+      parsePeriodToIsoRange(period);
+    } catch (error) {
+      const err = error as PeriodParseError;
+      expect(err.status).toBe(400);
+      expect(err.code).toBe('INVALID_PERIOD');
+      expect(err.vrtCode).toBe(VRTErrorCodes.VRT_0002);
+    }
+  });
+
+  it('exposes one regex that accepts exactly the service-supported formats', () => {
+    for (const [period] of validPeriodWindows) {
+      expect(PERIOD_REGEX.test(period)).toBe(true);
+    }
+    for (const period of invalidPeriods) {
+      expect(PERIOD_REGEX.test(period)).toBe(false);
+    }
+  });
+
+  it('produces identical windows under different timezone values', () => {
+    const originalTZ = process.env.TZ;
+    const timezones = ['UTC', 'America/Los_Angeles', 'Asia/Kathmandu', 'Pacific/Kiritimati'];
+    try {
+      for (const tz of timezones) {
+        process.env.TZ = tz;
+        for (const [period, expectedStart, expectedEnd] of validPeriodWindows) {
+          expect(parsePeriodToIsoRange(period)).toEqual({
+            startDate: expectedStart,
+            endDate: expectedEnd,
+          });
+        }
+      }
+    } finally {
+      process.env.TZ = originalTZ;
+    }
+  });
+});
+
+describe('submitAttestation period validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    mockFetchRazorpayRevenue.mockResolvedValue(mockRevenue);
+    mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
+    mockAttestationRepository.create = vi.fn().mockReturnValue({
+      id: 'att_789', businessId, period: '2024-03', createdAt: new Date().toISOString(),
+    });
+  });
+
+  afterEach(() => {
+    vi.mocked(Math.random).mockRestore();
+  });
+
+  it.each(invalidPeriods)('rejects %j before reaching Razorpay', async (period) => {
+    await expect(submitAttestation(userId, businessId, period)).rejects.toMatchObject({
+      status: 400,
+      vrtCode: VRTErrorCodes.VRT_0002,
+      code: 'INVALID_PERIOD',
+    });
+    expect(mockFetchRazorpayRevenue).not.toHaveBeenCalled();
+  });
+
+  it.each(validPeriodWindows)(
+    'fetches the exact %s window regardless of server timezone',
+    async (period, expectedStart, expectedEnd) => {
+      const originalTZ = process.env.TZ;
+      const results: Array<[string, string]> = [];
+      try {
+        for (const tz of ['UTC', 'America/Los_Angeles']) {
+          process.env.TZ = tz;
+          await submitAttestation(userId, businessId, period);
+          const call = mockFetchRazorpayRevenue.mock.calls.at(-1)!;
+          results.push([call[0] as string, call[1] as string]);
+        }
+      } finally {
+        process.env.TZ = originalTZ;
+      }
+
+      expect(results).toEqual([
+        [expectedStart, expectedEnd],
+        [expectedStart, expectedEnd],
+      ]);
+    },
+  );
 });

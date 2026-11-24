@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import fs from "node:fs/promises";
-import tls from "node:tls";
+import tls, { type TLSSocket } from "node:tls";
 import type { Server as HttpsServer } from "node:https";
 import { config } from "../config/index.js";
 import type { TlsIdentityMaterial } from "../spiffe/types.js";
@@ -111,25 +111,27 @@ async function handleMtls(
     return next();
   }
 
-  const cert = req.socket.getPeerCertificate(true);
+  const tlsSocket = req.socket as TLSSocket;
+  const cert = tlsSocket.getPeerCertificate(true);
 
-  if (!cert || Object.keys(cert).length === 0 || !req.socket.authorized) {
+  if (!cert || Object.keys(cert).length === 0 || !tlsSocket.authorized) {
     const hasCert = cert && Object.keys(cert).length > 0;
     const reason = !hasCert ? "no_client_cert" : "unauthorized";
     mtlsHandshakeFailuresTotal.inc({ reason });
     logger.warn({
       event: "mtls_unauthorized",
-      reason: req.socket.authorizationError || reason,
+      reason: tlsSocket.authorizationError || reason,
     });
-    return res.status(495).json({
+    res.status(495).json({
       status: "error",
       code: "MTLS_UNAUTHORIZED",
       message: "Client certificate required",
     });
+    return;
   }
 
   const revocationDecision = await mtlsRevocationChecker.verifyClientCertificate(
-    req.socket,
+    tlsSocket,
     cert,
   );
   if (!revocationDecision.ok) {
@@ -141,7 +143,7 @@ async function handleMtls(
       status: revocationDecision.status,
       detail: revocationDecision.detail,
     });
-    return res.status(403).json({
+    res.status(403).json({
       status: "error",
       code:
         revocationDecision.status === "revoked"
@@ -152,6 +154,7 @@ async function handleMtls(
           ? "Client certificate has been revoked"
           : "Client certificate revocation status could not be validated",
     });
+    return;
   }
 
   // SPIFFE mode: the workload identity is the SPIFFE ID from the certificate's
@@ -177,14 +180,16 @@ async function handleMtls(
       return;
     }
 
+    const rawCn = cert.subject?.CN;
     req.clientSpiffeId = spiffeId;
-    req.clientCN = cert.subject?.CN;
+    req.clientCN = Array.isArray(rawCn) ? rawCn[0] : rawCn;
     next();
     return;
   }
 
   // Check if CN is in allowlist (if allowlist is not empty)
-  const cn = cert.subject?.CN;
+  const rawCn = cert.subject?.CN;
+  const cn = Array.isArray(rawCn) ? rawCn[0] : rawCn;
   if (config.mtls.cnAllowlist.length > 0) {
     if (!cn || !config.mtls.cnAllowlist.includes(cn)) {
       mtlsHandshakeFailuresTotal.inc({ reason: "cn_not_allowed" });
@@ -193,11 +198,12 @@ async function handleMtls(
         client_cn: cn,
         allowlist: config.mtls.cnAllowlist,
       });
-      return res.status(403).json({
+      res.status(403).json({
         status: "error",
         code: "MTLS_CN_NOT_ALLOWED",
         message: "Client certificate CN not allowed",
       });
+      return;
     }
   }
 

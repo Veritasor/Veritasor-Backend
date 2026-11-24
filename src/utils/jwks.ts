@@ -352,8 +352,9 @@ export class JwksManager {
     }
 
     if (currentSigningKey) {
-      if (!publicJwks.some((jwk) => jwk.kid === currentSigningKey.kid)) {
-        publicJwks.push(currentSigningKey.publicJwk)
+      const signingKey = currentSigningKey
+      if (!publicJwks.some((jwk) => jwk.kid === signingKey.kid)) {
+        publicJwks.push(signingKey.publicJwk)
       }
     }
 
