@@ -46,6 +46,17 @@ vi.mock('../../src/services/merkle.js', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../../src/services/merkle.js')>();
   return { ...mod, generateMerkleRoot: vi.fn() };
 });
+import * as attestationRepository from '../../src/repositories/attestationRepository.js';
+import * as CryptoUtils from '../../src/services/merkle.js';
+import { AppError, ExternalServiceError } from '../../src/types/errors.js';
+
+import { db } from '../../src/db/client.js';
+vi.mock('../../src/db/client.js', () => ({ db: {} }));
+
+// Mock dependencies
+vi.mock('../../src/services/revenue/razorpayFetch.js');
+vi.mock('../../src/repositories/attestationRepository.js');
+vi.mock('../../src/services/merkle.js', async (importOriginal) => { const mod = await importOriginal(); return { ...mod, generateMerkleRoot: vi.fn() }; });
 
 const mockFetchRazorpayRevenue = vi.mocked(fetchRazorpayRevenue);
 const mockAttestationRepository = vi.mocked(attestationRepository);
@@ -75,7 +86,12 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     id: 'att_789',
     businessId,
     period,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date('2024-04-01T00:00:00Z'),
+    updatedAt: new Date('2024-04-01T00:00:00Z'),
+    merkleRoot: 'root',
+    txHash: 'tx',
+    status: 'submitted' as const,
+    version: 1,
   };
 
   beforeEach(() => {
@@ -86,6 +102,8 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     mockAttestationRepository.create = vi.fn().mockReturnValue(mockAttestation);
     mockRevenueSnapshotUpsert.mockResolvedValue({ id: 'snap-456' } as any);
     vi.spyOn(CryptoUtils, 'generateMerkleRoot').mockReturnValue('0xmockedmerkleroothashstring');
+    mockAttestationRepository.create.mockResolvedValue(mockAttestation);
+    vi.spyOn(CryptoUtils, "generateMerkleRoot").mockReturnValue("0xmockedmerkleroothashstring");
   });
 
   afterEach(() => {
@@ -105,9 +123,11 @@ describe('submitAttestation - Enhanced with retry logic', () => {
 
     expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(startDate, endDate, businessId);
     expect(mockAttestationRepository.create).toHaveBeenCalledWith({
+    expect(mockFetchRazorpayRevenue).toHaveBeenCalledWith(businessId, startDate, endDate);
+    expect(mockAttestationRepository.create).toHaveBeenCalledWith(db, expect.objectContaining({
       businessId,
       period,
-    });
+    }));
 
     // Snapshot write path: the submit flow persists a revenue snapshot for analytics.
     expect(mockRevenueSnapshotUpsert).toHaveBeenCalledWith({
@@ -245,6 +265,8 @@ describe('submitAttestation - Enhanced with retry logic', () => {
     mockAttestationRepository.create = vi.fn().mockImplementation(() => {
       throw new Error('Database connection failed');
     });
+    const repoError = new Error('Database connection failed');
+    mockAttestationRepository.create.mockRejectedValue(repoError);
 
     await expect(submitAttestation(userId, businessId, period)).rejects.toThrow(
       expect.objectContaining({

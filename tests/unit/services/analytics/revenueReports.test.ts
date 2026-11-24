@@ -4,7 +4,12 @@ const { listByBusinessAndRange } = vi.hoisted(() => ({ listByBusinessAndRange: v
 
 vi.mock('../../../../src/repositories/revenueSnapshotRepository.js', () => ({
   revenueSnapshotRepository: { listByBusinessAndRange },
+vi.mock('../../../../src/repositories/attestationRepository.js', () => ({
+  listByBusiness,
 }))
+
+vi.mock('../../../../src/db/client.js', () => ({ db: {} }))
+import { db } from '../../../../src/db/client.js'
 
 import { getRevenueReport, TimeWindowError } from '../../../../src/services/analytics/revenueReports.js'
 import type { RevenueSnapshot } from '../../../../src/repositories/revenueSnapshotRepository.js'
@@ -15,6 +20,11 @@ const snapshots: RevenueSnapshot[] = [
   { id: 'snap_nov', businessId: 'biz_1', period: '2025-11', totalRevenue: 1200, netRevenue: 1140, currency: 'USD', createdAt: '2025-12-01T00:00:00.000Z' },
   { id: 'snap_dec', businessId: 'biz_1', period: '2025-12', totalRevenue: 1300, netRevenue: 1235, currency: 'USD', createdAt: '2026-01-01T00:00:00.000Z' },
   { id: 'snap_other_business', businessId: 'biz_2', period: '2025-11', totalRevenue: 99999, netRevenue: 99999, currency: 'USD', createdAt: '2025-12-02T00:00:00.000Z' },
+const records = [
+  { id: 'att_oct', businessId: 'biz_1', period: '2025-10', createdAt: new Date('2025-11-01T00:00:00.000Z') },
+  { id: 'att_nov', businessId: 'biz_1', period: '2025-11', createdAt: new Date('2025-12-01T00:00:00.000Z') },
+  { id: 'att_dec', businessId: 'biz_1', period: '2025-12', createdAt: new Date('2026-01-01T00:00:00.000Z') },
+  { id: 'att_other_business', businessId: 'biz_2', period: '2025-11', createdAt: new Date('2025-12-02T00:00:00.000Z') },
 ]
 
 describe('revenueReports', () => {
@@ -29,10 +39,11 @@ describe('revenueReports', () => {
           ),
         ),
     )
+    listByBusiness.mockResolvedValue(records.filter((record) => record.businessId === 'biz_1'))
   })
 
   describe('TimeWindowError', () => {
-    it('exposes a stable name and code while preserving the message', () => {
+    it('exposes a stable name and code while preserving the message', async () => {
       const error = new TimeWindowError('invalid window')
 
       expect(error).toBeInstanceOf(Error)
@@ -47,6 +58,8 @@ describe('revenueReports', () => {
       const report = await getRevenueReport('biz_1', '2025-11')
 
       expect(report).toEqual({
+    it('returns the selected single period and calculated report fields', async () => {
+      expect(await getRevenueReport('biz_1', '2025-11')).toEqual({
         period: '2025-11',
         total: 1200,
         net: 1140,
@@ -61,6 +74,11 @@ describe('revenueReports', () => {
         snapshots.find((s) => s.id === 'snap_nov')!,
         snapshots.find((s) => s.id === 'snap_dec')!,
       ])
+      expect(listByBusiness).toHaveBeenCalledWith(db, 'biz_1')
+    })
+
+    it('returns an inclusive range report without including another business', async () => {
+      listByBusiness.mockResolvedValue(records.filter((record) => record.businessId === 'biz_1'))
 
       expect(await getRevenueReport('biz_1', undefined, '2025-11', '2025-12')).toEqual({
         period: '2025-11 to 2025-12',
@@ -77,6 +95,7 @@ describe('revenueReports', () => {
 
     it('accepts the 24 month maximum range and rejects a 25 month range', async () => {
       listByBusinessAndRange.mockResolvedValue([])
+      listByBusiness.mockResolvedValue([])
       expect(await getRevenueReport('biz_1', undefined, '2024-01', '2025-12')).toBeNull()
       await expect(getRevenueReport('biz_1', undefined, '2024-01', '2026-01'))
         .rejects.toThrow(/25 months exceeds the maximum allowed window of 24 months/)
@@ -85,6 +104,8 @@ describe('revenueReports', () => {
     it('returns null when no snapshot rows exist for the window', async () => {
       listByBusinessAndRange.mockResolvedValue([])
       await expect(getRevenueReport('biz_1', '2026-01')).resolves.toBeNull()
+    it('returns null when no attestations match', async () => {
+      expect(await getRevenueReport('biz_1', '2026-01')).toBeNull()
     })
 
     it.each([
@@ -92,6 +113,9 @@ describe('revenueReports', () => {
       ['malformed period', () => getRevenueReport('biz_1', '2025/11'), /YYYY-MM/],
       ['invalid from month', () => getRevenueReport('biz_1', undefined, '2025-13', '2025-12'), /YYYY-MM/],
       ['invalid to format', () => getRevenueReport('biz_1', undefined, '2025-11', '2025-1'), /exactly 7 characters/],
+      ['malformed period', () => getRevenueReport('biz_1', '2025/11'), /Must be a valid YYYY-MM month string/],
+      ['invalid from month', () => getRevenueReport('biz_1', undefined, '2025-13', '2025-12'), /month must be between 01 and 12/],
+      ['invalid to format', () => getRevenueReport('biz_1', undefined, '2025-11', '2025-1'), /Period string must be exactly 7 characters/],
       ['incomplete range', () => getRevenueReport('biz_1', undefined, '2025-11'), /Provide either/],
       ['reversed range', () => getRevenueReport('biz_1', undefined, '2025-12', '2025-11'), /must not be later/],
     ])('throws TimeWindowError for %s', async (_case, invoke, message) => {
@@ -326,6 +350,7 @@ describe('revenueReports', () => {
     it('throws TimeWindowError when both period and from/to are supplied simultaneously', () => {
       // Schema-level refine: period + range is not allowed
       expect(() => getRevenueReport('biz_1', '2025-11', '2025-11', '2025-12')).toThrow(TimeWindowError)
+      expect(listByBusiness).not.toHaveBeenCalled()
     })
   })
 })

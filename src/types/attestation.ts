@@ -1,3 +1,5 @@
+import type { QueryResultRow } from 'pg';
+
 /**
  * Attestation Repository Type Definitions
  * 
@@ -105,6 +107,7 @@ export interface DbClient {
    * @returns Promise resolving to query result with rows array
    */
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: any[] }>;
+  query<T extends QueryResultRow = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
 }
 
 /**

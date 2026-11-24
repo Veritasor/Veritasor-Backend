@@ -16,6 +16,8 @@
  */
 
 import { revenueSnapshotRepository } from '../../repositories/revenueSnapshotRepository.js'
+import { listByBusiness } from '../../repositories/attestationRepository.js'
+import { db } from '../../db/client.js'
 import { revenueReportQuerySchema } from './revenueReportSchema.js'
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,15 @@ export const getRevenueReport = async (
   }
 
   const snapshots = await revenueSnapshotRepository.listByBusinessAndRange(businessId, start, end)
+    resolvedPeriod = `${from} to ${to}`
+  }
+
+  const records = await listByBusiness(db, businessId)
+  const attestations = records.filter((a) => period
+    ? a.period === period
+    : a.period >= from! && a.period <= to!)
+
+  if (attestations.length === 0) return null
 
   if (snapshots.length === 0) return null
 
@@ -215,6 +226,10 @@ export const getRevenueReport = async (
     breakdown: snapshots.map((snapshot) => ({
       attestationId: snapshot.id,
       attestedAt: snapshot.createdAt,
+    currency: 'USD',
+    breakdown: attestations.map((a) => ({
+      attestationId: a.id,
+      attestedAt: a.createdAt.toISOString(),
     })),
   }
 }
