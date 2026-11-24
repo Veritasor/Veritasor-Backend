@@ -93,6 +93,8 @@ export const rawEnvSchema = z.object({
   REDIS_TLS: z.string().optional(),
   REDIS_FORCE_SINGLE_NODE: z.string().optional(),
   EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
+  BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS: z.string().optional(),
+  BUSINESSES_PUBLIC_RATE_LIMIT_MAX: z.string().optional(),
 });
 
 export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
@@ -646,5 +648,22 @@ export const config = {
     } else {
       process.env.METRICS_AUTH_TOKEN = val;
     }
+  rateLimits: {
+    /**
+     * Public business directory endpoints (`GET /api/businesses` and `GET /api/businesses/:id`).
+     * Defaults to 60 requests per 60 seconds per IP.
+     */
+    businessesPublic: {
+      windowMs: parsePositiveIntEnv(
+        "BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS",
+        parsedEnv.BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS,
+        60_000,
+      ),
+      max: parsePositiveIntEnv(
+        "BUSINESSES_PUBLIC_RATE_LIMIT_MAX",
+        parsedEnv.BUSINESSES_PUBLIC_RATE_LIMIT_MAX,
+        60,
+      ),
+    },
   },
 } as const;
