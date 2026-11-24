@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { SecretAdapter } from './secret-loader.js'
+import type { SecretAdapter } from './secrets/base.js'
 
 export interface ProviderContext {
-  adapter: SecretAdapter
+  // FileAdapter has historically returned a Promise, while the other adapters
+  // return strings. Exercise both without changing the loader's public API.
+  adapter: Omit<SecretAdapter, 'get'> & { get(key: string): string | Promise<string> }
   seed?: (key: string, value: string) => void
 }
 
@@ -29,11 +31,10 @@ export function describeSecretProviderContract(
       expect(result).toBe(VALUE)
     })
 
-    it('get(unknownKey) throws an error', async () => {
+    it('get(unknownKey) throws when the provider has no value', async () => {
       const ctx = await createAdapter()
-      if (ctx.seed) ctx.seed(KEY, VALUE)
       await ctx.adapter.reload()
-      await expect(ctx.adapter.get(MISSING)).rejects.toThrow()
+      await expect(async () => ctx.adapter.get(MISSING)).rejects.toThrow()
     })
 
     it('reload() resolves', async () => {

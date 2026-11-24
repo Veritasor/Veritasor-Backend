@@ -1,9 +1,25 @@
 import { afterEach, vi } from 'vitest'
-import { EnvAdapter, VaultAdapter, AwsSecretsAdapter } from './secret-loader.js'
+import fs from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { EnvAdapter } from './secrets/env.js'
+import { FileAdapter } from './secrets/file.js'
+import { VaultAdapter } from './secrets/vault.js'
+import { AwsSecretsAdapter } from './secrets/aws.js'
+import { GsmSecretAdapter } from './secrets/gsm.js'
 import { describeSecretProviderContract } from './secret-provider.contract.js'
 
 let mockSecretString: string
 let mockSend: ReturnType<typeof vi.fn>
+let mockAccessSecretVersion: ReturnType<typeof vi.fn>
+const directories: string[] = []
+
+vi.mock('@google-cloud/secret-manager', () => ({
+  SecretManagerServiceClient: vi.fn(function () {
+    return { accessSecretVersion: mockAccessSecretVersion }
+  }),
+}))
 
 vi.mock('@aws-sdk/client-secrets-manager', () => ({
   SecretsManagerClient: vi.fn(function () {
@@ -25,9 +41,11 @@ function restoreEnv() {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
   restoreEnv()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+  await Promise.all(directories.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })))
 })
 
 describeSecretProviderContract('EnvAdapter', async () => ({
@@ -52,6 +70,7 @@ describeSecretProviderContract('VaultAdapter', async () => {
 })
 
 describeSecretProviderContract('AwsSecretsAdapter', async () => {
+  mockSecretString = '{}'
   mockSend = vi.fn(async (command) => {
     const key = command.SecretId
     if (key === 'CONTRACT_MISSING_KEY') {
@@ -66,5 +85,29 @@ describeSecretProviderContract('AwsSecretsAdapter', async () => {
   return {
     adapter: new AwsSecretsAdapter('us-east-1'),
     seed: (_key, value) => { mockSecretString = JSON.stringify({ CONTRACT_TEST_KEY: value }) },
+  }
+})
+
+describeSecretProviderContract('FileAdapter', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'secret-provider-contract-'))
+  directories.push(dir)
+  const file = path.join(dir, 'secrets.json')
+  await fs.writeFile(file, '{}')
+  return {
+    adapter: new FileAdapter(file),
+    seed: (key, value) => {
+      // The contract seed hook is synchronous; write before reload reads it.
+      writeFileSync(file, JSON.stringify({ [key]: value }))
+    },
+  }
+})
+
+describeSecretProviderContract('GsmSecretAdapter', async () => {
+  let value: string | undefined
+  process.env.GSM_SECRET_NAME = 'CONTRACT_TEST_KEY'
+  mockAccessSecretVersion = vi.fn(async () => [{ payload: { data: value === undefined ? undefined : Buffer.from(value) } }])
+  return {
+    adapter: new GsmSecretAdapter('contract-project'),
+    seed: (_key, next) => { value = next },
   }
 })
