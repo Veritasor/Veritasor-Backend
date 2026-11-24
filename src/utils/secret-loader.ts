@@ -692,6 +692,7 @@ class FailoverSecretLoader extends BaseSecretAdapter {
     if (direct !== undefined) {
       return direct
     }
+    return this.toSecretValue(this.primaryAdapter.get(key), key)
 
     try {
       return this.fallbackAdapter.get(key)

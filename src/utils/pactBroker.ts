@@ -86,7 +86,7 @@ async function resolveBrokerBaseUrl(): Promise<string> {
     return brokerBaseUrl.trim();
   }
 
-  const loadedUrl = await loader.get('PACT_BROKER_URL');
+  const loadedUrl = loader.get('PACT_BROKER_URL');
   if (loadedUrl && loadedUrl.trim()) {
     return loadedUrl.trim();
   }
