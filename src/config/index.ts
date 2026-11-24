@@ -227,11 +227,11 @@ function parseCsvList(rawValue: string | undefined): string[] {
     .filter(Boolean);
 }
 
-let parsedEnv: z.infer<typeof envSchema>;
+let parsedEnv: z.infer<typeof rawEnvSchema>;
 
 try {
   // Try parsing the environment variables
-  parsedEnv = envSchema.parse(process.env);
+  parsedEnv = rawEnvSchema.parse(process.env);
 } catch (error) {
   if (error instanceof z.ZodError) {
     logger.error("Configuration validation failed", JSON.stringify(error.format()));
@@ -285,11 +285,6 @@ export function getAllowedOrigins(): string | string[] {
   return "*";
 }
 
-function parseCsvList(rawValue: string | undefined): string[] {
-  if (!rawValue) return [];
-  return rawValue.split(",").map((s) => s.trim()).filter(Boolean);
-}
-
 function parseTrustProxy(rawValue: string | undefined): number | string[] | false {
   const value = rawValue?.trim();
   if (!value) return false;
@@ -308,7 +303,7 @@ function parseTrustProxy(rawValue: string | undefined): number | string[] | fals
   return entries;
 }
 
-function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
+function parseMtlsConfig(parsedEnv: z.infer<typeof rawEnvSchema>) {
   const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
   const spiffeEnabled = parseBooleanEnv(
     "MTLS_SPIFFE_ENABLED",

@@ -163,15 +163,15 @@ describe('SecretLoader', () => {
 
     it('reads from cache when primary fails', async () => {
       let mockSend = vi.fn().mockRejectedValue(new Error('Primary failure'))
-      
+
       const fakeIv = Buffer.alloc(12).toString('base64')
       const fakeAuthTag = Buffer.alloc(16).toString('base64')
-      
+
       const crypto = require('node:crypto')
       const fakeDataKey = crypto.randomBytes(32)
-      
+
       mockKmsSend.mockResolvedValue({ Plaintext: fakeDataKey })
-      
+
       const cipher = crypto.createCipheriv('aes-256-gcm', fakeDataKey, Buffer.from(fakeIv, 'base64'))
       let encrypted = cipher.update(JSON.stringify({ CACHED_SECRET: 'cached-value' }), 'utf8', 'base64')
       encrypted += cipher.final('base64')
@@ -216,11 +216,11 @@ describe('SecretLoader', () => {
       await loader.reload()
       expect(loader.get('FALLBACK_SECRET')).toBe('ultimate-fallback')
     })
-    
+
     it('falls back to ultimate fallback on cache tampering', async () => {
       let mockSend = vi.fn().mockRejectedValue(new Error('Primary failure'))
       process.env.FALLBACK_SECRET = 'ultimate-fallback'
-      
+
       const crypto = require('node:crypto')
       const fakeDataKey = crypto.randomBytes(32)
       mockKmsSend.mockResolvedValue({ Plaintext: fakeDataKey })
