@@ -68,6 +68,8 @@ router.get(
   requirePermissions(IntegrationPermission.ADMIN_READ_STATS),
   asyncErrorHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
+    const result = await dlq.getEntries({ page: 1, pageSize: 1 });
+    const entry = result.entries.find(e => String(e.id) === id);
 
     if (!isValidDlqEntryId(id)) {
       throw new ValidationError([

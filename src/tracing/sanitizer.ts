@@ -13,7 +13,9 @@
 import type {
   SpanExporter,
   ReadableSpan,
+  // @ts-expect-error — @opentelemetry/sdk-trace-base is a transitive dependency of @opentelemetry/sdk-node
 } from "@opentelemetry/sdk-trace-base";
+// @ts-expect-error — @opentelemetry/core is a transitive dependency of @opentelemetry/sdk-node
 import type { ExportResult } from "@opentelemetry/core";
 import type { Attributes } from "@opentelemetry/api";
 
@@ -130,12 +132,12 @@ export function sanitizeAttributes(
  * SDK's internal buffer and mutation would corrupt in-flight data.
  */
 function sanitizeSpan(span: ReadableSpan): ReadableSpan {
-  const sanitizedEvents = span.events.map((event) => ({
+  const sanitizedEvents = span.events.map((event: any) => ({
     ...event,
     attributes: sanitizeAttributes(event.attributes),
   }));
 
-  const sanitizedLinks = span.links.map((link) => ({
+  const sanitizedLinks = span.links.map((link: any) => ({
     ...link,
     attributes: sanitizeAttributes(link.attributes),
   }));

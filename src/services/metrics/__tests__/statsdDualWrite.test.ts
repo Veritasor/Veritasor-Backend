@@ -441,7 +441,7 @@ describe('startStatsdDualWrite', () => {
     await runCycles(1, 10_000);
     // increment should not have been called for test_recovery_counter
     const counterCalls = (client.increment as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (call: [string]) => call[0] === 'test_recovery_counter',
+      (call: any[]) => call[0] === 'test_recovery_counter',
     );
     expect(counterCalls).toHaveLength(0);
 
@@ -574,7 +574,7 @@ describe('StatsdDualWriteConfig / StatsdDualWriteHandle', () => {
     await handle.stop()
 
     const flushed = (client.increment as ReturnType<typeof vi.fn>).mock.calls.filter(
-      (call: [string]) => call[0] === 'cfg_final_flush',
+      (call: any[]) => call[0] === 'cfg_final_flush',
     )
     expect(flushed).toHaveLength(1)
     expect(flushed[0][1]).toBe(4)

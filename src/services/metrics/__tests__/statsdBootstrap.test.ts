@@ -146,7 +146,7 @@ describe('statsdBootstrap', () => {
   describe('feature flag off', () => {
     it('does not start dual-write when STATSD_DUAL_WRITE_ENABLED is false', async () => {
       // Reload config mock with enabled=false
-      const configModule = await import('../../config/index.js');
+      const configModule = await import('../../../config/index.js');
       (configModule.config as any).statsd.dualWriteEnabled = false;
 
       // Reset the module state by stopping if needed

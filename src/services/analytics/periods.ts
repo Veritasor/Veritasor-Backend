@@ -26,6 +26,8 @@
 
 import { attestationRepository } from '../../repositories/attestation.js'
 import { AppError, VRTErrorCodes } from '../../types/errors.js'
+import { listPeriods } from '../../repositories/attestationRepository.js'
+import { db } from '../../db/client.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -218,15 +220,11 @@ export const isTimestampInPeriod = (timestampSeconds: number, period: string): b
  * sorted in descending order (most recent first).
  *
  * Period strings are YYYY-MM values stored directly on attestation records;
- * they do not require further DST adjustment. The sort uses `localeCompare`
- * which, for YYYY-MM strings, is equivalent to lexicographic / chronological
- * ordering.
+ * they do not require further DST adjustment. The SQL repository selects
+ * distinct periods in descending chronological order.
  *
  * @param businessId - The authenticated business identifier.
  */
-export const listAttestedPeriodsForBusiness = (businessId: string): string[] => {
-  const attestations = attestationRepository.listByBusiness(businessId)
-  return Array.from(new Set(attestations.map((a) => a.period))).sort((a, b) =>
-    b.localeCompare(a),
-  )
+export const listAttestedPeriodsForBusiness = (businessId: string): Promise<string[]> => {
+  return listPeriods(db, businessId)
 }

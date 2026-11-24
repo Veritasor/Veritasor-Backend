@@ -267,8 +267,6 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
             ca: material.ca,
             cert: material.cert,
             key: material.key,
-            requestCert: true,
-            rejectUnauthorized: false,
           });
         },
       });

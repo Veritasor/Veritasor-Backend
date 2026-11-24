@@ -93,6 +93,8 @@ export const rawEnvSchema = z.object({
   REDIS_TLS: z.string().optional(),
   REDIS_FORCE_SINGLE_NODE: z.string().optional(),
   EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
+  BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS: z.string().optional(),
+  BUSINESSES_PUBLIC_RATE_LIMIT_MAX: z.string().optional(),
 });
 
 export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
@@ -252,11 +254,11 @@ function parseCsvList(rawValue: string | undefined): string[] {
     .filter(Boolean);
 }
 
-let parsedEnv: z.infer<typeof envSchema>;
+let parsedEnv: z.infer<typeof rawEnvSchema>;
 
 try {
   // Try parsing the environment variables
-  parsedEnv = envSchema.parse(process.env);
+  parsedEnv = rawEnvSchema.parse(process.env);
 } catch (error) {
   if (error instanceof z.ZodError) {
     logger.error("Configuration validation failed", JSON.stringify(error.format()));
@@ -301,7 +303,7 @@ export function getAllowedOrigins(): string | string[] {
   if (raw) {
     return raw
       .split(",")
-      .map((s) => s.trim())
+      .map((s: string) => s.trim())
       .filter(Boolean);
   }
   if (isProduction) {
@@ -328,7 +330,7 @@ function parseTrustProxy(rawValue: string | undefined): number | string[] | fals
   return entries;
 }
 
-function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
+function parseMtlsConfig(parsedEnv: z.infer<typeof rawEnvSchema>) {
   const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
   const spiffeEnabled = parseBooleanEnv(
     "MTLS_SPIFFE_ENABLED",
@@ -368,6 +370,12 @@ function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
         parsedEnv.SPIFFE_WORKLOAD_API_SOCKET?.trim()
         ?? "unix:///tmp/spire-agent/public/api.sock",
       refreshRatio: 0.7,
+    },
+    revocation: {
+      enabled: parseBooleanEnv("MTLS_REVOCATION_ENABLED", process.env.MTLS_REVOCATION_ENABLED, false),
+      crlPath: process.env.MTLS_CRL_PATH?.trim() || undefined,
+      ocspIssuerPath: process.env.MTLS_OCSP_ISSUER_PATH?.trim() || undefined,
+      ocspCacheTtlMs: parsePositiveIntEnv("MTLS_OCSP_CACHE_TTL_MS", process.env.MTLS_OCSP_CACHE_TTL_MS, 300_000),
     },
   };
 }
@@ -640,5 +648,22 @@ export const config = {
     } else {
       process.env.METRICS_AUTH_TOKEN = val;
     }
+  rateLimits: {
+    /**
+     * Public business directory endpoints (`GET /api/businesses` and `GET /api/businesses/:id`).
+     * Defaults to 60 requests per 60 seconds per IP.
+     */
+    businessesPublic: {
+      windowMs: parsePositiveIntEnv(
+        "BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS",
+        parsedEnv.BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS,
+        60_000,
+      ),
+      max: parsePositiveIntEnv(
+        "BUSINESSES_PUBLIC_RATE_LIMIT_MAX",
+        parsedEnv.BUSINESSES_PUBLIC_RATE_LIMIT_MAX,
+        60,
+      ),
+    },
   },
 } as const;

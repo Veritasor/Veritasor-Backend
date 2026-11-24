@@ -10,33 +10,7 @@ import { setOAuthState, consumeOAuthState } from '../services/integrations/strip
 import { generateAuthUrl } from '../services/integrations/oauth.js';
 import { logger } from '../utils/logger.js';
 
-const DEFAULT_OAUTH_CALLBACK_URL = 'http://localhost:3000/integrations/callback';
-
-/**
- * Build the provider authorization URL for the generic integration connect flow.
- *
- * Kept provider-explicit (rather than a lookup table) so the unsupported-provider
- * branch stays a hard error and the URL shapes stay covered by tests.
- */
-export function generateAuthUrl(provider: string, state: string, redirectUri?: string): string {
-  const callbackUrl = redirectUri ?? DEFAULT_OAUTH_CALLBACK_URL;
-
-  switch (provider) {
-    case 'stripe': {
-      const clientId = process.env.STRIPE_CLIENT_ID ?? 'mock_stripe_client_id';
-      return `https://connect.stripe.com/oauth/authorize?client_id=${clientId}&state=${state}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read_write`;
-    }
-    case 'shopify': {
-      const clientId = process.env.SHOPIFY_CLIENT_ID ?? 'mock_shopify_client_id';
-      const shopDomain = process.env.SHOPIFY_SHOP_DOMAIN ?? 'example';
-      return `https://${shopDomain}.myshopify.com/admin/oauth/authorize?client_id=${clientId}&state=${state}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read_products,read_orders`;
-    }
-    case 'razorpay':
-      return `${callbackUrl}?provider=razorpay&state=${state}`;
-    default:
-      throw new Error(`Unsupported provider: ${provider}`);
-  }
-}
+export { generateAuthUrl };
 
 const router = Router();
 
@@ -109,13 +83,16 @@ export function isAllowedRedirectUri(redirectUri: string): boolean {
   return allowed.includes(redirectUri)
 }
 
+const genericOAuthStates = new Map<string, { userId: string; businessId: string; expiresAt: number }>();
+
 /**
  * @notice Consume and validate a generic integration OAuth state for the caller.
  * @returns true only if the state exists, has not expired, and is bound to the caller's user/business.
  */
 export function consumeGenericOAuthState(state: string, userId: string, businessId: string): boolean {
-  const record = consumeOAuthState(state)
-  if (!record) return false
+  const record = genericOAuthStates.get(state)
+  genericOAuthStates.delete(state)
+  if (!record || record.expiresAt < Date.now()) return false
   if (record.userId !== userId || record.businessId !== businessId) return false
   return true
 }
@@ -131,7 +108,7 @@ export function generateGenericOAuthState(): string {
  * @notice Persist the generic OAuth state bound to the initiating user/business.
  */
 export function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): void {
-  setOAuthState(state, { userId, businessId, expiresAt })
+  genericOAuthStates.set(state, { userId, businessId, expiresAt })
 }
 
 /**
@@ -338,7 +315,7 @@ router.post('/connect',
  */
 router.delete('/:id',
   requireBusinessAuth,
-  requirePermissions(IntegrationPermission.DISCONNECT),
+  requirePermissions(IntegrationPermission.DISCONNECT_OWN),
   requirePolicy('delete', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {

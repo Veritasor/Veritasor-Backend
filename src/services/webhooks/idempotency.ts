@@ -14,7 +14,7 @@ interface IdempotencyEntry {
 export interface WebhookIdempotencyStore {
   isProcessed(eventId: string): Promise<boolean> | boolean
   markProcessed(eventId: string, ttlMs?: number): Promise<void> | void
-  reserve?(eventId: string, ttlMs?: number): Promise<boolean>
+  reserve?(eventId: string, ttlMs?: number): Promise<boolean> | boolean
 }
 
 class MemoryWebhookIdempotencyStore implements WebhookIdempotencyStore {
@@ -194,17 +194,9 @@ export function getWebhookIdempotencyStore(): WebhookIdempotencyStore {
   return store
 }
 
-export async function isEventProcessed(eventId: string): Promise<boolean> {
-  if (!eventId) return false
-  try {
-    const result = store.isProcessed(eventId)
-    if (result instanceof Promise) {
-      return await result
-    }
-    return result
-  } catch (err) {
-    throw err
-  }
+export function isEventProcessed(eventId: string): Promise<boolean> | boolean {
+  if (!eventId) return Promise.resolve(false)
+  return Promise.resolve().then(() => store.isProcessed(eventId))
 }
 
 export async function markEventProcessed(eventId: string, ttlMs = DEFAULT_TTL_MS): Promise<void> {
@@ -236,6 +228,11 @@ export async function reserveWebhookEvent(eventId: string, ttlMs = DEFAULT_TTL_M
   if (already) return false
   await markEventProcessed(eventId, ttlMs)
   return true
+}
+
+function resolveMaxAgeMs(): number {
+  const raw = Number(process.env.WEBHOOK_MAX_AGE_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_AGE_MS
 }
 
 export function checkTimestampTolerance(

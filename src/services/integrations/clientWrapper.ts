@@ -10,7 +10,7 @@ export interface RetryOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   jitter?: boolean;
-  shouldRetry?: (response: Response | null, error: unknown) => boolean;
+  shouldRetry?: (response: any, error: unknown) => boolean;
 }
 
 const DEFAULT_SHOULD_RETRY = (response: Response | null, error: unknown): boolean => {
@@ -79,7 +79,7 @@ export async function executeWithRetry<T = Response>(
     if (!allowed) {
       // Record exhaustion and throw budget exceeded error
       await globalOutboundRetryBudget.recordRetry(provider, operation).catch(() => {});
-      const settings = globalOutboundRetryBudget as { maxRetries: number; windowMs: number };
+      const settings = globalOutboundRetryBudget as unknown as { maxRetries: number; windowMs: number };
       throw new GlobalRetryBudgetExceededError(
         await globalOutboundRetryBudget.getRetryCount(),
         settings.maxRetries,

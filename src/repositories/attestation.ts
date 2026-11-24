@@ -11,7 +11,10 @@ export type Attestation = {
   revokeTxHash?: string;
 };
 
-// Temporary in-memory records until DB integration lands.
+// Legacy fixture repository. Production callers use attestationRepository.ts.
+if (process.env.NODE_ENV !== 'test') {
+  throw new Error('The in-memory attestation repository is available only in tests');
+}
 const attestationStore: Attestation[] = [
   {
     id: "att_1",
