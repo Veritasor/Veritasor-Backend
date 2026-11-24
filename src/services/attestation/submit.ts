@@ -4,6 +4,9 @@ import {
   RevenueEntry,
 } from "../revenue/razorpayFetch.js";
 import { buildTree, getRoot } from "../merkle/index.js";
+import { attestationRepository } from "../../repositories/attestation.js";
+import { revenueSnapshotRepository } from "../../repositories/revenueSnapshotRepository.js";
+import { roundAmount } from "../revenue/normalize.js";
 import * as attestationRepository from "../../repositories/attestationRepository.js";
 import { db } from "../../db/client.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
@@ -13,30 +16,7 @@ import {
   type BatchingQueueItem,
 } from "../soroban/batchingQueue.js";
 import { sorobanBatchItemErrorsTotal } from "../../metrics.js";
-
-/**
- * Parses a period string (e.g. "2025-10" or "2025-Q4") into ISO start and end dates.
- */
-function parsePeriod(period: string): { startDate: string; endDate: string } {
-  if (period.includes("-Q")) {
-    const [year, q] = period.split("-Q");
-    const startMonth = (parseInt(q) - 1) * 3 + 1;
-    const endMonth = startMonth + 2;
-    const endDay = new Date(parseInt(year), endMonth, 0).getDate();
-    return {
-      startDate: `${year}-${String(startMonth).padStart(2, "0")}-01T00:00:00Z`,
-      endDate: `${year}-${String(endMonth).padStart(2, "0")}-${String(endDay).padStart(2, "0")}T23:59:59Z`,
-    };
-  } else {
-    // Treat as YYYY-MM
-    const [year, month] = period.split("-");
-    const endDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-    return {
-      startDate: `${year}-${month}-01T00:00:00Z`,
-      endDate: `${year}-${month}-${String(endDay).padStart(2, "0")}T23:59:59Z`,
-    };
-  }
-}
+import { parsePeriodToIsoRange } from "../analytics/periods.js";
 
 type NormalizedRevenue = {
   date: string;
@@ -123,6 +103,9 @@ interface LogContext {
   errorCode?: string;
   duration?: number;
   delay?: number;
+  snapshotId?: string;
+  totalRevenue?: number;
+  netRevenue?: number;
 }
 
 function log(level: 'info' | 'warn' | 'error', message: string, context: LogContext): void {
@@ -329,7 +312,9 @@ async function doSubmitAttestation(
   period: string,
 ): Promise<{ attestationId: string; txHash: string }> {
   try {
-    const { startDate, endDate } = parsePeriod(period);
+    // Shared parser validates the format and derives UTC-anchored bounds.
+    // PeriodParseError extends AppError, so the outer catch preserves its 400.
+    const { startDate, endDate } = parsePeriodToIsoRange(period);
 
     // 1. Fetch Revenue
     // Using Razorpay for now, as it's the only implemented fetch service.
@@ -385,6 +370,28 @@ async function doSubmitAttestation(
       merkleRoot: root,
       txHash,
       status: 'submitted',
+    });
+
+    // 6a. Upsert the revenue snapshot consumed by analytics
+    // (revenue_snapshots table). Aggregated amounts are rounded with
+    // roundAmount() so totals are deterministic money values.
+    const snapshotTotal = roundAmount(
+      Object.values(aggregated).reduce((sum, amount) => sum + amount, 0),
+    );
+    const snapshot = await revenueSnapshotRepository.upsert({
+      businessId,
+      period,
+      totalRevenue: snapshotTotal,
+      netRevenue: roundAmount(snapshotTotal * 0.95),
+      currency: rawRevenue[0]?.currency?.toUpperCase() || "USD",
+    });
+    log("info", `Revenue snapshot upserted for period ${period}`, {
+      userId,
+      businessId,
+      period,
+      snapshotId: snapshot.id,
+      totalRevenue: snapshot.totalRevenue,
+      netRevenue: snapshot.netRevenue,
     });
 
     return {

@@ -237,17 +237,11 @@ describe("GET /api/health", () => {
   it("returns redis:ok when REDIS_URL is configured and redis responds", async () => {
     const original = process.env.REDIS_URL;
     process.env.REDIS_URL = "redis://localhost:6379";
-    vi.doMock(
-      "redis",
-      () => ({
-        createClient: vi.fn(() => ({
-          connect: vi.fn().mockResolvedValue(undefined),
-          ping: vi.fn().mockResolvedValue("PONG"),
-          quit: vi.fn().mockResolvedValue(undefined),
-        })),
-      }),
-      { virtual: true },
-    );
+    vi.doMock("../redis.js", () => ({
+      getRedisClient: vi.fn(() => ({
+        ping: vi.fn().mockResolvedValue("PONG"),
+      })),
+    }));
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();
@@ -307,20 +301,16 @@ describe("GET /api/health", () => {
   it("returns soroban:ok in deep mode when SOROBAN_RPC_URL is configured and the RPC responds", async () => {
     const original = process.env.SOROBAN_RPC_URL;
     process.env.SOROBAN_RPC_URL = "https://rpc.example.com";
-    vi.doMock(
-      "soroban-client",
-      () => ({
-        default: {
-          Server: class MockServer {
-            constructor(public url: string, public opts: unknown) {}
-            async getHealth() {
-              return { status: "healthy" };
-            }
-          },
+    vi.doMock("@stellar/stellar-sdk", () => ({
+      rpc: {
+        Server: class MockServer {
+          constructor(public url: string, public opts: unknown) {}
+          async getHealth() {
+            return { status: "healthy" };
+          }
         },
-      }),
-      { virtual: true },
-    );
+      },
+    }));
 
     const { healthRouter: freshRouter } = await import("./health.js");
     const app = express();

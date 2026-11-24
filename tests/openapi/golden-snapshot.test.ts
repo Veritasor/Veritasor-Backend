@@ -382,6 +382,58 @@ describe('OpenAPI golden snapshot', () => {
       expect(diffs.length, 'changing version should produce diffs').toBeGreaterThan(0);
     });
   });
+
+  // ─── Router prefix & YAML coverage ──────────────────────────────────────
+
+  describe('router prefix and YAML documentation coverage', () => {
+    it('every mounted router prefix in createApp has at least one documented path', () => {
+      const appSource = readFileSync(resolve(__dirname, '../../src/app.ts'), 'utf-8');
+      const mountRegex = /app\.use\(\s*["'](\/api\/[^"']+)["']/g;
+      const mountedPrefixes: string[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = mountRegex.exec(appSource)) !== null) {
+        mountedPrefixes.push(match[1]);
+      }
+
+      expect(mountedPrefixes.length).toBeGreaterThan(0);
+
+      const documentedPaths = Object.keys(
+        (generated as Record<string, unknown>).paths as Record<string, unknown>,
+      );
+
+      for (const prefix of mountedPrefixes) {
+        const hasDocumentedPath = documentedPaths.some(
+          (p) => p === prefix || p.startsWith(`${prefix}/`),
+        );
+        expect(
+          hasDocumentedPath,
+          `Expected at least one documented path for mounted router prefix "${prefix}"`,
+        ).toBe(true);
+      }
+    });
+
+    it('all expected domain OpenAPI YAML files exist in docs/openapi', () => {
+      const expectedFiles = [
+        'analytics.yaml',
+        'attestations.yaml',
+        'auth.yaml',
+        'businesses.yaml',
+        'health.yaml',
+        'integrations.yaml',
+        'public-attestations.yaml',
+        'users.yaml',
+        'webhook-subscriptions.yaml',
+      ];
+
+      for (const file of expectedFiles) {
+        const fullPath = resolve(__dirname, '../../docs/openapi', file);
+        expect(existsSync(fullPath), `Missing OpenAPI YAML file: ${file}`).toBe(true);
+        const content = readFileSync(fullPath, 'utf-8');
+        expect(content, `${file} should declare openapi version`).toMatch(/^openapi:\s*["']3\./m);
+        expect(content, `${file} should declare paths`).toMatch(/^paths:/m);
+      }
+    });
+  });
 });
 
 // ─── Utility: collect example values ──────────────────────────────────────────

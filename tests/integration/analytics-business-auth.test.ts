@@ -29,6 +29,7 @@ import * as jwt from '../../src/utils/jwt.js';
 import * as userRepository from '../../src/repositories/userRepository.js';
 import * as businessRepo from '../../src/repositories/business.js';
 import * as analyticsService from '../../src/services/analytics/periods.js';
+import { revenueSnapshotRepository } from '../../src/repositories/revenueSnapshotRepository.js';
 import * as attestationRepository from '../../src/repositories/attestationRepository.js';
 vi.mock('../../src/repositories/attestationRepository.js', () => ({ listPeriods: vi.fn(), listByBusiness: vi.fn() }));
 vi.mock('../../src/db/client.js', () => ({ db: {} }));
@@ -93,6 +94,38 @@ const SUSPENDED_BUSINESS = {
   updatedAt: '2024-01-15T00:00:00Z',
   suspended: true,
 };
+
+// ─── Revenue Snapshot Fixtures & Mock Helpers ────────────────────────────────
+
+/** Revenue snapshots for OWNER_BUSINESS, as read from `revenue_snapshots`. */
+const REVENUE_SNAPSHOTS = [
+  {
+    id: 'snap-jan-1',
+    businessId: OWNER_BUSINESS.id,
+    period: '2025-01',
+    totalRevenue: 800,
+    netRevenue: 760,
+    currency: 'USD',
+    createdAt: '2025-01-15T00:00:00.000Z',
+  },
+  {
+    id: 'snap-jan-2',
+    businessId: OWNER_BUSINESS.id,
+    period: '2025-01',
+    totalRevenue: 700,
+    netRevenue: 665,
+    currency: 'USD',
+    createdAt: '2025-01-20T00:00:00.000Z',
+  },
+];
+
+/**
+ * Mock the revenue snapshot read used by getRevenueReport
+ * (revenueSnapshotRepository.listByBusinessAndRange).
+ */
+function mockRevenueSnapshots(rows: unknown[] = REVENUE_SNAPSHOTS) {
+  vi.spyOn(revenueSnapshotRepository, 'listByBusinessAndRange').mockResolvedValue(rows as any);
+}
 
 // ─── Mock Setup Helpers ───────────────────────────────────────────────────────
 
@@ -572,9 +605,37 @@ describe('Analytics Routes — requireBusinessAuth Boundary Checks', () => {
       });
     });
 
+    describe('400 INVALID_TIME_WINDOW', () => {
+      it('rejects a window longer than the maximum range', async () => {
+        setupMocksForOwner();
+        const res = await request(app)
+          .get('/api/analytics/revenue?from=2024-01&to=2026-01') // 25 months
+          .set('Authorization', 'Bearer valid-token')
+          .set('x-business-id', OWNER_BUSINESS.id);
+
+        expect(res.status).toBe(400);
+        expect(res.body.error).toContain('exceeds the maximum allowed window of 24 months');
+      });
+    });
+
+    describe('404 NO REVENUE DATA', () => {
+      it('returns 404 when no snapshots exist for the window', async () => {
+        setupMocksForOwner();
+        mockRevenueSnapshots([]);
+        const res = await request(app)
+          .get('/api/analytics/revenue?period=2025-01')
+          .set('Authorization', 'Bearer valid-token')
+          .set('x-business-id', OWNER_BUSINESS.id);
+
+        expect(res.status).toBe(404);
+        expect(res.body.error).toContain('No revenue data found');
+      });
+    });
+
     describe('200 Success Cases', () => {
       it('returns 200 for valid business owner with period param', async () => {
         setupMocksForOwner();
+        mockRevenueSnapshots();
         const res = await request(app)
           .get('/api/analytics/revenue?period=2025-01')
           .set('Authorization', 'Bearer valid-token')
@@ -582,17 +643,47 @@ describe('Analytics Routes — requireBusinessAuth Boundary Checks', () => {
 
         expect(res.status).toBe(200);
         expect(res.body).toBeDefined();
+        expect(revenueSnapshotRepository.listByBusinessAndRange).toHaveBeenCalledWith(
+          OWNER_BUSINESS.id,
+          '2025-01',
+          '2025-01',
+        );
       });
 
       it('returns 200 for valid business owner with range params', async () => {
         setupMocksForOwner();
+        mockRevenueSnapshots();
         const res = await request(app)
           .get('/api/analytics/revenue?from=2024-01&to=2024-12')
           .set('Authorization', 'Bearer valid-token')
           .set('x-business-id', OWNER_BUSINESS.id);
 
         expect(res.status).toBe(200);
-        expect(res.body).toBeDefined();
+        expect(revenueSnapshotRepository.listByBusinessAndRange).toHaveBeenCalledWith(
+          OWNER_BUSINESS.id,
+          '2024-01',
+          '2024-12',
+        );
+      });
+
+      it('returns 200 with aggregated snapshot data for the requested window', async () => {
+        setupMocksForOwner();
+        mockRevenueSnapshots();
+        const res = await request(app)
+          .get('/api/analytics/revenue?period=2025-01')
+          .set('Authorization', 'Bearer valid-token')
+          .set('x-business-id', OWNER_BUSINESS.id);
+
+        expect(res.status).toBe(200);
+        expect(res.body.period).toBe('2025-01');
+        expect(res.body.total).toBe(1500);
+        expect(res.body.net).toBe(1425);
+        expect(res.body.currency).toBe('USD');
+        expect(res.body.breakdown).toHaveLength(2);
+        expect(res.body.breakdown[0]).toMatchObject({
+          attestationId: 'snap-jan-1',
+          attestedAt: '2025-01-15T00:00:00.000Z',
+        });
       });
     });
   });

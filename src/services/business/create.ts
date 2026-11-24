@@ -32,6 +32,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { businessRepository } from '../../repositories/business.js';
 import { AppError } from '../../types/errors.js';
+import { logger } from '../../utils/logger.js';
 import {
   parseCreateBusinessInput,
   CreateBusinessInput,
@@ -168,6 +169,7 @@ export async function createBusiness(req: Request, res: Response) {
       industry: normalizedData.industry,
       description: normalizedData.description,
       website: normalizedData.website,
+      countryCode: normalizedData.countryCode,
     });
 
     // @dev Return created business with 201 status
@@ -183,12 +185,12 @@ export async function createBusiness(req: Request, res: Response) {
 
     // @dev Structured log: emit a JSON-serialisable object so log aggregators
     //      (e.g. Datadog, Cloud Logging) can index fields individually.
-    console.error(JSON.stringify({
+    logger.error({
       event: 'business.create.error',
       userId: req.user?.id ?? null,
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
-    }));
+    });
 
     return res.status(500).json({
       error: 'INTERNAL_ERROR',

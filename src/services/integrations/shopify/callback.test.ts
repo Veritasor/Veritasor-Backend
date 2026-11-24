@@ -88,7 +88,7 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -103,8 +103,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'test-shop.myshopify.com',
         token: { accessToken: 'test-token' },
         metadata: { shop: 'test-shop.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const params = createValidParams(state, 'test-shop.myshopify.com')
@@ -146,7 +146,7 @@ describe('Shopify OAuth Callback', () => {
       vi.advanceTimersByTime(5 * 60 * 1000)
 
       // Mock successful token exchange
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -160,8 +160,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'test-shop.myshopify.com',
         token: { accessToken: 'test-token' },
         metadata: { shop: 'test-shop.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const params = createValidParams(state, 'test-shop.myshopify.com')
@@ -181,7 +181,7 @@ describe('Shopify OAuth Callback', () => {
       // Advance time to exactly expiry time
       vi.advanceTimersByTime(10 * 60 * 1000)
 
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -195,8 +195,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'test-shop.myshopify.com',
         token: { accessToken: 'test-token' },
         metadata: { shop: 'test-shop.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const params = createValidParams(state, 'test-shop.myshopify.com')
@@ -291,7 +291,7 @@ describe('Shopify OAuth Callback', () => {
         Date.now() + 10 * 60 * 1000,
       )
       store.saveToken('business-a', 'shop-a', 'token-a')
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'token-b' }),
       })
@@ -304,8 +304,8 @@ describe('Shopify OAuth Callback', () => {
           externalId: 'shop-a.myshopify.com',
           token: { accessToken: 'token-a' },
           metadata: { shop: 'shop-a.myshopify.com' },
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         },
       ])
       vi.mocked(integrationRepository.listByBusinessId).mockResolvedValue([])
@@ -317,8 +317,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'shop-b.myshopify.com',
         token: { accessToken: 'token-b' },
         metadata: { shop: 'shop-b.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const result = await handleCallback(
@@ -345,7 +345,7 @@ describe('Shopify OAuth Callback', () => {
         Date.now() + 10 * 60 * 1000,
       )
       store.saveToken('business-1', 'shop-a', 'token-a')
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'token-b' }),
       })
@@ -358,8 +358,8 @@ describe('Shopify OAuth Callback', () => {
           externalId: 'shop-a.myshopify.com',
           token: { accessToken: 'token-a' },
           metadata: { shop: 'shop-a.myshopify.com' },
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         },
       ])
       vi.mocked(integrationRepository.deleteById).mockResolvedValue(true)
@@ -371,8 +371,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'shop-b.myshopify.com',
         token: { accessToken: 'token-b' },
         metadata: { shop: 'shop-b.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const result = await handleCallback(
@@ -398,7 +398,7 @@ describe('Shopify OAuth Callback', () => {
         Date.now() + 10 * 60 * 1000,
       )
       store.saveToken('business-1', 'shop-a', 'token-a')
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'token-b' }),
       })
@@ -411,8 +411,8 @@ describe('Shopify OAuth Callback', () => {
           externalId: 'shop-a.myshopify.com',
           token: { accessToken: 'token-a' },
           metadata: { shop: 'shop-a.myshopify.com' },
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         },
       ])
       vi.mocked(integrationRepository.deleteById).mockResolvedValue(false)
@@ -439,7 +439,7 @@ describe('Shopify OAuth Callback', () => {
       store.setOAuthState(state, 'test-shop', 'user-1', 'business-1', expiresAt)
 
       // Mock successful token exchange
-      mockFetch.mockResolved({
+      mockFetch.mockResolvedValue({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -453,8 +453,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'test-shop.myshopify.com',
         token: { accessToken: 'test-token' },
         metadata: { shop: 'test-shop.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const params = createValidParams(state, 'test-shop.myshopify.com')
@@ -503,7 +503,7 @@ describe('Shopify OAuth Callback', () => {
       const expiresAt = now + 10 * 60 * 1000
       store.setOAuthState(state, 'TEST-SHOP', 'user-1', 'business-1', expiresAt)
 
-      mockFetch.mockResolvedOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ access_token: 'test-token' }),
       })
@@ -517,8 +517,8 @@ describe('Shopify OAuth Callback', () => {
         externalId: 'test-shop.myshopify.com',
         token: { accessToken: 'test-token' },
         metadata: { shop: 'test-shop.myshopify.com' },
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
 
       const params = createValidParams(state, 'test-shop.myshopify.com')

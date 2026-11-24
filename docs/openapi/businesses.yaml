@@ -1,0 +1,392 @@
+openapi: "3.0.0"
+info:
+  title: Veritasor Businesses API
+  version: 1.0.0
+  description: API for creating, listing, retrieving, updating businesses, and registering business webhooks.
+
+paths:
+  /businesses:
+    get:
+      summary: List businesses
+      operationId: listBusinesses
+      description: Public endpoint supporting keyset pagination and industry filtering (`businessListQuerySchema`).
+      tags: [businesses]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Keyset pagination cursor.
+        - name: sortBy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [createdAt, name]
+            default: createdAt
+        - name: sortOrder
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: industry
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+      responses:
+        "200":
+          description: Paginated list of businesses.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessListResponse"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      summary: Create a new business
+      operationId: createBusiness
+      description: Creates a business for the authenticated user (`createBusinessInputSchema`). One business per user.
+      tags: [businesses]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBusinessInput"
+      responses:
+        "201":
+          description: Business created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Business"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Business already exists for user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /businesses/me:
+    get:
+      summary: Get authenticated user's business
+      operationId: getMyBusiness
+      tags: [businesses]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Authenticated user's business.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Business"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Business not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    patch:
+      summary: Update authenticated user's business
+      operationId: updateMyBusiness
+      description: Partial update of the authenticated user's business (`updateBusinessInputSchema`).
+      tags: [businesses]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateBusinessInput"
+      responses:
+        "200":
+          description: Updated business object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Business"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Business not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /businesses/{id}:
+    get:
+      summary: Get business by ID
+      operationId: getBusinessById
+      tags: [businesses]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Business details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Business"
+        "404":
+          description: Business not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /businesses/{id}/webhooks:
+    post:
+      summary: Register a webhook for a business
+      operationId: registerBusinessWebhook
+      tags: [businesses]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BusinessWebhookRegistration"
+      responses:
+        "201":
+          description: Webhook subscription registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessWebhookSubscription"
+        "400":
+          description: Validation error or maximum capacity (5) reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    CreateBusinessInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: "Acme Corp"
+        industry:
+          type: string
+          maxLength: 100
+          nullable: true
+          example: "Technology"
+        description:
+          type: string
+          maxLength: 2000
+          nullable: true
+          example: "Verified SaaS commerce platform"
+        countryCode:
+          type: string
+          minLength: 2
+          maxLength: 2
+          pattern: "^[A-Z]{2}$"
+          nullable: true
+          example: "US"
+        website:
+          type: string
+          format: uri
+          maxLength: 2048
+          nullable: true
+          example: "https://acme.example.com"
+      required:
+        - name
+
+    UpdateBusinessInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        industry:
+          type: string
+          maxLength: 100
+          nullable: true
+        description:
+          type: string
+          maxLength: 2000
+          nullable: true
+        countryCode:
+          type: string
+          minLength: 2
+          maxLength: 2
+          pattern: "^[A-Z]{2}$"
+          nullable: true
+        website:
+          type: string
+          format: uri
+          maxLength: 2048
+          nullable: true
+
+    Business:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        industry:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        countryCode:
+          type: string
+          nullable: true
+        website:
+          type: string
+          format: uri
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+
+    BusinessListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Business"
+        nextCursor:
+          type: string
+          nullable: true
+      required:
+        - data
+
+    BusinessWebhookRegistration:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Valid public HTTPS webhook endpoint URL.
+        secret:
+          type: string
+          minLength: 32
+          description: Cryptographically strong signing secret (min 32 characters).
+      required:
+        - url
+        - secret
+
+    BusinessWebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        businessId:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+        secret:
+          type: string
+      required:
+        - id
+        - businessId
+        - url
+        - secret
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+tags:
+  - name: businesses
+    description: Businesses — business profile management

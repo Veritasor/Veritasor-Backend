@@ -1147,7 +1147,27 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
     const webhookSecret = 'a'.repeat(32);
 
     it('registers a webhook on the normal path', async () => {
-      const businessId = `webhook-success-${Date.now()}`;
+      const bizRes = await request(app)
+        .post('/api/businesses')
+        .set(createAuthHeader())
+        .send({ name: 'Webhook Biz' });
+      const businessId = bizRes.body.id;
+
+      const repo = await import('../../src/repositories/webhookSubscriptionRepository.js');
+      const countSpy = vi.spyOn(repo, 'countByBusiness').mockResolvedValue(0);
+      const createSpy = vi.spyOn(repo, 'create').mockResolvedValue({
+        id: 'sub-1',
+        businessId,
+        url: webhookUrl,
+        secret: webhookSecret,
+        eventFilters: {},
+        enabled: true,
+        maxPayloadSize: null,
+        secretVersion: 1,
+        mtlsConfig: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
 
       const res = await request(app)
         .post(`/api/businesses/${businessId}/webhooks`)
@@ -1157,24 +1177,37 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
       expect(res.status).toBe(201);
       expect(res.body.businessId).toBe(businessId);
       expect(res.body.url).toBe(webhookUrl);
-      expect(res.body.secret).toBe(webhookSecret);
+      expect(res.body.secret).toBeUndefined();
       expect(res.body.id).toBeDefined();
+      expect(countSpy).toHaveBeenCalledWith(businessId);
+      expect(createSpy).toHaveBeenCalled();
+
+      countSpy.mockRestore();
+      createSpy.mockRestore();
     });
 
     it('accepts the fifth subscription at the capacity boundary', async () => {
-      const businessId = `webhook-boundary-${Date.now()}`;
+      const bizRes = await request(app)
+        .post('/api/businesses')
+        .set(createAuthHeader())
+        .send({ name: 'Webhook Boundary Biz' });
+      const businessId = bizRes.body.id;
 
-      for (let i = 0; i < 4; i++) {
-        const res = await request(app)
-          .post(`/api/businesses/${businessId}/webhooks`)
-          .set(createAuthHeader())
-          .send({
-            url: `https://example.com/webhook-${i}`,
-            secret: webhookSecret,
-          });
-
-        expect(res.status).toBe(201);
-      }
+      const repo = await import('../../src/repositories/webhookSubscriptionRepository.js');
+      const countSpy = vi.spyOn(repo, 'countByBusiness').mockResolvedValue(4);
+      const createSpy = vi.spyOn(repo, 'create').mockResolvedValue({
+        id: 'sub-5',
+        businessId,
+        url: webhookUrl,
+        secret: webhookSecret,
+        eventFilters: {},
+        enabled: true,
+        maxPayloadSize: null,
+        secretVersion: 1,
+        mtlsConfig: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
 
       const fifth = await request(app)
         .post(`/api/businesses/${businessId}/webhooks`)
@@ -1183,20 +1216,20 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
 
       expect(fifth.status).toBe(201);
       expect(fifth.body.businessId).toBe(businessId);
+
+      countSpy.mockRestore();
+      createSpy.mockRestore();
     });
 
     it('returns the capacity error when registering a sixth subscription', async () => {
-      const businessId = `webhook-capacity-${Date.now()}`;
+      const bizRes = await request(app)
+        .post('/api/businesses')
+        .set(createAuthHeader())
+        .send({ name: 'Webhook Capacity Biz' });
+      const businessId = bizRes.body.id;
 
-      for (let i = 0; i < 5; i++) {
-        await request(app)
-          .post(`/api/businesses/${businessId}/webhooks`)
-          .set(createAuthHeader())
-          .send({
-            url: `https://example.com/webhook-${i}`,
-            secret: webhookSecret,
-          });
-      }
+      const repo = await import('../../src/repositories/webhookSubscriptionRepository.js');
+      const countSpy = vi.spyOn(repo, 'countByBusiness').mockResolvedValue(5);
 
       const sixth = await request(app)
         .post(`/api/businesses/${businessId}/webhooks`)
@@ -1207,6 +1240,8 @@ describe('Analytics Routes – auth enforcement and response shapes', () => {
       expect(sixth.body.error).toBe(
         'Maximum webhook endpoint subscription capacity reached.',
       );
+
+      countSpy.mockRestore();
     });
   })
 

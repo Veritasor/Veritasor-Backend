@@ -8,6 +8,7 @@ export type Attestation = {
   status?: "active" | "revoked";
   revokedAt?: string;
   revokeReason?: string;
+  revokeTxHash?: string;
 };
 
 // Legacy fixture repository. Production callers use attestationRepository.ts.

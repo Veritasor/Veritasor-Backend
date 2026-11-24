@@ -10,7 +10,7 @@ export interface StatsDClientConfig {
 }
 
 export class StatsDClient {
-  private client: StatsD;
+  private client: InstanceType<typeof StatsD>;
 
   constructor(config: StatsDClientConfig) {
     this.client = new StatsD({
@@ -35,7 +35,7 @@ export class StatsDClient {
     }
   }
 
-  increment(name: string, value: number, tags?: Record<string, string>): void {
+  increment(name: string, value: number = 1, tags?: Record<string, string>): void {
     try {
       this.client.increment(name, value, tags);
     } catch (err) {

@@ -1,9 +1,11 @@
 import express, { type Express } from "express";
+import crypto from "node:crypto";
 import http, { type Server } from "node:http";
 import type { Server as HttpsServer } from "node:https";
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import fs from "node:fs/promises";
 import { config } from "./config/index.js";
+import { logger } from "./utils/logger.js";
 import { CachePolicies, setCacheControl } from "./utils/cacheControl.js";
 import { createCorsMiddleware } from "./middleware/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -13,6 +15,7 @@ import {
   versionResponseMiddleware,
 } from "./middleware/apiVersion.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
+import { prototypePollutionGuard } from "./middleware/prototypePollution.js";
 import { compressionMiddleware } from "./middleware/compression.js";
 import {
   applyRotatedTlsMaterial,
@@ -40,6 +43,7 @@ import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import { webhookSubscriptionsRouter } from "./routes/webhook-subscriptions.js";
 import adminRouter from "./routes/admin.js";
+import dlqRouter from "./routes/dlqRoutes.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
@@ -66,14 +70,22 @@ export function stopSpiffeSvidProviderIfNeeded(): void {
 
 export const telemetryReady = initializeOpenTelemetry();
 
-import {
-  prototypePollutionGuard,
-  hasForbiddenKeys,
-  hasForbiddenQuery,
-} from "./middleware/prototypePollution.js";
-
 // Security middleware to reject prototype pollution attempts
 export const securityHeadersMiddleware = prototypePollutionGuard;
+
+/**
+ * Constant-time comparison between two strings using SHA-256 digests and crypto.timingSafeEqual.
+ * Hashing before comparison ensures fixed 32-byte buffers, preventing length-leakage attacks
+ * and eliminating RangeError on mismatched buffer lengths.
+ */
+export function timingSafeCompare(a: string, b: string): boolean {
+  if (typeof a !== "string" || typeof b !== "string") {
+    return false;
+  }
+  const hashA = crypto.createHash("sha256").update(a).digest();
+  const hashB = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
 
 export function createApp(readinessReport: StartupReadinessReport): Express {
   const app = express();
@@ -81,7 +93,6 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.set("trust proxy", config.trustProxy);
   app.use(requestLogger);
   app.use(securityHeaders);
-  app.use(securityHeadersMiddleware);
   app.use(mtlsMiddleware);
   app.use(apiVersionMiddleware);
   app.use(versionResponseMiddleware);
@@ -91,6 +102,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   // 3. Body Parsing
   app.use(express.json());
   app.use(securityHeadersMiddleware);
+  app.use(prototypePollutionGuard);
   app.use(createCorsMiddleware());
 
   // Webhook subscription CRUD API (after body parsing)
@@ -101,7 +113,31 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use(compressionMiddleware());
 
   if (process.env.METRICS_ENABLED === "true") {
-    app.get("/metrics", async (_req: Request, res: Response) => {
+    const configuredToken = config.metricsAuthToken;
+    if (!configuredToken && (process.env.NODE_ENV === "production" || config.env === "production")) {
+      logger.warn(
+        "[Startup] METRICS_AUTH_TOKEN is not configured in production. Metrics endpoint is unprotected and public.",
+      );
+    }
+
+    app.get("/metrics", async (req: Request, res: Response) => {
+      const authToken = config.metricsAuthToken;
+      if (authToken) {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
+          res.set("WWW-Authenticate", 'Bearer realm="metrics"');
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+
+        const providedToken = authHeader.slice(7);
+        if (!timingSafeCompare(providedToken, authToken)) {
+          res.set("WWW-Authenticate", 'Bearer realm="metrics"');
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+      }
+
       res.set("Content-Type", metricsRegistry.contentType);
       res.end(await metricsRegistry.metrics());
     });
@@ -121,6 +157,8 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/integrations/stripe", integrationsStripeRouter);
   app.use("/api/integrations", integrationsRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/v1/admin/dlq", dlqRouter);
+  app.use("/api/admin/dlq", dlqRouter);
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
 
@@ -180,11 +218,17 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
       .filter((check) => !check.ready)
       .map((check) => `${check.dependency}: ${check.reason ?? "failed"}`)
       .join("; ");
-    console.warn(`[Startup] Proceeding with failed readiness checks: ${failedChecks}`);
+    logger.warn(
+      { event: "startup_readiness_failed", failedChecks },
+      "[Startup] Proceeding with failed readiness checks",
+    );
   }
 
   replayFailedSubmissions().catch((err) => {
-    console.warn(`[Startup] Failed submission replay encountered an error: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(
+      { event: "startup_replay_failed", error: err },
+      "[Startup] Failed submission replay encountered an error",
+    );
   });
 
   // Start the cooperative idempotency TTL sweeper. This drives the
@@ -223,8 +267,6 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
             ca: material.ca,
             cert: material.cert,
             key: material.key,
-            requestCert: true,
-            rejectUnauthorized: false,
           });
         },
       });
@@ -268,7 +310,10 @@ export async function startServer(port: number): Promise<Server | HttpsServer> {
 
     const onListening = () => {
       server.removeListener("error", onError);
-      console.log(`[Server] Veritasor Backend listening on port ${port} (mTLS: ${config.mtls.enabled})`);
+      logger.info(
+        { event: "server_listening", port, mtls: config.mtls.enabled },
+        "[Server] Veritasor Backend listening",
+      );
       resolve(server);
     };
 

@@ -1,4 +1,5 @@
 import { db } from "../db/client.js";
+import { decodeCursor, encodeCursor } from "../utils/pagination.js";
 
 export interface DeliveryReceipt {
   id: string;
@@ -94,16 +95,35 @@ export async function queryDeliveryReceipts(query: DeliveryReceiptQuery): Promis
     params.push(query.subscriptionId);
   }
 
+  // Malformed or unusable cursors are ignored, so callers always get the first
+  // page for that cursor rather than an opaque DB error or an infinite loop.
+  const decoded = decodeCursor(query.cursor);
+  if (decoded && decoded.id.length > 0 && !Number.isNaN(Date.parse(decoded.value))) {
+    const createdAtIndex = paramIndex++;
+    const idIndex = paramIndex++;
+    conditions.push(`((created_at, id) < ($${createdAtIndex}, $${idIndex}))`);
+    params.push(decoded.value, decoded.id);
+  }
+
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const limit = Math.min(query.limit ?? 50, 100);
+  const requestedLimit =
+    typeof query.limit === "number" && Number.isFinite(query.limit) ? Math.trunc(query.limit) : 50;
+  const limit = Math.min(100, Math.max(1, requestedLimit));
 
   const result = await db.query(
-    `SELECT * FROM delivery_receipts ${where} ORDER BY created_at DESC LIMIT $${paramIndex++}`,
-    [...params, limit],
+    `SELECT * FROM delivery_receipts ${where} ORDER BY created_at DESC, id DESC LIMIT $${paramIndex++}`,
+    [...params, limit + 1],
   );
 
-  const receipts = (result.rows as Record<string, unknown>[]).map(mapRow);
-  const nextCursor = receipts.length === limit ? receipts[receipts.length - 1].id : undefined;
+  const rows = result.rows as Record<string, unknown>[];
+  const hasMore = rows.length > limit;
+  const receipts = (hasMore ? rows.slice(0, limit) : rows).map(mapRow);
+
+  let nextCursor: string | undefined;
+  if (hasMore && receipts.length > 0) {
+    const last = receipts[receipts.length - 1];
+    nextCursor = encodeCursor({ value: last.createdAt, id: last.id });
+  }
 
   return { data: receipts, nextCursor };
 }

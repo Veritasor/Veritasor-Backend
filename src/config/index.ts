@@ -13,6 +13,8 @@ export const rawEnvSchema = z.object({
   TRUST_PROXY: z.string().optional(),
   ALLOWED_ORIGINS: z.string().optional(),
   JWT_SECRET: z.string().optional(),
+  METRICS_ENABLED: z.string().optional(),
+  METRICS_AUTH_TOKEN: z.string().optional(),
   DATABASE_URL: z.string({
     required_error: "DATABASE_URL environment variable is required",
     invalid_type_error: "DATABASE_URL environment variable is required",
@@ -70,7 +72,30 @@ export const rawEnvSchema = z.object({
   OTEL_MTLS_CA_PATH: z.string().optional(),
   OTEL_MTLS_CERT_PATH: z.string().optional(),
   OTEL_MTLS_KEY_PATH: z.string().optional(),
-}).superRefine((data, ctx) => {
+  MTLS_ENABLED: z.string().optional(),
+  MTLS_SPIFFE_ENABLED: z.string().optional(),
+  SPIFFE_TRUST_DOMAIN: z.string().optional(),
+  MTLS_CA_PATH: z.string().optional(),
+  MTLS_CERT_PATH: z.string().optional(),
+  MTLS_KEY_PATH: z.string().optional(),
+  MTLS_CN_ALLOWLIST: z.string().optional(),
+  MTLS_SPIFFE_ID_ALLOWLIST: z.string().optional(),
+  SPIFFE_WORKLOAD_API_SOCKET: z.string().optional(),
+  REDIS_URL: z
+    .string()
+    .url("REDIS_URL must be a valid URL")
+    .refine(
+      (value) => value.startsWith("redis://") || value.startsWith("rediss://"),
+      "REDIS_URL must use redis:// or rediss://",
+    )
+    .optional(),
+  REDIS_CLUSTER_NODES: z.string().optional(),
+  REDIS_TLS: z.string().optional(),
+  REDIS_FORCE_SINGLE_NODE: z.string().optional(),
+  EXPOSE_RESET_LINK_IN_RESPONSE: z.string().optional(),
+});
+
+export const envSchema = rawEnvSchema.superRefine((data, ctx) => {
   if (data.SECRET_LOADER && data.SECRET_PROVIDER && data.SECRET_LOADER !== data.SECRET_PROVIDER) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -227,11 +252,11 @@ function parseCsvList(rawValue: string | undefined): string[] {
     .filter(Boolean);
 }
 
-let parsedEnv: z.infer<typeof envSchema>;
+let parsedEnv: z.infer<typeof rawEnvSchema>;
 
 try {
   // Try parsing the environment variables
-  parsedEnv = envSchema.parse(process.env);
+  parsedEnv = rawEnvSchema.parse(process.env);
 } catch (error) {
   if (error instanceof z.ZodError) {
     logger.error("Configuration validation failed", JSON.stringify(error.format()));
@@ -276,18 +301,13 @@ export function getAllowedOrigins(): string | string[] {
   if (raw) {
     return raw
       .split(",")
-      .map((s) => s.trim())
+      .map((s: string) => s.trim())
       .filter(Boolean);
   }
   if (isProduction) {
     return [];
   }
   return "*";
-}
-
-function parseCsvList(rawValue: string | undefined): string[] {
-  if (!rawValue) return [];
-  return rawValue.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 function parseTrustProxy(rawValue: string | undefined): number | string[] | false {
@@ -308,7 +328,7 @@ function parseTrustProxy(rawValue: string | undefined): number | string[] | fals
   return entries;
 }
 
-function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
+function parseMtlsConfig(parsedEnv: z.infer<typeof rawEnvSchema>) {
   const enabled = parseBooleanEnv("MTLS_ENABLED", parsedEnv.MTLS_ENABLED, false);
   const spiffeEnabled = parseBooleanEnv(
     "MTLS_SPIFFE_ENABLED",
@@ -348,6 +368,12 @@ function parseMtlsConfig(parsedEnv: z.infer<typeof envSchema>) {
         parsedEnv.SPIFFE_WORKLOAD_API_SOCKET?.trim()
         ?? "unix:///tmp/spire-agent/public/api.sock",
       refreshRatio: 0.7,
+    },
+    revocation: {
+      enabled: parseBooleanEnv("MTLS_REVOCATION_ENABLED", process.env.MTLS_REVOCATION_ENABLED, false),
+      crlPath: process.env.MTLS_CRL_PATH?.trim() || undefined,
+      ocspIssuerPath: process.env.MTLS_OCSP_ISSUER_PATH?.trim() || undefined,
+      ocspCacheTtlMs: parsePositiveIntEnv("MTLS_OCSP_CACHE_TTL_MS", process.env.MTLS_OCSP_CACHE_TTL_MS, 300_000),
     },
   };
 }
@@ -595,5 +621,30 @@ export const config = {
   },
   auth: {
     exposeResetLinkInResponse: exposeResetLink && !isProduction,
+  },
+  metrics: {
+    get authToken(): string | undefined {
+      return process.env.METRICS_AUTH_TOKEN ?? parsedEnv.METRICS_AUTH_TOKEN;
+    },
+    set authToken(val: string | undefined) {
+      if (val === undefined) {
+        delete process.env.METRICS_AUTH_TOKEN;
+      } else {
+        process.env.METRICS_AUTH_TOKEN = val;
+      }
+    },
+    get enabled(): boolean {
+      return process.env.METRICS_ENABLED === "true";
+    },
+  },
+  get metricsAuthToken(): string | undefined {
+    return process.env.METRICS_AUTH_TOKEN ?? parsedEnv.METRICS_AUTH_TOKEN;
+  },
+  set metricsAuthToken(val: string | undefined) {
+    if (val === undefined) {
+      delete process.env.METRICS_AUTH_TOKEN;
+    } else {
+      process.env.METRICS_AUTH_TOKEN = val;
+    }
   },
 } as const;

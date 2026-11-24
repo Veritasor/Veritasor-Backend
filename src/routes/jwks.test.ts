@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, afterEach } from 'vitest'
 import request from 'supertest'
 import { generateKeyPairSync } from 'node:crypto'
 import jwt from 'jsonwebtoken'
-import { app } from './app.js'
+import { app } from '../app.js'
 import { jwksManager } from '../utils/jwks.js'
 import { secretLoader } from '../utils/secret-loader.js'
 import { verifyToken } from '../utils/jwt.js'
@@ -92,7 +92,7 @@ describe('JWKS endpoint and token verification', () => {
     await jwksManager.reload()
 
     const token = jwt.sign({ userId: 'u2', email: 'eds@example.com' }, privateKey, {
-      algorithm: 'EdDSA',
+      algorithm: 'EdDSA' as jwt.Algorithm,
       expiresIn: '1h',
       issuer: 'veritasor-api',
       audience: 'veritasor-client',

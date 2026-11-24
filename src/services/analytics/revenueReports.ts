@@ -15,6 +15,7 @@
  *    user-controllable.
  */
 
+import { revenueSnapshotRepository } from '../../repositories/revenueSnapshotRepository.js'
 import { listByBusiness } from '../../repositories/attestationRepository.js'
 import { db } from '../../db/client.js'
 import { revenueReportQuerySchema } from './revenueReportSchema.js'
@@ -54,10 +55,10 @@ export class TimeWindowError extends Error {
  * Shape of a revenue report returned by {@link getRevenueReport}.
  *
  * @property period    - Human-readable label for the report window.
- * @property total     - Gross revenue in cents (placeholder until real data).
- * @property net       - Net revenue after fees in cents.
- * @property currency  - ISO 4217 currency code.
- * @property breakdown - Per-attestation line items.
+ * @property total     - Gross revenue in cents (sum of `totalRevenue` snapshots).
+ * @property net       - Net revenue after fees in cents (sum of `netRevenue` snapshots).
+ * @property currency  - ISO 4217 currency code (taken from the snapshots).
+ * @property breakdown - Per-snapshot line items.
  */
 export type RevenueReport = {
   period: string
@@ -129,16 +130,18 @@ const validateQuery = (period?: string, from?: string, to?: string): void => {
 /**
  * Generate a revenue report for a business within a specified time window.
  *
- * Exactly one of the following must be provided:
- *  - `period` alone → filters attestations whose `period === period`.
- *  - `from` + `to` → filters attestations where `period` falls in [from, to].
+ * The report is read from `revenue_snapshots` rows written by the
+ * attestation submit path:
+ *  - `period` alone → queries the window [period, period].
+ *  - `from` + `to` → queries the inclusive [from, to] window.
  *
  * @param businessId - The authenticated business identifier.
  * @param period     - A single YYYY-MM month (mutually exclusive with from/to).
  * @param from       - Start of an inclusive YYYY-MM range.
  * @param to         - End of an inclusive YYYY-MM range.
  *
- * @returns The revenue report, or `null` if no matching attestations exist.
+ * @returns The revenue report, or `null` when no snapshot rows exist for the
+ *   requested window.
  *
  * @throws {TimeWindowError} When parameters are missing, malformed, logically
  *   invalid (from > to), or exceed the 24-month range cap.
@@ -159,12 +162,17 @@ export const getRevenueReport = async (
     )
   }
 
+  let start: string
+  let end: string
   let resolvedPeriod: string
 
   if (period) {
     // Validate format even though Zod already does it — service is self-defending.
     parsePeriod(period, 'period')
 
+    // Single-period window: [period, period].
+    start = period
+    end = period
     resolvedPeriod = period
   } else {
     // from and to are guaranteed non-undefined here (guarded above).
@@ -189,6 +197,12 @@ export const getRevenueReport = async (
       )
     }
 
+    start = from!
+    end = to!
+    resolvedPeriod = `${from} to ${to}`
+  }
+
+  const snapshots = await revenueSnapshotRepository.listByBusinessAndRange(businessId, start, end)
     resolvedPeriod = `${from} to ${to}`
   }
 
@@ -199,13 +213,19 @@ export const getRevenueReport = async (
 
   if (attestations.length === 0) return null
 
-  const total = attestations.length * 100 // placeholder until real revenue data lands
-  const net = Math.round(total * 0.95)    // placeholder 5 % fee deduction
+  if (snapshots.length === 0) return null
+
+  const total = snapshots.reduce((sum, snapshot) => sum + snapshot.totalRevenue, 0)
+  const net = snapshots.reduce((sum, snapshot) => sum + snapshot.netRevenue, 0)
 
   return {
     period: resolvedPeriod,
     total,
     net,
+    currency: snapshots[0].currency,
+    breakdown: snapshots.map((snapshot) => ({
+      attestationId: snapshot.id,
+      attestedAt: snapshot.createdAt,
     currency: 'USD',
     breakdown: attestations.map((a) => ({
       attestationId: a.id,

@@ -82,6 +82,7 @@ function createHarness(consumer: Consumer | null) {
     secretReload: vi.fn().mockResolvedValue(undefined),
     jwksReload: vi.fn().mockResolvedValue(undefined),
     loggerInfo: vi.fn(),
+    loggerWarn: vi.fn(),
     loggerError: vi.fn(),
     createRevenueConsumer: vi.fn(() => consumer),
     createShutdownOrchestrator: vi.fn(
@@ -109,7 +110,11 @@ function installMocks(harness: ReturnType<typeof createHarness>) {
   }))
   vi.doMock('./db/client.js', () => ({ pool: mocks.pool }))
   vi.doMock('./utils/logger.js', () => ({
-    logger: { info: mocks.loggerInfo, error: mocks.loggerError, warn: vi.fn() },
+    logger: {
+      info: mocks.loggerInfo,
+      warn: mocks.loggerWarn,
+      error: mocks.loggerError,
+    },
   }))
   vi.doMock('./utils/secret-loader.js', () => ({
     secretLoader: { reload: mocks.secretReload },
@@ -131,8 +136,6 @@ function installMocks(harness: ReturnType<typeof createHarness>) {
 describe('src/index.ts bootstrap', () => {
   const originalEnv = { ...process.env }
   let capturedSighup: (() => Promise<void>) | undefined
-  let consoleError: ReturnType<typeof vi.spyOn>
-  let consoleWarn: ReturnType<typeof vi.spyOn>
   let exitSpy: ReturnType<typeof vi.spyOn>
 
   async function boot(options: {
@@ -162,8 +165,6 @@ describe('src/index.ts bootstrap', () => {
   }
 
   beforeEach(() => {
-    consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-    consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
   })
 
@@ -260,7 +261,7 @@ describe('src/index.ts bootstrap', () => {
     expect(harness.mocks.loggerInfo).not.toHaveBeenCalledWith(
       expect.objectContaining({ event: 'kafka_consumer_started' }),
     )
-    expect(consoleWarn).not.toHaveBeenCalled()
+    expect(harness.mocks.loggerWarn).not.toHaveBeenCalled()
   })
 
   it('stops every background worker during shutdown cleanup', async () => {
@@ -273,7 +274,7 @@ describe('src/index.ts bootstrap', () => {
     expect(harness.mocks.stopPgBouncerScraperIfNeeded).toHaveBeenCalledTimes(1)
     expect(harness.mocks.stopSpiffeSvidProviderIfNeeded).toHaveBeenCalledTimes(1)
     expect(harness.mocks.stopStatsdDualWriteIfNeeded).toHaveBeenCalledTimes(1)
-    expect(consoleWarn).not.toHaveBeenCalled()
+    expect(harness.mocks.loggerWarn).not.toHaveBeenCalled()
   })
 
   it('swallows individual teardown failures so the remaining workers still stop', async () => {
@@ -285,14 +286,29 @@ describe('src/index.ts bootstrap', () => {
     await vi.waitFor(() => expect(harness.register).toHaveBeenCalledTimes(1))
     await expect(harness.captured.cleanup?.()).resolves.toBeUndefined()
 
-    expect(consoleWarn).toHaveBeenCalledWith(
-      expect.stringContaining('[Shutdown] Idempotency sweeper stop error: sweeper down'),
+    expect(harness.mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'shutdown_worker_stop_failed',
+        worker: 'idempotency_sweeper',
+        error: expect.any(Error),
+      }),
+      '[Shutdown] Idempotency sweeper stop error',
     )
-    expect(consoleWarn).toHaveBeenCalledWith(
-      expect.stringContaining('[Shutdown] PgBouncer scraper stop error: scraper down'),
+    expect(harness.mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'shutdown_worker_stop_failed',
+        worker: 'pgbouncer_scraper',
+        error: 'scraper down',
+      }),
+      '[Shutdown] PgBouncer scraper stop error',
     )
-    expect(consoleWarn).toHaveBeenCalledWith(
-      expect.stringContaining('[Shutdown] StatsD dual-write stop error: statsd down'),
+    expect(harness.mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'shutdown_worker_stop_failed',
+        worker: 'statsd_dual_write',
+        error: expect.any(Error),
+      }),
+      '[Shutdown] StatsD dual-write stop error',
     )
     expect(harness.mocks.stopSpiffeSvidProviderIfNeeded).toHaveBeenCalledTimes(1)
     expect(harness.mocks.stopStatsdDualWriteIfNeeded).toHaveBeenCalledTimes(1)
@@ -356,7 +372,10 @@ describe('src/index.ts bootstrap', () => {
     await import('./index.js')
 
     await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(1))
-    expect(consoleError).toHaveBeenCalledWith('[Startup] port already in use')
+    expect(harness.mocks.loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'startup_failed', error: 'port already in use' }),
+      '[Startup] port already in use',
+    )
   })
 
   it('falls back to a generic message when bootstrap throws a non-Error', async () => {
@@ -369,6 +388,9 @@ describe('src/index.ts bootstrap', () => {
     await import('./index.js')
 
     await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(1))
-    expect(consoleError).toHaveBeenCalledWith('[Startup] Unknown startup error')
+    expect(harness.mocks.loggerError).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'startup_failed', error: 'Unknown startup error' }),
+      '[Startup] Unknown startup error',
+    )
   })
 })
