@@ -21,7 +21,7 @@ describe('calculateBackoffDelay', () => {
   it('caps at maxDelayMs for large exponents', () => {
     const delay = calculateBackoffDelay(10, opts, FIXED_RANDOM)
     const expectedCap = Math.round(0.5 * opts.maxDelayMs)
-    expect(delay).toBeLessThanOrEqual(expectedCap)
+    expect(delay).toBe(expectedCap)
   })
 
   it('scales exponentially with attempt number', () => {
@@ -99,7 +99,7 @@ describe('withBackoff', () => {
     }
   })
 
-  it('calls onRetry with attempt number, delay, and error', async () => {
+  it('calls onRetry with the attempt number, calculated delay, and error', async () => {
     const error = new Error('retry me')
     const fn = vi.fn().mockRejectedValue(error)
     const onRetry = vi.fn()
@@ -109,7 +109,7 @@ describe('withBackoff', () => {
     ).rejects.toThrow(BackoffError)
 
     expect(onRetry).toHaveBeenCalledTimes(1)
-    expect(onRetry).toHaveBeenCalledWith(1, expect.any(Number), error)
+    expect(onRetry).toHaveBeenCalledWith(1, 100, error)
   })
 
   it('passes the attempt number to fn', async () => {
@@ -142,7 +142,7 @@ describe('withBackoff', () => {
 
     await expect(
       withBackoff(fn, { ...DEFAULT_BACKOFF_OPTIONS, maxAttempts: 1 }, onRetry, instantSleep),
-    ).rejects.toThrow(original)
+    ).rejects.toBe(original)
 
     expect(fn).toHaveBeenCalledTimes(1)
     expect(onRetry).not.toHaveBeenCalled()
@@ -153,7 +153,7 @@ describe('withBackoff', () => {
 
     await expect(
       withBackoff(fn, { ...DEFAULT_BACKOFF_OPTIONS, maxAttempts: 0 }, undefined, instantSleep),
-    ).rejects.toThrow(BackoffError)
+    ).rejects.toMatchObject({ name: 'BackoffError', attemptCount: 0 })
 
     expect(fn).not.toHaveBeenCalled()
   })
