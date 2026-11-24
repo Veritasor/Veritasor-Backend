@@ -84,6 +84,10 @@ Other scripts: `typecheck`, `build`, `start`, `lint`, `migrate:rollback`, `migra
 
 `pnpm test` runs Vitest (`vitest.config.ts`); `pnpm run test:coverage` adds coverage; `pnpm run pact:test` runs consumer contract tests (`tests/pact/`). Load/soak tooling lives in `ops/k6` and `scripts/soak-attestations.ts`.
 
+## Contributing
+
+Before opening a pull request, run `pnpm lint` (configured via `eslint.config.js`) to verify there are no ESLint errors in `src/`.
+
 ## CI and deployment
 
 `.github/workflows/ci.yml` (push/PR to `main`) installs with `pnpm install --frozen-lockfile --ignore-scripts` and runs `tsc --noCheck --noEmit`. It is a minimal build gate, not the full test suite.
