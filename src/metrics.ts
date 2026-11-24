@@ -2,7 +2,9 @@ import { Registry, Histogram, Counter, Gauge } from "prom-client";
 import { getActiveTraceExemplarLabels } from "./tracing.js";
 
 export const metricsRegistry = new Registry();
-metricsRegistry.setContentType(Registry.OPENMETRICS_CONTENT_TYPE);
+metricsRegistry.setContentType(
+  Registry.OPENMETRICS_CONTENT_TYPE as unknown as Parameters<typeof metricsRegistry.setContentType>[0],
+);
 
 export const httpRequestDuration = new Histogram({
   name: "http_request_duration_seconds",
@@ -651,5 +653,32 @@ export const jobLastRunTimestamp = new Gauge({
   name: "job_last_run_timestamp_seconds",
   help: "Unix timestamp (seconds) of the last instrumented batch job run",
   labelNames: ["job"] as const,
+  registers: [metricsRegistry],
+});
+
+export const passwordResetEmailFailuresTotal = new Counter({
+  name: "password_reset_email_failures_total",
+  help: "Total number of password reset email delivery failures",
+  labelNames: ["type"] as const,
+  registers: [metricsRegistry],
+});
+
+export const vaultLeaseSecondsRemaining = new Gauge({
+  name: "vault_lease_seconds_remaining",
+  help: "Remaining duration in seconds of the current Vault dynamic-secret lease",
+  registers: [metricsRegistry],
+});
+
+export const vaultLeaseRenewalTotal = new Counter({
+  name: "vault_lease_renewal_total",
+  help: "Total number of Vault dynamic-secret lease renewal attempts",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+export const vaultLeaseRenewalDurationSeconds = new Histogram({
+  name: "vault_lease_renewal_duration_seconds",
+  help: "Duration of Vault dynamic-secret lease renewal requests in seconds",
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
   registers: [metricsRegistry],
 });

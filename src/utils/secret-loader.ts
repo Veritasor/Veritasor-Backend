@@ -1,8 +1,19 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import dotenv from 'dotenv'
-import { logger } from './logger.js'
+/**
+ * Public facade and provider selection. Provider adapters live in secrets/{env,
+ * file,aws,gsm,vault}.ts; base.ts owns the shared contract/errors, failover.ts
+ * coordinates reload/fallback, and kms-disk-cache.ts owns encrypted caching.
+ * Cloud SDK imports stay inside provider reload/client methods and cache I/O.
+ */
 import { config } from '../config/index.js'
+import {
+  vaultLeaseSecondsRemaining,
+  vaultLeaseRenewalTotal,
+  vaultLeaseRenewalDurationSeconds,
+} from '../metrics.js'
+
+const LEASE_RENEWAL_THRESHOLD_RATIO = 0.7
+const LEASE_RENEWAL_JITTER_RATIO = 0.1
+const LEASE_RENEWAL_ERROR_RETRY_MS = 5000
 
 export interface SecretLoader {
   get(key: string): string
@@ -74,14 +85,6 @@ abstract class BaseSecretAdapter implements SecretLoader {
     this.secrets = new Map(secrets)
   }
 
-  get allSecrets(): Map<string, string> {
-    return new Map(this.secrets)
-  }
-
-  set allSecrets(secrets: Map<string, string>) {
-    this.secrets = new Map(secrets)
-  }
-
   protected ensureLoaded(): void {
     if (!this.loaded) {
       throw new SecretNotLoadedError()
@@ -115,7 +118,7 @@ abstract class BaseSecretAdapter implements SecretLoader {
 export class EnvAdapter extends BaseSecretAdapter {
   async reload(): Promise<void> {
     const entries = Object.entries(process.env)
-      .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim() !== '')
       .map(([key, value]) => [BaseSecretAdapter.normalizeSecretKey(key), value] as const)
 
     this.secrets = new Map(entries)
@@ -152,7 +155,7 @@ export class FileAdapter extends BaseSecretAdapter {
     this.loaded = true
   }
 
-  async get(key: string): Promise<string> {
+  get(key: string): string {
     this.ensureLoaded()
     return this.toSecretValue(this.secrets.get(BaseSecretAdapter.normalizeSecretKey(key)), key)
   }
@@ -428,6 +431,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
     this.loaded = true
 
     try {
+      // @ts-expect-error — @aws-sdk/client-secrets-manager is an optional peer dependency loaded dynamically
       const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager')
       const client = new SecretsManagerClient({ region: this.primaryRegion })
       const response = await client.send(new GetSecretValueCommand({ SecretId: process.env.AWS_SECRET_NAME ?? 'veritasor' }))
@@ -465,7 +469,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
   private isRetryableError(error: unknown): boolean {
     if (!(error instanceof Error)) return false
 
-    const err = error as Record<string, unknown>
+    const err = error as unknown as Record<string, unknown>
     const metadata = err.$metadata as Record<string, unknown> | undefined
 
     if (metadata?.httpStatusCode && Number(metadata.httpStatusCode) >= 500) {
@@ -485,7 +489,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
 }
 
 export class GsmSecretAdapter extends BaseSecretAdapter {
-  private client: { accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Buffer } }]> } | null = null
+  private client: { accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Uint8Array | string | null } | null }, ...unknown[]]> } | null = null
 
   constructor(private readonly projectId: string) {
     super()
@@ -500,7 +504,12 @@ export class GsmSecretAdapter extends BaseSecretAdapter {
       const secretName = process.env.GSM_SECRET_NAME ?? 'DEFAULT_SECRET'
       const name = `projects/${this.projectId}/secrets/${secretName}/versions/latest`
       const [version] = await client.accessSecretVersion({ name })
-      const payload = version.payload?.data?.toString('utf8')
+      const rawData = version.payload?.data
+      const payload = typeof rawData === 'string'
+        ? rawData
+        : rawData
+          ? Buffer.from(rawData).toString('utf8')
+          : undefined
       if (payload) {
         this.secrets.set(secretName, payload)
       }
@@ -521,12 +530,12 @@ export class GsmSecretAdapter extends BaseSecretAdapter {
     return this.toSecretValue(fallback, key)
   }
 
-  private async getClient(): Promise<{ accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Buffer } }]> }> {
+  private async getClient(): Promise<{ accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Uint8Array | string | null } | null }, ...unknown[]]> }> {
     if (!this.client) {
       const { SecretManagerServiceClient } = await import('@google-cloud/secret-manager')
       this.client = new SecretManagerServiceClient()
     }
-    return this.client
+    return this.client!
   }
 }
 
@@ -685,6 +694,7 @@ class FailoverSecretLoader extends BaseSecretAdapter {
     if (direct !== undefined) {
       return direct
     }
+    return this.toSecretValue(this.primaryAdapter.get(key), key)
 
     try {
       return this.fallbackAdapter.get(key)
@@ -705,6 +715,20 @@ class FailoverSecretLoader extends BaseSecretAdapter {
     ])
   }
 }
+import { BaseSecretAdapter, SecretLoadError } from './secrets/base.js'
+import type { SecretAdapter, SecretLoader, SecretLoaderOptions, SecretProvider } from './secrets/base.js'
+import { EnvAdapter } from './secrets/env.js'
+import { FileAdapter } from './secrets/file.js'
+import { AwsSecretsAdapter } from './secrets/aws.js'
+import { GsmSecretAdapter } from './secrets/gsm.js'
+import { VaultAdapter } from './secrets/vault.js'
+import { KmsDiskCache } from './secrets/kms-disk-cache.js'
+import { FailoverSecretLoader } from './secrets/failover.js'
+
+export type { SecretAdapter, SecretLoader, SecretLoaderOptions, SecretProvider } from './secrets/base.js'
+export { SecretLoaderError, SecretNotFoundError, SecretNotLoadedError, SecretLoadError } from './secrets/base.js'
+export { EnvAdapter, FileAdapter, AwsSecretsAdapter, GsmSecretAdapter, VaultAdapter }
+export type { VaultLease, VaultAdapterOptions } from './secrets/vault.js'
 
 export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAdapter {
   const provider =

@@ -7,8 +7,8 @@
  * error envelope, auth wiring, business scoping, the per-business capacity
  * guard, and the validation boundaries that sit in front of the repository.
  *
- * The repository, business resolver and auth middleware are mocked so the suite
- * is hermetic (no database / JWT dependency).
+ * The subscription and delivery-receipt repositories and the auth middleware
+ * are mocked so the suite is hermetic (no database / JWT dependency).
  *
  * @module tests/unit/routes/webhook-subscriptions.router
  */
@@ -22,7 +22,10 @@ const BASE = '/api/v1/webhook-subscriptions';
 const BUSINESS_ID = 'biz-001';
 const VALID_SECRET = 'a-very-long-secret-key-that-is-over-32-chars-long';
 
-const mockResolveBusinessIdForUser = vi.fn();
+// Hoisted so the mocked `requireBusinessAuth` middleware and the tests can
+// share the business id without module-evaluation ordering issues.
+const h = vi.hoisted(() => ({ BUSINESS_ID: 'biz-001' }));
+
 const mockList = vi.fn();
 const mockGetById = vi.fn();
 const mockCreate = vi.fn();
@@ -30,6 +33,10 @@ const mockCountByBusiness = vi.fn();
 const mockUpdate = vi.fn();
 const mockRotateSecret = vi.fn();
 const mockRemove = vi.fn();
+const mockQueryDeliveryReceipts = vi.fn();
+
+// Stand-in for `requireBusinessAuth`: header-driven so a single app can
+// exercise both the authorized and unauthorized branches of every route.
 
 vi.mock('../../../src/services/business/resolveBusiness.js', () => ({
   resolveBusinessIdForUser: mockResolveBusinessIdForUser,
@@ -73,15 +80,40 @@ vi.mock('../../../src/middleware/requireBusinessAuth.js', () => ({
       return;
     }
     req.user = { id: userId, userId, role: 'user' };
+    req.business = { id: h.BUSINESS_ID };
     req.business = { id: businessId };
     next();
   },
 }));
 
-const { webhookSubscriptionsRouter } = await import(
+vi.mock('../../../src/repositories/webhookSubscriptionRepository.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../../src/repositories/webhookSubscriptionRepository.js')
+    >();
+  return {
+    ...actual,
+    list: mockList,
+    getById: mockGetById,
+    create: mockCreate,
+    countByBusiness: mockCountByBusiness,
+    update: mockUpdate,
+    remove: mockRemove,
+  };
+});
+
+vi.mock('../../../src/repositories/deliveryReceiptRepository.js', () => ({
+  queryDeliveryReceipts: mockQueryDeliveryReceipts,
+}));
+
+const { webhookSubscriptionsRouter, MAX_PUBLIC_RESPONSE_BODY_LENGTH } = await import(
   '../../../src/routes/webhook-subscriptions.js'
 );
 const { errorHandler } = await import('../../../src/middleware/errorHandler.js');
+
+const BASE = '/api/v1/webhook-subscriptions';
+const BUSINESS_ID = h.BUSINESS_ID;
+const VALID_SECRET = 'a-very-long-secret-key-that-is-over-32-chars-long';
 
 const app = express();
 app.use(express.json());
@@ -110,7 +142,6 @@ describe('webhookSubscriptionsRouter', () => {
 
   beforeEach(() => {
     for (const m of [
-      mockResolveBusinessIdForUser,
       mockList,
       mockGetById,
       mockCreate,
@@ -118,10 +149,10 @@ describe('webhookSubscriptionsRouter', () => {
       mockUpdate,
       mockRotateSecret,
       mockRemove,
+      mockQueryDeliveryReceipts,
     ]) {
       m.mockReset();
     }
-    mockResolveBusinessIdForUser.mockResolvedValue(BUSINESS_ID);
     errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -134,6 +165,7 @@ describe('webhookSubscriptionsRouter', () => {
   const protectedRoutes: Array<[string, () => request.Test]> = [
     ['GET /', () => request(app).get(BASE)],
     ['GET /:id', () => request(app).get(`${BASE}/wh-1`)],
+    ['GET /:id/deliveries', () => request(app).get(`${BASE}/wh-1/deliveries`)],
     ['POST /', () => request(app).post(BASE).send({})],
     ['PATCH /:id', () => request(app).patch(`${BASE}/wh-1`).send({})],
     ['POST /:id/rotate-secret', () => request(app).post(`${BASE}/wh-1/rotate-secret`).send({})],
@@ -144,13 +176,13 @@ describe('webhookSubscriptionsRouter', () => {
     const res = await call();
 
     expect(res.status).toBe(401);
-    expect(mockResolveBusinessIdForUser).not.toHaveBeenCalled();
     expect(mockList).not.toHaveBeenCalled();
     expect(mockGetById).not.toHaveBeenCalled();
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockRotateSecret).not.toHaveBeenCalled();
     expect(mockRemove).not.toHaveBeenCalled();
+    expect(mockQueryDeliveryReceipts).not.toHaveBeenCalled();
   });
 
   // ── GET / ──────────────────────────────────────────────────────────────
@@ -207,17 +239,6 @@ describe('webhookSubscriptionsRouter', () => {
     expect(mockList).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when the authenticated user has no business', async () => {
-    mockResolveBusinessIdForUser.mockResolvedValue(null);
-
-    const res = await request(app).get(BASE).set('x-test-user', 'u-orphan');
-
-    expect(res.status).toBe(404);
-    expect(res.body.vrtCode).toBe('VRT-0004');
-    expect(res.body.message).toBe('Business not found for the authenticated user');
-    expect(mockList).not.toHaveBeenCalled();
-  });
-
   // ── GET /:id ───────────────────────────────────────────────────────────
 
   it('returns a subscription scoped by id and business', async () => {
@@ -238,6 +259,177 @@ describe('webhookSubscriptionsRouter', () => {
     expect(res.status).toBe(404);
     expect(res.body.vrtCode).toBe('VRT-0004');
     expect(res.body.message).toBe('Webhook subscription not found');
+  });
+
+  // ── GET /:id/deliveries ────────────────────────────────────────────────
+
+  function deliveryReceipt(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'dr-1',
+      deliveryId: 'dv-1',
+      attemptNumber: 1,
+      subscriptionId: 'wh-1',
+      businessId: BUSINESS_ID,
+      url: 'https://example.com/webhook',
+      statusCode: 200,
+      latencyMs: 120,
+      signatureVersion: 2,
+      signature: 'stored-hmac-signature-must-not-leak',
+      responseBody: '{"ok":true}',
+      createdAt: '2026-07-02T00:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('returns paginated receipts scoped to the subscription and business', async () => {
+    mockGetById.mockResolvedValue(subscription({ id: 'wh-1' }));
+    mockQueryDeliveryReceipts.mockResolvedValue({ data: [deliveryReceipt()], nextCursor: 'dr-2' });
+
+    const res = await request(app).get(`${BASE}/wh-1/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(200);
+    expect(mockGetById).toHaveBeenCalledWith('wh-1', BUSINESS_ID);
+    expect(mockQueryDeliveryReceipts).toHaveBeenCalledTimes(1);
+    expect(mockQueryDeliveryReceipts).toHaveBeenCalledWith({
+      businessId: BUSINESS_ID,
+      subscriptionId: 'wh-1',
+      limit: 50,
+      cursor: undefined,
+    });
+    expect(res.body.status).toBe('success');
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0]).toEqual(
+      expect.objectContaining({
+        id: 'dr-1',
+        deliveryId: 'dv-1',
+        subscriptionId: 'wh-1',
+        businessId: BUSINESS_ID,
+        statusCode: 200,
+        latencyMs: 120,
+        signatureVersion: 2,
+        responseBody: '{"ok":true}',
+      }),
+    );
+    expect(res.body.nextCursor).toBe('dr-2');
+  });
+
+  it('forwards the validated limit and cursor to the repository', async () => {
+    mockGetById.mockResolvedValue(subscription());
+    mockQueryDeliveryReceipts.mockResolvedValue({ data: [] });
+
+    const res = await request(app)
+      .get(`${BASE}/wh-1/deliveries?limit=5&cursor=abc123`)
+      .set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(200);
+    expect(mockQueryDeliveryReceipts).toHaveBeenCalledWith({
+      businessId: BUSINESS_ID,
+      subscriptionId: 'wh-1',
+      limit: 5,
+      cursor: 'abc123',
+    });
+  });
+
+  it('omits nextCursor when the repository has no further page', async () => {
+    mockGetById.mockResolvedValue(subscription());
+    mockQueryDeliveryReceipts.mockResolvedValue({ data: [deliveryReceipt()] });
+
+    const res = await request(app).get(`${BASE}/wh-1/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty('nextCursor');
+  });
+
+  it('rejects invalid limits with a 400 validation envelope before touching the repository', async () => {
+    for (const raw of ['0', '-5', '101', '1.5', 'abc', 'NaN', '']) {
+      mockGetById.mockReset();
+      mockQueryDeliveryReceipts.mockReset();
+
+      const res = await request(app)
+        .get(`${BASE}/wh-1/deliveries?limit=${encodeURIComponent(raw)}`)
+        .set('x-test-user', 'u-1');
+
+      expect(res.status).toBe(400);
+      expect(res.body.vrtCode).toBe('VRT-0002');
+      expect(mockGetById).not.toHaveBeenCalled();
+      expect(mockQueryDeliveryReceipts).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rejects unknown query parameters (strict schema)', async () => {
+    const res = await request(app)
+      .get(`${BASE}/wh-1/deliveries?injected=1`)
+      .set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(400);
+    expect(res.body.vrtCode).toBe('VRT-0002');
+    expect(mockQueryDeliveryReceipts).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 and does not query receipts when the subscription is not found', async () => {
+    mockGetById.mockResolvedValue(null);
+
+    const res = await request(app).get(`${BASE}/wh-1/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(404);
+    expect(res.body.vrtCode).toBe('VRT-0004');
+    expect(res.body.message).toBe('Webhook subscription not found');
+    expect(mockQueryDeliveryReceipts).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the subscription is owned by another business', async () => {
+    // The repository lookup is scoped by business; a subscription belonging
+    // to another business is not found for this caller's business.
+    mockGetById.mockResolvedValue(null);
+
+    const res = await request(app).get(`${BASE}/wh-other/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(404);
+    expect(res.body.vrtCode).toBe('VRT-0004');
+    expect(mockGetById).toHaveBeenCalledWith('wh-other', BUSINESS_ID);
+    expect(mockQueryDeliveryReceipts).not.toHaveBeenCalled();
+  });
+
+  it('omits the stored signature and truncates long response bodies', async () => {
+    const longBody = 'x'.repeat(MAX_PUBLIC_RESPONSE_BODY_LENGTH + 150);
+    mockGetById.mockResolvedValue(subscription());
+    mockQueryDeliveryReceipts.mockResolvedValue({
+      data: [deliveryReceipt({ responseBody: longBody })],
+    });
+
+    const res = await request(app).get(`${BASE}/wh-1/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(200);
+    const [item] = res.body.data;
+    expect(item).not.toHaveProperty('signature');
+    expect(item.signature).toBeUndefined();
+    expect(item.responseBody).toBe(longBody.slice(0, MAX_PUBLIC_RESPONSE_BODY_LENGTH));
+    expect(item.responseBody.length).toBeLessThanOrEqual(MAX_PUBLIC_RESPONSE_BODY_LENGTH);
+  });
+
+  it('handles null response bodies cleanly', async () => {
+    mockGetById.mockResolvedValue(subscription());
+    mockQueryDeliveryReceipts.mockResolvedValue({
+      data: [deliveryReceipt({ responseBody: null })],
+    });
+
+    const res = await request(app).get(`${BASE}/wh-1/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(200);
+    const [item] = res.body.data;
+    expect(item).not.toHaveProperty('responseBody');
+    expect(item).not.toHaveProperty('signature');
+  });
+
+  it('maps a repository failure to a 5xx envelope without leaking internals', async () => {
+    mockGetById.mockResolvedValue(subscription());
+    mockQueryDeliveryReceipts.mockRejectedValue(new Error('pg: connection to 10.0.0.5 refused'));
+
+    const res = await request(app).get(`${BASE}/wh-1/deliveries`).set('x-test-user', 'u-1');
+
+    expect(res.status).toBe(500);
+    expect(res.body.vrtCode).toBe('VRT-9999');
+    expect(JSON.stringify(res.body)).not.toContain('10.0.0.5');
   });
 
   // ── POST / ─────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
-import { attestationRepository } from "../../repositories/attestation.js";
+import * as attestationRepository from "../../repositories/attestationRepository.js";
+import { db } from "../../db/client.js";
 import { businessRepository } from "../../repositories/business.js";
 import { logger } from "../../utils/logger.js";
 import { cdnClient } from "../../services/cdn/cdnClientAdapter.js";
@@ -13,7 +14,7 @@ import { revokeAttestationOnChain } from "../soroban/submitAttestation.js";
  * - Verifies the attestation exists.
  * - Verifies the attestation belongs to a business owned by the requesting user.
  * - Checks if already revoked.
- * - Updates the attestation status to 'revoked' and records the revocation timestamp and reason.
+ * - Persists the revoked status with optimistic locking before purging cached data.
  *
  * @param attestationId - The ID of the attestation to revoke.
  * @param userId - The ID of the user requesting the revocation.
@@ -26,7 +27,7 @@ export async function revokeAttestation(
   reason?: string,
 ): Promise<void> {
   // 1. Look up attestation
-  const attestation = attestationRepository.findById(attestationId);
+  const attestation = await attestationRepository.getById(db, attestationId);
   if (!attestation) {
     throw new Error(`Attestation not found: ${attestationId}`);
   }
@@ -51,6 +52,12 @@ export async function revokeAttestation(
   };
   if (reason) {
     updateData.revokeReason = reason;
+  // 4. Update status in repository
+  const updated = await attestationRepository.updateStatus(
+    db, attestationId, 'revoked', attestation.version,
+  );
+  if (!updated) {
+    throw new Error(`Attestation not found: ${attestationId}`);
   }
   const updatedAttestation = attestationRepository.update(attestationId, updateData);
   if (!updatedAttestation) {
@@ -61,7 +68,7 @@ export async function revokeAttestation(
   try {
     const purgeUrl = `${process.env.CDN_BASE_URL ?? ''}/attestations/${attestationId}`;
     await cdnClient.purge([purgeUrl]);
-    recordCdnPurgeStatus(attestationId, 'success', { url: purgeUrl });
+    recordCdnPurgeStatus(attestationId, 'success', { url: purgeUrl, reason });
     logger.info(`CDN purge successful for attestation ${attestationId}`);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

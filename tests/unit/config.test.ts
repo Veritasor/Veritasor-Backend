@@ -23,6 +23,7 @@ describe("Config Module Validation", () => {
     delete process.env.JWT_SECRET;
     delete process.env.ALLOWED_ORIGINS;
     delete process.env.STELLAR_NETWORK;
+    delete process.env.WS_ALLOW_QUERY_TOKEN;
   });
 
   afterEach(() => {
@@ -147,6 +148,39 @@ describe("Config Module Validation", () => {
     expect(config.otel.grpc.mtls.caPath).toBeUndefined();
     expect(config.otel.grpc.mtls.certPath).toBeUndefined();
     expect(config.otel.grpc.mtls.keyPath).toBeUndefined();
+  });
+
+  it("should default WS_ALLOW_QUERY_TOKEN to true in development", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+
+    const { config } = await loadConfig();
+    expect(config.ws.allowQueryToken).toBe(true);
+  });
+
+  it("should default WS_ALLOW_QUERY_TOKEN to false in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+    process.env.ALLOWED_ORIGINS = "https://example.com";
+    process.env.JWT_SECRET = "a-very-long-and-secure-secret-that-is-over-32-chars";
+    process.env.PERSISTED_QUERY_SECRET =
+      "a-very-long-and-secure-persisted-query-secret-over-32-chars";
+
+    const { config } = await loadConfig();
+    expect(config.ws.allowQueryToken).toBe(false);
+  });
+
+  it("should let WS_ALLOW_QUERY_TOKEN override the environment default", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.DATABASE_URL = "postgres://localhost:5432/db";
+    process.env.ALLOWED_ORIGINS = "https://example.com";
+    process.env.JWT_SECRET = "a-very-long-and-secure-secret-that-is-over-32-chars";
+    process.env.PERSISTED_QUERY_SECRET =
+      "a-very-long-and-secure-persisted-query-secret-over-32-chars";
+    process.env.WS_ALLOW_QUERY_TOKEN = "true";
+
+    const { config } = await loadConfig();
+    expect(config.ws.allowQueryToken).toBe(true);
   });
 
   it("should parse OTEL gRPC exporter and mTLS config", async () => {

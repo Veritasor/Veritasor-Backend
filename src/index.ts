@@ -25,6 +25,7 @@ import { createShutdownOrchestrator } from './shutdown.js';
 import { createRevenueConsumer } from './services/revenue/kafkaConsumer.js';
 import { persistRevenueEntry } from './services/revenue/persistRevenueEntry.js';
 import { stopStatsdDualWriteIfNeeded } from './services/metrics/statsdBootstrap.js';
+import { setTokenStore, createRedisTokenStore } from './utils/jwt.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
@@ -49,6 +50,9 @@ export async function bootstrap(): Promise<void> {
   }
 
   await jwksManager.reload();
+
+  // Share JWT revocation / refresh-token family state across instances via Redis
+  setTokenStore(createRedisTokenStore());
 
   // Start the HTTP server; `startServer` returns the `http.Server` instance
   const server = await startServer(PORT);

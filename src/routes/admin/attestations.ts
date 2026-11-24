@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { requirePermissions } from '../../middleware/permissions.js'
 import { IntegrationPermission } from '../../types/permissions.js'
 import { revokeBatchAttestations } from '../../services/attestation/revokeBatch.js'
+import { broadcaster } from '../../ws/attestationStream.js'
+import { logger } from '../../utils/logger.js'
 
 const attestationsRouter = Router()
 
@@ -25,6 +27,27 @@ attestationsRouter.post(
     try {
       const revoked = await revokeBatchAttestations(parsed.data.attestationIds, req.user!.id)
       const count = Array.isArray(revoked) ? revoked.length : revoked.revoked.length
+
+      // Publish one event per successfully revoked attestation. Broadcast
+      // failures are logged but never fail the batch response.
+      const revokedEntries = Array.isArray(revoked) ? [] : (revoked.revokedEntries ?? [])
+      for (const entry of revokedEntries) {
+        try {
+          broadcaster.publish({
+            type: 'attestation.revoked',
+            businessId: entry.businessId,
+            attestationId: entry.id,
+            period: entry.period,
+            timestamp: new Date().toISOString(),
+          })
+        } catch (publishError) {
+          logger.warn(
+            { error: publishError, attestationId: entry.id },
+            'Failed to publish attestation.revoked event',
+          )
+        }
+      }
+
       res.json({ message: 'Batch revoked successfully', count })
     } catch (error: any) {
       res.status(500).json({ error: 'Internal Server Error', message: error.message })

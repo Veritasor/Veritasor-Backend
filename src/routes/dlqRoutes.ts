@@ -4,10 +4,21 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { requirePermissions } from '../middleware/permissions.js';
 import { IntegrationPermission } from '../types/permissions.js';
 import { asyncErrorHandler } from '../middleware/errorHandler.js';
-import { NotFoundError } from '../types/errors.js';
+import { NotFoundError, ValidationError } from '../types/errors.js';
 
 const router = Router();
 const dlq = new DeadLetterQueue();
+const POSTGRES_INT_MAX = 2147483647;
+
+/**
+ * DLQ entry ids are PostgreSQL integer primary keys. Validate the shape before
+ * querying so a malformed path parameter is a 400 rather than a database error.
+ */
+function isValidDlqEntryId(id: string): boolean {
+  if (!/^[1-9]\d*$/.test(id) || id.length > 10) return false;
+  const parsed = Number(id);
+  return Number.isSafeInteger(parsed) && parsed <= POSTGRES_INT_MAX;
+}
 
 // All DLQ admin routes require authentication
 router.use(requireAuth);
@@ -58,7 +69,15 @@ router.get(
   asyncErrorHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
     const result = await dlq.getEntries({ page: 1, pageSize: 1 });
-    const entry = result.entries.find(e => e.id === id);
+    const entry = result.entries.find(e => String(e.id) === id);
+
+    if (!isValidDlqEntryId(id)) {
+      throw new ValidationError([
+        { path: ['id'], message: 'id must be a positive integer' },
+      ]);
+    }
+
+    const entry = await dlq.getEntryById(id);
 
     if (!entry) {
       throw new NotFoundError('DLQ entry not found');

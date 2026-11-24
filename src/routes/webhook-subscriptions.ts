@@ -8,6 +8,8 @@
  *   POST   /api/v1/webhook-subscriptions          - Create a subscription
  *   GET    /api/v1/webhook-subscriptions          - List subscriptions
  *   GET    /api/v1/webhook-subscriptions/:id      - Get a subscription
+ *   GET    /api/v1/webhook-subscriptions/:id/deliveries
+ *                                                 - List a subscription's delivery receipts
  *   PATCH  /api/v1/webhook-subscriptions/:id      - Update a subscription
  *   POST   /api/v1/webhook-subscriptions/:id/rotate-secret - Rotate the signing secret
  *   DELETE /api/v1/webhook-subscriptions/:id      - Delete a subscription
@@ -25,10 +27,64 @@ import {
   updateWebhookSubscriptionSchema,
   rotateWebhookSubscriptionSecretSchema,
   listWebhookSubscriptionsQuerySchema,
+  listWebhookDeliveriesQuerySchema,
 } from "../schemas/webhookSubscription.js";
 import * as repo from "../repositories/webhookSubscriptionRepository.js";
+import type { DeliveryReceipt } from "../repositories/deliveryReceiptRepository.js";
 
 const MAX_SUBSCRIPTIONS_PER_BUSINESS = 10;
+
+/**
+ * Maximum length of `responseBody` in the public delivery receipt view.
+ * Stored bodies are truncated at this length so the public API never echoes
+ * unbounded payload data back to the business.
+ */
+export const MAX_PUBLIC_RESPONSE_BODY_LENGTH = 500;
+
+/**
+ * Public (business-facing) view of a delivery receipt.
+ *
+ * Omits the stored `signature` (the delivery HMAC) entirely, and truncates
+ * `responseBody` to {@link MAX_PUBLIC_RESPONSE_BODY_LENGTH} characters.
+ */
+export interface PublicDeliveryReceipt {
+  id: string;
+  deliveryId: string;
+  attemptNumber: number;
+  subscriptionId: string;
+  businessId: string;
+  url: string;
+  statusCode: number;
+  latencyMs: number;
+  signatureVersion: number;
+  responseBody?: string;
+  createdAt: string;
+}
+
+function truncateResponseBody(responseBody: string): string {
+  return responseBody.length > MAX_PUBLIC_RESPONSE_BODY_LENGTH
+    ? responseBody.slice(0, MAX_PUBLIC_RESPONSE_BODY_LENGTH)
+    : responseBody;
+}
+
+function toPublicDeliveryReceipt(receipt: DeliveryReceipt): PublicDeliveryReceipt {
+  const publicReceipt: PublicDeliveryReceipt = {
+    id: receipt.id,
+    deliveryId: receipt.deliveryId,
+    attemptNumber: receipt.attemptNumber,
+    subscriptionId: receipt.subscriptionId,
+    businessId: receipt.businessId,
+    url: receipt.url,
+    statusCode: receipt.statusCode,
+    latencyMs: receipt.latencyMs,
+    signatureVersion: receipt.signatureVersion,
+    createdAt: receipt.createdAt,
+  };
+  if (receipt.responseBody !== undefined && receipt.responseBody !== null) {
+    publicReceipt.responseBody = truncateResponseBody(receipt.responseBody);
+  }
+  return publicReceipt;
+}
 
 export const webhookSubscriptionsRouter = Router();
 
@@ -76,6 +132,44 @@ webhookSubscriptionsRouter.get(
     }
 
     res.status(200).json({ status: "success", data: repo.toPublicSubscription(subscription) });
+  }),
+);
+
+/**
+ * GET /api/v1/webhook-subscriptions/:id/deliveries
+ *
+ * List webhook delivery receipts for a subscription owned by the
+ * authenticated business. Cursor-paginated (`limit`, `cursor`). The public
+ * view omits the stored `signature` and truncates `responseBody`.
+ */
+webhookSubscriptionsRouter.get(
+  "/:id/deliveries",
+  requireBusinessAuth,
+  validateQuery(listWebhookDeliveriesQuerySchema),
+  asyncErrorHandler(async (req, res) => {
+    const businessId = req.business!.id;
+
+    const subscription = await repo.getById(req.params.id, businessId);
+    if (!subscription) {
+      throw new NotFoundError("Webhook subscription not found");
+    }
+
+    const query = listWebhookDeliveriesQuerySchema.parse(req.query);
+    const { queryDeliveryReceipts } = await import(
+      "../repositories/deliveryReceiptRepository.js"
+    );
+    const result = await queryDeliveryReceipts({
+      businessId,
+      subscriptionId: req.params.id,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+
+    res.status(200).json({
+      status: "success",
+      data: result.data.map(toPublicDeliveryReceipt),
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+    });
   }),
 );
 

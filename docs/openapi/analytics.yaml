@@ -1,0 +1,213 @@
+openapi: "3.0.0"
+info:
+  title: Veritasor Analytics API
+  version: 1.0.0
+  description: API for listing attested billing periods and generating revenue reports.
+
+paths:
+  /analytics/periods:
+    get:
+      summary: List attested billing periods
+      operationId: listAttestedPeriods
+      description: Returns all attested billing periods for the authenticated business.
+      tags: [analytics]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: List of attested billing periods.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttestedPeriodsResponse"
+              examples:
+                success:
+                  value:
+                    periods:
+                      - "2026-01"
+                      - "2026-02"
+        "400":
+          description: Missing business ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodedError"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodedError"
+        "403":
+          description: Business not found or suspended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodedError"
+        "429":
+          description: Too many requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /analytics/revenue:
+    get:
+      summary: Get revenue report for a period or date range
+      operationId: getRevenueReport
+      description: >
+        Generates a revenue report for the authenticated business.
+        Provide either `period` (single YYYY-MM month) or both `from` and `to`
+        (inclusive YYYY-MM range, max 24 months). Matches `revenueReportQuerySchema`.
+      tags: [analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: Single billing month in YYYY-MM format (2020-01 to 2105-12). Mutually exclusive with `from`/`to`.
+          schema:
+            $ref: "#/components/schemas/PeriodString"
+          example: "2026-01"
+        - name: from
+          in: query
+          required: false
+          description: Inclusive range start month in YYYY-MM format (2020-01 to 2105-12). Requires `to`.
+          schema:
+            $ref: "#/components/schemas/PeriodString"
+          example: "2025-10"
+        - name: to
+          in: query
+          required: false
+          description: Inclusive range end month in YYYY-MM format (2020-01 to 2105-12). Requires `from`.
+          schema:
+            $ref: "#/components/schemas/PeriodString"
+          example: "2026-01"
+      responses:
+        "200":
+          description: Revenue report for the requested period or window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevenueReport"
+        "400":
+          description: Invalid query parameters, missing period/range, or invalid time window.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodedError"
+        "403":
+          description: Business not found or suspended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodedError"
+        "404":
+          description: No revenue data found for the given period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    PeriodString:
+      type: string
+      minLength: 7
+      maxLength: 7
+      pattern: "^(20[2-9]\\d|210[0-5])-(0[1-9]|1[0-2])$"
+      description: Billing month in YYYY-MM format between 2020-01 and 2105-12.
+      example: "2026-01"
+
+    AttestedPeriodsResponse:
+      type: object
+      properties:
+        periods:
+          type: array
+          items:
+            type: string
+      required:
+        - periods
+
+    RevenueBreakdownItem:
+      type: object
+      properties:
+        period:
+          $ref: "#/components/schemas/PeriodString"
+        total:
+          type: number
+        currency:
+          type: string
+          example: "USD"
+      required:
+        - period
+        - total
+
+    RevenueReport:
+      type: object
+      properties:
+        period:
+          type: string
+          example: "2026-01"
+        total:
+          type: number
+          example: 125000.5
+        currency:
+          type: string
+          example: "USD"
+        breakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/RevenueBreakdownItem"
+      required:
+        - period
+        - total
+        - breakdown
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    CodedError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - MISSING_AUTH
+            - INVALID_TOKEN
+            - MISSING_BUSINESS_ID
+            - BUSINESS_NOT_FOUND
+            - BUSINESS_SUSPENDED
+      required:
+        - error
+        - code
+
+tags:
+  - name: analytics
+    description: Analytics — revenue reports and attested billing periods

@@ -41,7 +41,9 @@ describe("HTTP request metrics exemplars", () => {
       0.25,
     );
 
-    const bucketValues = Object.values(httpRequestDuration.hashMap)[0];
+    const bucketValues = Object.values(
+      (httpRequestDuration as unknown as { hashMap: Record<string, { bucketExemplars: Record<number, unknown> }> }).hashMap,
+    )[0];
     expect(bucketValues.bucketExemplars[0.25]).toBeNull();
   });
 
@@ -60,7 +62,9 @@ describe("HTTP request metrics exemplars", () => {
       );
     });
 
-    const bucketValues = Object.values(httpRequestDuration.hashMap)[0];
+    const bucketValues = Object.values(
+      (httpRequestDuration as unknown as { hashMap: Record<string, { bucketExemplars: Record<number, unknown> }> }).hashMap,
+    )[0];
     expect(bucketValues.bucketExemplars[0.25]).toMatchObject({
       labelSet: { trace_id: TRACE_ID },
     });
@@ -113,7 +117,7 @@ describe("observeHttpRequestDuration", () => {
 
     const metrics = await metricsRegistry.getMetricsAsJSON();
     const histogram = metrics.find((metric) => metric.name === "http_request_duration_seconds");
-    const values = histogram?.values as Array<{ labels: Record<string, string>; value: number }>;
+    const values = histogram?.values as Array<{ metricName?: string; labels: Record<string, string>; value: number }>;
     expect(values).toEqual(expect.arrayContaining([
       expect.objectContaining({
         labels: expect.objectContaining({

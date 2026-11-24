@@ -28,8 +28,8 @@ export interface CreateIntegrationData {
  * Data that can be updated on an existing integration
  */
 export interface UpdateIntegrationData {
-  token: Record<string, any>
-  metadata: Record<string, any>
+  token?: Record<string, any>
+  metadata?: Record<string, any>
 }
 
 // In-memory storage using Map data structure

@@ -46,8 +46,18 @@ export interface GrpcWorkloadApiClientOptions {
   grpcLoader?: GrpcLoader;
 }
 
+export interface RawGrpcWorkloadClient {
+  fetchX509SVID: (
+    request: Record<string, never>,
+    callback: (error: Error | null, response: Record<string, unknown>) => void,
+  ) => void;
+  fetchX509SVIDStream: (
+    request: Record<string, never>,
+  ) => NodeJS.EventEmitter;
+}
+
 export interface GrpcLoader {
-  loadClient(): Promise<WorkloadApiClient>;
+  loadClient(): Promise<RawGrpcWorkloadClient>;
 }
 
 function parseSocketAddress(socketAddress: string): string {
@@ -182,19 +192,11 @@ class GrpcWorkloadApiClient implements WorkloadApiClient {
     };
   }
 
-  private getClient(): Promise<{
-    fetchX509SVID: (
-      request: Record<string, never>,
-      callback: (error: Error | null, response: Record<string, unknown>) => void,
-    ) => void;
-    fetchX509SVIDStream: (
-      request: Record<string, never>,
-    ) => NodeJS.EventEmitter;
-  }> {
+  private getClient(): Promise<RawGrpcWorkloadClient> {
     if (!this.clientPromise) {
       this.clientPromise = this.grpcLoader.loadClient();
     }
-    return this.clientPromise;
+    return this.clientPromise!;
   }
 }
 
@@ -210,7 +212,7 @@ function createDefaultGrpcLoader(address: string): GrpcLoader {
         defaults: true,
         oneofs: true,
       });
-      const loaded = grpc.loadPackageDefinition(packageDefinition) as {
+      const loaded = grpc.loadPackageDefinition(packageDefinition) as unknown as {
         spiffe: {
           workload: {
             SpiffeWorkloadAPI: new (

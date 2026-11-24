@@ -184,6 +184,12 @@ const maxPayloadSizeField = z
 
 const enabledField = z.boolean().optional().default(true);
 
+const mtlsConfigSchema = z.object({
+  clientCertSecretId: z.string().min(1),
+  clientKeySecretId: z.string().min(1),
+  caPinSecretId: z.string().min(1),
+});
+
 /**
  * Schema for creating a new webhook subscription.
  */
@@ -193,6 +199,7 @@ export const createWebhookSubscriptionSchema = z.object({
   eventFilters: eventFiltersSchema.optional(),
   maxPayloadSize: maxPayloadSizeField,
   enabled: enabledField,
+  mtlsConfig: mtlsConfigSchema.nullable().optional(),
 }).strict();
 
 export type CreateWebhookSubscriptionInput = z.infer<
@@ -210,6 +217,7 @@ export const updateWebhookSubscriptionSchema = z.object({
   eventFilters: eventFiltersSchema.optional(),
   enabled: z.boolean().optional(),
   maxPayloadSize: maxPayloadSizeField,
+  mtlsConfig: mtlsConfigSchema.nullable().optional(),
 }).strict();
 
 export type UpdateWebhookSubscriptionInput = z.infer<
@@ -255,6 +263,23 @@ export const listWebhookSubscriptionsQuerySchema = z.object({
 
 export type ListWebhookSubscriptionsQuery = z.infer<
   typeof listWebhookSubscriptionsQuerySchema
+>;
+
+/**
+ * Schema for querying webhook delivery receipts (business deliveries endpoint).
+ *
+ * Shares the subscription list schema's validation conventions: `limit` is
+ * coerced from a query string and must be an integer between 1 and the same
+ * max cap (100). The default of 50 matches the repository's default page
+ * size for delivery receipts.
+ */
+export const listWebhookDeliveriesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().optional(),
+}).strict();
+
+export type ListWebhookDeliveriesQuery = z.infer<
+  typeof listWebhookDeliveriesQuerySchema
 >;
 
 // ---------------------------------------------------------------------------
