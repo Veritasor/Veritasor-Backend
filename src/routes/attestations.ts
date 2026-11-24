@@ -420,6 +420,7 @@ async function submitOnChain(
           merkleRoot: params.merkleRoot,
           timestamp: params.timestamp,
           version: params.version,
+          sourcePublicKey: process.env.SOROBAN_SOURCE_PUBLIC_KEY ?? '',
           submit: params.submit ?? true,
           userId: params.userId,
         }, { idempotencyKey: params.userId ? `${params.business}:${params.period}:${params.userId}` : undefined });

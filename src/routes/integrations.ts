@@ -109,13 +109,16 @@ export function isAllowedRedirectUri(redirectUri: string): boolean {
   return allowed.includes(redirectUri)
 }
 
+const genericOAuthStates = new Map<string, { userId: string; businessId: string; expiresAt: number }>();
+
 /**
  * @notice Consume and validate a generic integration OAuth state for the caller.
  * @returns true only if the state exists, has not expired, and is bound to the caller's user/business.
  */
 export function consumeGenericOAuthState(state: string, userId: string, businessId: string): boolean {
-  const record = consumeOAuthState(state)
-  if (!record) return false
+  const record = genericOAuthStates.get(state)
+  genericOAuthStates.delete(state)
+  if (!record || record.expiresAt < Date.now()) return false
   if (record.userId !== userId || record.businessId !== businessId) return false
   return true
 }
@@ -131,7 +134,7 @@ export function generateGenericOAuthState(): string {
  * @notice Persist the generic OAuth state bound to the initiating user/business.
  */
 export function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): void {
-  setOAuthState(state, { userId, businessId, expiresAt })
+  genericOAuthStates.set(state, { userId, businessId, expiresAt })
 }
 
 /**
@@ -338,7 +341,7 @@ router.post('/connect',
  */
 router.delete('/:id',
   requireBusinessAuth,
-  requirePermissions(IntegrationPermission.DISCONNECT),
+  requirePermissions(IntegrationPermission.DISCONNECT_OWN),
   requirePolicy('delete', 'integration', { resourceTenantId: (req) => req.business?.id }),
   async (req: Request, res: Response) => {
     try {

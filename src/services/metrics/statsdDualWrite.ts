@@ -95,7 +95,7 @@ export function startStatsdDualWrite(
           const sample = typeof value.value === 'number' ? value.value : 0;
           metricsCount++;
 
-          switch (metric.type) {
+          switch (metric.type as unknown as string) {
             case 'counter': {
               const key = deltaKey(sampleName, labels);
               const prev = previousCounters.get(key) ?? 0;

@@ -16,6 +16,8 @@
  * - the prototype-pollution guard rejecting unsafe query keys before routing
  */
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import request from "supertest";
 import type { Express } from "express";
 import {
@@ -140,5 +142,29 @@ describe("app lifecycle — createApp", () => {
 
     expect(res.status).not.toBe(500);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe("typecheck script and tsconfig strictness", () => {
+  it("defines typecheck as tsc --noEmit in package.json and documents it in README.md", () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(process.cwd(), "package.json"), "utf8"),
+    ) as { scripts?: Record<string, string> };
+    const readme = readFileSync(resolve(process.cwd(), "README.md"), "utf8");
+
+    expect(pkg.scripts?.typecheck).toBe("tsc --noEmit");
+    expect(readme).toContain("typecheck");
+  });
+
+  it("preserves strict TypeScript compilation over src in tsconfig.json", () => {
+    const tsconfig = JSON.parse(
+      readFileSync(resolve(process.cwd(), "tsconfig.json"), "utf8"),
+    ) as {
+      compilerOptions?: Record<string, unknown>;
+      include?: string[];
+    };
+
+    expect(tsconfig.compilerOptions?.strict).toBe(true);
+    expect(tsconfig.include).toEqual(["src"]);
   });
 });

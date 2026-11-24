@@ -1,6 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import {
   EnvAdapter,
+  FileAdapter,
   VaultAdapter,
   AwsSecretsAdapter,
   GsmSecretAdapter,
@@ -33,9 +36,9 @@ vi.mock('@aws-sdk/client-kms', () => {
   }
 })
 
-let mockReadFile: ReturnType<typeof vi.fn>
-let mockWriteFile: ReturnType<typeof vi.fn>
-let mockMkdir: ReturnType<typeof vi.fn>
+let mockReadFile: Mock<(...args: any[]) => any>
+let mockWriteFile: Mock<(...args: any[]) => any>
+let mockMkdir: Mock<(...args: any[]) => any>
 vi.mock('node:fs/promises', () => {
   return {
     default: {
@@ -271,7 +274,7 @@ describe('SecretLoader', () => {
       status: 200,
       statusText: 'OK',
       json: async () => ({ data: { VAULT_SECRET: 'vault-value' } }),
-    })) as typeof fetch)
+    })) as unknown as typeof fetch)
 
     const loader = new VaultAdapter('https://vault.example.com', 'secrets/path', 'vault-token')
     await loader.reload()

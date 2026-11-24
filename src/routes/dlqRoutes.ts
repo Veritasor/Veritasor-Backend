@@ -58,7 +58,7 @@ router.get(
   asyncErrorHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
     const result = await dlq.getEntries({ page: 1, pageSize: 1 });
-    const entry = result.entries.find(e => e.id === id);
+    const entry = result.entries.find(e => String(e.id) === id);
 
     if (!entry) {
       throw new NotFoundError('DLQ entry not found');

@@ -35,13 +35,13 @@ export type VRTErrorCode = typeof VRTErrorCodes[keyof typeof VRTErrorCodes];
  */
 export class AppError extends Error {
   public status: number;
-  public vrtCode: VRTErrorCode;
+  public vrtCode: VRTErrorCode | (string & {});
   public context?: Record<string, unknown>;
 
   constructor(
     message: string,
     status: number = 500,
-    vrtCode: VRTErrorCode = VRTErrorCodes.VRT_9999,
+    vrtCode: VRTErrorCode | (string & {}) = VRTErrorCodes.VRT_9999,
     context?: Record<string, unknown>
   ) {
     super(message);

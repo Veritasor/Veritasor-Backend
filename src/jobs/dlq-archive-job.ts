@@ -1,5 +1,5 @@
-import { DeadLetterQueue } from '../services/webhooks/deadLetterQueue';
-import { Logger } from '../utils/logger';
+import { DeadLetterQueue } from '../services/webhooks/deadLetterQueue.js';
+import { Logger } from '../utils/logger.js';
 
 const logger = new Logger('DLQ-Archive-Job');
 
