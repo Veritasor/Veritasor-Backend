@@ -61,7 +61,7 @@ describeSecretProviderContract('VaultAdapter', async () => {
     status: 200,
     statusText: 'OK',
     json: vi.fn(async () => payload),
-  })) as typeof fetch)
+  })) as unknown as typeof fetch)
 
   return {
     adapter: new VaultAdapter('https://vault.example.com', 'secrets', 'token'),

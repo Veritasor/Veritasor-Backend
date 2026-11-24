@@ -3,66 +3,102 @@ import type { Request, Response, NextFunction } from "express";
 export const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 /**
+ * Tri-state result of scanning for forbidden prototype pollution keys.
+ *
+ * - `"clean"`: no forbidden key found and every checked node is within budget.
+ * - `"forbidden"`: a forbidden key was found.
+ * - `"limit_exceeded"`: the depth or key budget was exceeded, so the scan
+ *   cannot prove the payload is clean (fail-closed).
+ */
+export type ForbiddenScanResult = "clean" | "forbidden" | "limit_exceeded";
+
+/**
+ * Recursively scans an object or array for forbidden prototype pollution keys.
+ *
+ * The result is tri-state so callers can fail closed: an over-budget scan
+ * cannot prove the payload is clean, so it is not reported as `"clean"`.
+ *
+ * Each node is visited once (cycle-safe) and traversal is linear in the
+ * number of nodes and keys inspected.
+ *
+ * @param obj - The value to scan (object, array, primitive).
+ * @param maxDepth - Maximum recursion depth bound (default 30).
+ * @param maxKeys - Maximum number of inspected keys/items bound (default 2000).
+ * @returns The tri-state scan result.
+ */
+export function scanForForbiddenKeys(
+  obj: unknown,
+  maxDepth = 30,
+  maxKeys = 2000,
+): ForbiddenScanResult {
+  if (obj === null || typeof obj !== "object") {
+    return "clean";
+  }
+
+  let visitedCount = 0;
+  const seen = new WeakSet<object>();
+
+  function check(current: unknown, depth: number): ForbiddenScanResult {
+    if (depth > maxDepth) {
+      return "limit_exceeded";
+    }
+    if (current === null || typeof current !== "object") {
+      return "clean";
+    }
+
+    if (seen.has(current)) {
+      return "clean";
+    }
+    seen.add(current);
+
+    if (Array.isArray(current)) {
+      for (const item of current) {
+        if (++visitedCount > maxKeys) return "limit_exceeded";
+        const result = check(item, depth + 1);
+        if (result !== "clean") return result;
+      }
+      return "clean";
+    }
+
+    const keys = Object.getOwnPropertyNames(current);
+    for (const key of keys) {
+      if (++visitedCount > maxKeys) return "limit_exceeded";
+      if (FORBIDDEN_KEYS.has(key)) {
+        return "forbidden";
+      }
+      try {
+        const val = (current as Record<string, unknown>)[key];
+        const result = check(val, depth + 1);
+        if (result !== "clean") return result;
+      } catch {
+        // Skip inaccessible properties
+      }
+    }
+
+    return "clean";
+  }
+
+  return check(obj, 0);
+}
+
+/**
  * Recursively inspects an object or array for forbidden prototype pollution keys.
+ *
+ * Returns true if a forbidden key is found or if the scan exceeds its
+ * depth/key budget (fail-closed): an over-budget scan cannot prove the
+ * payload is clean, so it is treated as a violation.
  *
  * @param obj - The value to inspect (object, array, primitive).
  * @param maxDepth - Maximum recursion depth bound (default 30).
  * @param maxKeys - Maximum number of inspected keys/items bound (default 2000).
- * @returns True if a forbidden key is found, false otherwise.
+ * @returns True if a forbidden key is found or the scan is over budget, false otherwise.
  */
 export function hasForbiddenKeys(
   obj: unknown,
   maxDepth = 30,
   maxKeys = 2000,
 ): boolean {
-  if (obj === null || typeof obj !== "object") {
-    return false;
-  }
-
-  let visitedCount = 0;
-  const seen = new WeakSet<object>();
-
-  function check(current: unknown, depth: number): boolean {
-    if (depth > maxDepth) {
-      return false;
-    }
-    if (current === null || typeof current !== "object") {
-      return false;
-    }
-
-    if (seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        if (++visitedCount > maxKeys) return false;
-        if (check(item, depth + 1)) return true;
-      }
-      return false;
-    }
-
-    const keys = Object.getOwnPropertyNames(current);
-    for (const key of keys) {
-      if (++visitedCount > maxKeys) return false;
-      if (FORBIDDEN_KEYS.has(key)) {
-        return true;
-      }
-      try {
-        const val = (current as Record<string, unknown>)[key];
-        if (check(val, depth + 1)) {
-          return true;
-        }
-      } catch {
-        // Skip inaccessible properties
-      }
-    }
-
-    return false;
-  }
-
-  return check(obj, 0);
+  return scanForForbiddenKeys(obj, maxDepth, maxKeys) !== "clean";
 }
 
 /**
@@ -113,13 +149,16 @@ export const prototypePollutionGuard = (
     return;
   }
 
-  if (req.body && hasForbiddenKeys(req.body)) {
-    res.status(400).json({
-      status: "error",
-      code: "VALIDATION_ERROR",
-      message: "Invalid body fields",
-    });
-    return;
+  if (req.body) {
+    const result = scanForForbiddenKeys(req.body);
+    if (result !== "clean") {
+      res.status(400).json({
+        status: "error",
+        code: "VALIDATION_ERROR",
+        message: "Invalid body fields",
+      });
+      return;
+    }
   }
 
   next();

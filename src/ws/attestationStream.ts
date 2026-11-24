@@ -4,7 +4,11 @@
  * Clients connect to /api/v1/ws/attestations and receive a JSON message
  * for every attestation submitted for their business.
  *
- * Auth: Bearer token in the Authorization header or ?token= query param.
+ * Auth: Bearer token in the Authorization header is always accepted. A JWT in
+ *       the ?token= query param is deprecated and only accepted when
+ *       WS_ALLOW_QUERY_TOKEN is enabled (default: false in production, true in
+ *       development/test). When disabled, ?token= is ignored and the upgrade
+ *       is rejected with close code 1008.
  * Scope: each connection only receives events for the authenticated user's
  *        businessId. The businessId is resolved once at upgrade time and
  *        stored on the socket so publish() can filter cheaply.
@@ -26,6 +30,7 @@ import type { Server } from "node:http";
 import { verifyToken } from "../utils/jwt.js";
 import { businessRepository } from "../repositories/business.js";
 import { logger } from "../utils/logger.js";
+import { config } from "../config/index.js";
 import { wsConnections, wsMessagesTotal, wsMessagesDroppedTotal } from "../metrics.js";
 
 // ---------------------------------------------------------------------------
@@ -128,15 +133,33 @@ export function closeAttestationStream(): Promise<void> {
 // Extract JWT from upgrade request
 // ---------------------------------------------------------------------------
 
-function extractToken(req: IncomingMessage): string | null {
+export function extractToken(
+  req: IncomingMessage,
+  allowQueryToken: boolean = config.ws.allowQueryToken,
+): string | null {
   const auth = req.headers["authorization"];
   if (typeof auth === "string" && auth.startsWith("Bearer ")) {
     return auth.slice(7);
   }
-  // Fall back to ?token= query param (useful for browser WS clients)
+
+  if (!allowQueryToken) {
+    return null;
+  }
+
+  // Fall back to ?token= query param (deprecated, useful for browser WS clients)
   const url = new URL(req.url ?? "", "ws://placeholder");
   const qp = url.searchParams.get("token");
-  return qp ?? null;
+  if (!qp) {
+    return null;
+  }
+
+  // Structured deprecation warning — never include the raw JWT.
+  logger.warn(
+    "[ws] JWT supplied via ?token= query string is deprecated; use the Authorization: Bearer header instead",
+    { event: "ws.query_token_deprecated", authMethod: "query" },
+  );
+
+  return qp;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +174,7 @@ export function attachAttestationStream(server: Server): WebSocketServer {
     const socket = ws as AuthedSocket;
 
     // ── Auth ──────────────────────────────────────────────────────────────
-    const token = extractToken(req);
+    const token = extractToken(req, config.ws.allowQueryToken);
     if (!token) {
       socket.close(1008, "Unauthorized");
       return;

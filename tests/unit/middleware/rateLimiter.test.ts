@@ -159,11 +159,38 @@ describe("rateLimiter (fixed window — memory store)", () => {
     expect((otherRes as any).statusCode).toBe(200);
   });
 
-  it("uses x-forwarded-for for unauthenticated clients", () => {
+  it("supports a bucket resolver keyed by the authenticated business id", () => {
+    const middleware = rateLimiter({
+      bucket: (req) => `analytics:${req.business?.id ?? "unknown"}`,
+      max: 1,
+      windowMs: 30_000,
+    })
+    const makeReq = (businessId: string) => createRequest({
+      ip: "203.0.113.10",
+      user: { id: "u1", userId: "u1" },
+      business: { id: businessId } as any,
+    })
+    const firstRes = createResponse();
+    const repeatedRes = createResponse();
+    const otherBusinessRes = createResponse();
+    const next = vi.fn() as NextFunction;
+
+    middleware(makeReq("biz-a"), firstRes, next);
+    middleware(makeReq("biz-a"), repeatedRes, next);
+    middleware(makeReq("biz-b"), otherBusinessRes, next);
+
+    expect((firstRes as any).statusCode).toBe(200);
+    expect(firstRes.getHeader("x-ratelimit-bucket")).toBe("analytics:biz-a");
+    expect((repeatedRes as any).statusCode).toBe(429);
+    expect((otherBusinessRes as any).statusCode).toBe(200);
+    expect(otherBusinessRes.getHeader("x-ratelimit-bucket")).toBe("analytics:biz-b");
+  });
+
+  it("keys unauthenticated clients by the resolved req.ip", () => {
     const middleware = rateLimiter({ bucket: "auth:login", max: 1, windowMs: 30_000 });
-    const r1 = createRequest({ headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.1" } });
-    const r2 = createRequest({ headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.2" } });
-    const r3 = createRequest({ headers: { "x-forwarded-for": "5.6.7.8, 10.0.0.3" } });
+    const r1 = createRequest({ ip: "1.2.3.4", headers: { "x-forwarded-for": "1.2.3.4" } });
+    const r2 = createRequest({ ip: "1.2.3.4", headers: { "x-forwarded-for": "1.2.3.4, 10.0.0.1" } });
+    const r3 = createRequest({ ip: "5.6.7.8", headers: { "x-forwarded-for": "5.6.7.8" } });
     const res1 = createResponse(), res2 = createResponse(), res3 = createResponse();
     const next = vi.fn() as NextFunction;
 

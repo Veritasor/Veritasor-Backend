@@ -1,4 +1,9 @@
+# Dependencies
 node_modules/
+
+# Use pnpm only; prevent a competing npm lockfile
+package-lock.json
+
 dist/
 .env
 .env.*

@@ -420,6 +420,7 @@ async function submitOnChain(
           merkleRoot: params.merkleRoot,
           timestamp: params.timestamp,
           version: params.version,
+          sourcePublicKey: process.env.SOROBAN_SOURCE_PUBLIC_KEY ?? '',
           submit: params.submit ?? true,
           userId: params.userId,
         }, { idempotencyKey: params.userId ? `${params.business}:${params.period}:${params.userId}` : undefined });
@@ -683,6 +684,23 @@ async function handleRevoke(req: Request, res: Response): Promise<void> {
 
     if (!revoked) {
       throw createHttpError(500, 'REVOKE_FAILED', 'Failed to revoke attestation');
+    }
+
+    // Publish the revocation to WebSocket subscribers. A broadcast failure must
+    // never change the HTTP outcome — the revocation itself already succeeded.
+    try {
+      broadcaster.publish({
+        type: 'attestation.revoked',
+        businessId: revoked.businessId,
+        attestationId: revoked.id,
+        period: revoked.period,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (publishError) {
+      logger.warn(
+        { error: publishError, attestationId: revoked.id },
+        'Failed to publish attestation.revoked event',
+      );
     }
 
     res.status(200).json({ status: 'success', data: revoked });

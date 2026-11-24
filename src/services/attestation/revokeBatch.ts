@@ -21,9 +21,16 @@ import {
 const MAX_BATCH_SIZE = 500;
 const CONCURRENCY = 5;
 
+export interface RevokedAttestationEntry {
+  id: string;
+  businessId: string;
+  period: string;
+}
+
 export interface RevokeBatchResult {
   revoked: string[];
   failed: Array<{ id: string; error: string }>;
+  revokedEntries: RevokedAttestationEntry[];
 }
 
 async function revokeOnChain(
@@ -138,7 +145,12 @@ export async function revokeBatchAttestations(
             signer,
             att,
           );
-          return { id: att.id, ok: true as const };
+          return {
+            id: att.id,
+            businessId: att.businessId,
+            period: String(att.period),
+            ok: true as const,
+          };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return { id: att.id, ok: false as const, error: message };
@@ -148,6 +160,7 @@ export async function revokeBatchAttestations(
 
     const revoked: string[] = [];
     const failed: Array<{ id: string; error: string }> = [];
+    const revokedEntries: RevokedAttestationEntry[] = [];
 
     for (const outcome of outcomes) {
       if (outcome.ok) {
@@ -163,13 +176,18 @@ export async function revokeBatchAttestations(
           client,
         );
         revoked.push(outcome.id);
+        revokedEntries.push({
+          id: outcome.id,
+          businessId: outcome.businessId,
+          period: outcome.period,
+        });
       } else {
         failed.push({ id: outcome.id, error: outcome.error });
       }
     }
 
     await client.query("COMMIT");
-    return { revoked, failed };
+    return { revoked, failed, revokedEntries };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

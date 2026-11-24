@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SCENARIO_NAMES,
+  buildWsAuthHeaders,
   buildWsUrl,
   createWsSaturationOptions,
   createWsSaturationRuntimeConfig,
@@ -51,18 +52,26 @@ describe("ws-saturation k6 config", () => {
     expect(config.targetClients).toBe(300);
   });
 
-  it("builds correct WebSocket URLs for http and https base URLs", () => {
-    expect(buildWsUrl("http://localhost:3000", "/api/v1/ws/attestations", "token123")).toBe(
-      "ws://localhost:3000/api/v1/ws/attestations?token=token123"
-    );
-
-    expect(buildWsUrl("https://api.veritasor.io", "api/v1/ws/attestations", "token@xyz")).toBe(
-      "wss://api.veritasor.io/api/v1/ws/attestations?token=token%40xyz"
-    );
-
-    expect(buildWsUrl("http://localhost:3000", "/api/v1/ws/attestations", "")).toBe(
+  it("builds correct WebSocket URLs for http and https base URLs without query tokens", () => {
+    expect(buildWsUrl("http://localhost:3000", "/api/v1/ws/attestations")).toBe(
       "ws://localhost:3000/api/v1/ws/attestations"
     );
+
+    expect(buildWsUrl("https://api.veritasor.io", "api/v1/ws/attestations")).toBe(
+      "wss://api.veritasor.io/api/v1/ws/attestations"
+    );
+
+    expect(buildWsUrl("http://localhost:3000", "/api/v1/ws/attestations")).not.toContain(
+      "token="
+    );
+  });
+
+  it("builds an Authorization Bearer header instead of a query token", () => {
+    expect(buildWsAuthHeaders("token123")).toEqual({
+      Authorization: "Bearer token123",
+    });
+    expect(buildWsAuthHeaders("")).toEqual({});
+    expect(buildWsAuthHeaders(undefined)).toEqual({});
   });
 
   it("validates WebSocket message payload schema", () => {

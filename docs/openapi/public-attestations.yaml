@@ -1,0 +1,162 @@
+openapi: "3.0.0"
+info:
+  title: Veritasor Public Attestations API
+  version: 1.0.0
+  description: Unauthenticated public attestation lookup endpoint with HTTP caching and optional HMAC signing.
+
+paths:
+  /v1/public/attestations/{hash}:
+    get:
+      summary: Lookup public attestation by Merkle root hash or ID
+      operationId: getPublicAttestationByHash
+      description: >
+        Returns a slim, optionally HMAC-signed attestation payload suitable for
+        widgets and crawlers. Supports conditional requests via `If-None-Match`
+        and `If-Modified-Since`.
+      tags: [public-attestations]
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          description: Merkle root hash (primary) or attestation UUID (fallback).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+          description: ETag for conditional request validation.
+        - name: If-Modified-Since
+          in: header
+          required: false
+          schema:
+            type: string
+          description: HTTP-date for conditional request validation.
+      responses:
+        "200":
+          description: Slim public attestation payload.
+          headers:
+            ETag:
+              schema:
+                type: string
+            Last-Modified:
+              schema:
+                type: string
+            Cache-Control:
+              schema:
+                type: string
+            X-Attestation-Signature:
+              required: false
+              schema:
+                type: string
+              description: Optional HMAC-SHA256 signature (`sha256=<hex>`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicAttestationResponse"
+        "304":
+          description: Not Modified (ETag or If-Modified-Since matched).
+        "400":
+          description: Invalid attestation identifier.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicAttestationError"
+        "404":
+          description: Attestation not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicAttestationError"
+        "410":
+          description: Attestation has been revoked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicAttestationError"
+        "429":
+          description: Too many requests (60 req/min per IP).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    PublicAttestation:
+      type: object
+      properties:
+        id:
+          type: string
+        businessId:
+          type: string
+          format: uuid
+        period:
+          type: string
+          example: "2026-01"
+        merkleRoot:
+          type: string
+        txHash:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum:
+            - pending
+            - submitted
+            - confirmed
+            - failed
+            - revoked
+        attestedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - businessId
+        - period
+        - merkleRoot
+        - status
+        - attestedAt
+
+    PublicAttestationResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          $ref: "#/components/schemas/PublicAttestation"
+      required:
+        - status
+        - data
+
+    PublicAttestationError:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          enum: [NOT_FOUND, GONE]
+        message:
+          type: string
+      required:
+        - status
+        - code
+        - message
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+tags:
+  - name: public-attestations
+    description: Public Attestations — unauthenticated attestation verification and lookup
