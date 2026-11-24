@@ -61,21 +61,32 @@ The file is the authoritative, commented reference.
 
 ## Running locally
 
-Requires Node.js 22 (as in CI) and Docker for the dev stack. CI uses pnpm (`pnpm-lock.yaml`); `package-lock.json` also exists and the Dockerfile uses `npm ci`.
+## Prerequisites
+
+- Node.js 22 or newer (matches CI and the Dockerfile)
+- pnpm 10 (matches `pnpm-lock.yaml` and Corepack)
+- Docker for the local development stack
+
+CI uses pnpm (`pnpm-lock.yaml`); `package-lock.json` also exists and the Dockerfile uses `npm ci`.
 
 ```bash
 docker compose -f ops/dev/docker-compose.yml up -d   # Postgres, Redis, mock Soroban RPC (seeded dev data)
 cp .env.example .env
 pnpm install            # or: npm install
+pnpm run typecheck      # run strict TypeScript type check (tsc --noEmit)
 pnpm run migrate        # apply SQL migrations
 pnpm run dev            # http://localhost:3000
 ```
 
-Other scripts: `build`, `start`, `lint`, `migrate:rollback`, `migrate:verify-rollback`, `docs:routes`, `docs:openapi`, `sbom:generate`, `perf:k6:*`, `soak`, `pact:test`, `test:mutation`. Reset the dev stack with `docker compose -f ops/dev/docker-compose.yml down -v`.
+Other scripts: `typecheck`, `build`, `start`, `lint`, `migrate:rollback`, `migrate:verify-rollback`, `docs:routes`, `docs:openapi`, `sbom:generate`, `perf:k6:*`, `soak`, `pact:test`, `test:mutation`. Reset the dev stack with `docker compose -f ops/dev/docker-compose.yml down -v`.
 
 ## Testing
 
 `pnpm test` runs Vitest (`vitest.config.ts`); `pnpm run test:coverage` adds coverage; `pnpm run pact:test` runs consumer contract tests (`tests/pact/`). Load/soak tooling lives in `ops/k6` and `scripts/soak-attestations.ts`.
+
+## Contributing
+
+Before opening a pull request, run `pnpm lint` (configured via `eslint.config.js`) to verify there are no ESLint errors in `src/`.
 
 ## CI and deployment
 

@@ -27,7 +27,10 @@ import {
   listAttestedPeriodsForBusiness,
   PeriodParseError,
 } from "../../../../src/services/analytics/periods.js";
-import { attestationRepository } from "../../../../src/repositories/attestation.js";
+import * as attestationRepository from "../../../../src/repositories/attestationRepository.js";
+import { db } from "../../../../src/db/client.js";
+vi.mock("../../../../src/db/client.js", () => ({ db: {} }));
+vi.mock("../../../../src/repositories/attestationRepository.js", () => ({ listPeriods: vi.fn() }));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1353,23 +1356,18 @@ describe("analytics period helpers", () => {
   });
 
   describe("listAttestedPeriodsForBusiness", () => {
-    it("should return unique periods sorted descending", () => {
+    it("should return unique periods sorted descending", async () => {
       const businessId = "test-biz-123";
-      vi.spyOn(attestationRepository, "listByBusiness").mockReturnValue([
-        { id: "1", businessId, period: "2025-01", attestedAt: "2025-02-01T00:00:00Z" },
-        { id: "2", businessId, period: "2025-02", attestedAt: "2025-03-01T00:00:00Z" },
-        { id: "3", businessId, period: "2025-01", attestedAt: "2025-02-02T00:00:00Z" }, // Duplicate period
-        { id: "4", businessId, period: "2024-12", attestedAt: "2025-01-01T00:00:00Z" },
-      ]);
+      vi.spyOn(attestationRepository, "listPeriods").mockResolvedValue(["2025-02", "2025-01", "2024-12"]);
 
-      const periods = listAttestedPeriodsForBusiness(businessId);
+      const periods = await listAttestedPeriodsForBusiness(businessId);
       expect(periods).toEqual(["2025-02", "2025-01", "2024-12"]);
-      expect(attestationRepository.listByBusiness).toHaveBeenCalledWith(businessId);
+      expect(attestationRepository.listPeriods).toHaveBeenCalledWith(db, businessId);
     });
 
     it("should return an empty array if no attestations found", () => {
-      vi.spyOn(attestationRepository, "listByBusiness").mockReturnValue([]);
-      expect(listAttestedPeriodsForBusiness("none")).toEqual([]);
+      vi.spyOn(attestationRepository, "listPeriods").mockResolvedValue([]);
+      return expect(listAttestedPeriodsForBusiness("none")).resolves.toEqual([]);
     });
   });
 });

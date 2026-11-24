@@ -1,6 +1,6 @@
 // Tests for pushgatewayClient.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { HttpPushgatewayClient, NoopPushgatewayClient, getPushgatewayClient, resetPushgatewayClientForTests } from './pushgatewayClient.js';
+import { HttpPushgatewayClient, NoopPushgatewayClient, getPushgatewayClient, resetPushgatewayClientForTests, type PushgatewayLike } from './pushgatewayClient.js';
 
 // Helper mock implementing PushgatewayLike
 class MockPushgateway implements PushgatewayLike {

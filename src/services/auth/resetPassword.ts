@@ -11,6 +11,11 @@
  * • Token single-use — `updateUserPassword` clears `resetToken` +
  *   `resetTokenExpiry` atomically with the password update, so a captured or
  *   replayed token cannot be used twice.
+ * • Refresh-token invalidation — on success, every pre-existing refresh-token
+ *   family of the user is revoked via `revokeAllUserTokenFamilies` (issue
+ *   #1330) so old sessions cannot continue after the password changed. A
+ *   `reset_password_revoked_token_families` audit record is emitted (count of
+ *   families, no raw tokens).
  * • Token expiry — `findUserByResetTokenHash` rejects tokens whose
  *   `resetTokenExpiry` is in the past (enforced at the repository layer).
  * • Minimum password entropy — rejects passwords shorter than 8 characters.
@@ -29,6 +34,7 @@ import {
 import { hashPassword } from '../../utils/password.js'
 import { AppError } from '../../types/errors.js'
 import { hashResetToken, tokenLogPrefix } from '../../utils/tokenHash.js'
+import { revokeAllUserTokenFamilies } from '../../utils/jwt.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,6 +50,7 @@ export interface ResetPasswordResponse {
 export type ResetPasswordAuditEvent =
   | 'reset_password_attempted'
   | 'reset_password_invalid_token'
+  | 'reset_password_revoked_token_families'
   | 'reset_password_success'
 
 export interface ResetPasswordAuditRecord {
@@ -54,6 +61,8 @@ export interface ResetPasswordAuditRecord {
    */
   tokenPrefix?: string
   userId?: string
+  /** Number of pre-existing refresh-token families revoked (issue #1330). */
+  revokedFamilyCount?: number
   timestamp: string
 }
 
@@ -167,8 +176,26 @@ export async function resetPassword(
   //
   // `updateUserPassword` sets the new password hash AND nulls out `resetToken`
   // + `resetTokenExpiry` in a single operation so there is no window where a
-  // concurrent request could consume the same token.
+  // concurrent request could consume the same token. The cleared reset token
+  // is therefore strictly single-use: `findUserByResetTokenHash` no longer
+  // matches, so a replayed token fails with INVALID_RESET_TOKEN.
   await updateUserPassword(user.id, passwordHash)
+
+  // ── Revoke all pre-existing refresh-token families (issue #1330) ─────────
+  //
+  // The password changed, so every refresh token issued before the reset must
+  // be invalidated — otherwise stolen/compromised sessions survive the reset.
+  // Revocation blacklists every JTI minted for the user's families (access +
+  // refresh, including rotated siblings) and deletes the family entries.
+  // Other users' families are untouched.
+  const revokedFamilyCount = revokeAllUserTokenFamilies(user.id)
+
+  logger({
+    event: 'reset_password_revoked_token_families',
+    userId: String(user.id),
+    revokedFamilyCount,
+    timestamp: nowIso(),
+  })
 
   logger({
     event: 'reset_password_success',

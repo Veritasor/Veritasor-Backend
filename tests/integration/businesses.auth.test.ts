@@ -2,6 +2,8 @@ import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import businessesRouter from '../../src/routes/businesses.js';
+import { config } from '../../src/config/index.js';
+import { resetRateLimiterStore } from '../../src/middleware/rateLimiter.js';
 import { businessRepository, clearAll as clearBusinesses } from '../../src/repositories/business.js';
 import { clearAllUsers, createUser } from '../../src/repositories/userRepository.js';
 import * as webhookSubscriptionRepo from '../../src/repositories/webhookSubscriptionRepository.js';
@@ -15,6 +17,7 @@ describe('businesses JWT authentication', () => {
   beforeEach(() => {
     clearBusinesses();
     clearAllUsers();
+    resetRateLimiterStore();
   });
 
   afterEach(() => {
@@ -148,5 +151,92 @@ describe('businesses JWT authentication', () => {
     expect(res.body.businessId).toBe(ownerBiz.id);
     expect(res.body.secret).toBeUndefined();
     expect(res.body.secretLast4).toBe('aaaa');
+  });
+});
+
+describe('businesses public directory rate limiting', () => {
+  beforeEach(() => {
+    clearBusinesses();
+    clearAllUsers();
+    resetRateLimiterStore();
+  });
+
+  it('returns X-RateLimit-* headers on GET /api/businesses and GET /api/businesses/:id', async () => {
+    const user = await createUser('directory-owner@example.test', 'not-used-by-this-test');
+    const biz = await businessRepository.create({
+      userId: user.id,
+      name: 'Directory Biz',
+    });
+    vi.spyOn(businessRepository, 'list').mockResolvedValue({
+      items: [biz],
+      nextCursor: null,
+    });
+    vi.spyOn(businessRepository, 'getById').mockResolvedValue(biz);
+
+    const expectedLimit = config.rateLimits.businessesPublic.max;
+
+    const listRes = await request(app)
+      .get('/api/businesses')
+      .expect(200);
+
+    expect(listRes.headers['x-ratelimit-bucket']).toBe('businesses:public');
+    expect(listRes.headers['x-ratelimit-limit']).toBe(String(expectedLimit));
+    expect(listRes.headers['x-ratelimit-remaining']).toBe(String(expectedLimit - 1));
+    expect(Number(listRes.headers['x-ratelimit-reset'])).toBeGreaterThan(Date.now() - 1000);
+
+    const detailRes = await request(app)
+      .get(`/api/businesses/${biz.id}`)
+      .expect(200);
+
+    expect(detailRes.headers['x-ratelimit-bucket']).toBe('businesses:public');
+    expect(detailRes.headers['x-ratelimit-limit']).toBe(String(expectedLimit));
+    expect(detailRes.headers['x-ratelimit-remaining']).toBe(String(expectedLimit - 2));
+  });
+
+  it('returns 429 after exceeding the limit on public GET routes while leaving authenticated routes unaffected', async () => {
+    const user = await createUser('ratelimit-user@example.test', 'not-used-by-this-test');
+    const token = generateToken({ userId: user.id, email: user.email });
+    const limit = config.rateLimits.businessesPublic.max;
+
+    vi.spyOn(businessRepository, 'list').mockResolvedValue({
+      items: [],
+      nextCursor: null,
+    });
+
+    for (let i = 0; i < limit; i++) {
+      await request(app).get('/api/businesses').expect(200);
+    }
+
+    const blockedListRes = await request(app)
+      .get('/api/businesses')
+      .expect(429);
+
+    expect(blockedListRes.body.error).toMatch(/too many requests/i);
+    expect(blockedListRes.headers['x-ratelimit-remaining']).toBe('0');
+    expect(Number(blockedListRes.headers['retry-after'])).toBeGreaterThanOrEqual(1);
+
+    const blockedDetailRes = await request(app)
+      .get('/api/businesses/00000000-0000-0000-0000-000000000000')
+      .expect(429);
+
+    expect(blockedDetailRes.headers['x-ratelimit-bucket']).toBe('businesses:public');
+
+    // Authenticated routes (/me, POST, PATCH) remain unaffected
+    await request(app)
+      .post('/api/businesses')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Unaffected Business' })
+      .expect(201);
+
+    await request(app)
+      .get('/api/businesses/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    await request(app)
+      .patch('/api/businesses/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Unaffected Business Updated' })
+      .expect(200);
   });
 });

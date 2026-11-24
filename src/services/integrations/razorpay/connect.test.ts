@@ -14,6 +14,7 @@ import {
   _seedOAuthState,
   validateRazorpayState,
 } from './connect.js'
+import { logger } from '../../../utils/logger.js'
 import {
   clearAll,
   create,
@@ -55,6 +56,7 @@ describe('razorpay/connect', () => {
     clearAll()
     process.env = originalEnv
     vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   describe('Razorpay credential lookup', () => {
@@ -299,6 +301,7 @@ describe('razorpay/connect', () => {
   describe('initiateRazorpayConnect', () => {
     describe('happy path', () => {
       it('returns 200 with authUrl, state, and expiresAt', async () => {
+        const loggerInfo = vi.spyOn(logger, 'info').mockImplementation(() => {})
         const now = Date.now()
         vi.setSystemTime(now)
 
@@ -312,6 +315,14 @@ describe('razorpay/connect', () => {
         expect(body).toHaveProperty('authUrl')
         expect(body).toHaveProperty('state')
         expect(body).toHaveProperty('expiresAt')
+        expect(loggerInfo).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: 'razorpay_oauth_initiate',
+            userId: 'user-1',
+            redirectOrigin: 'https://app.veritasor.com',
+          }),
+        )
+        expect(JSON.stringify(loggerInfo.mock.calls)).not.toContain(body.state)
       })
 
       it('authUrl contains expected Razorpay authorization parameters', async () => {

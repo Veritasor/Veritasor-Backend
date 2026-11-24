@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import MerkleTree from '../../../src/services/merkle';
+import { logger } from '../../../src/utils/logger.js';
 import { buildTree, getRoot, MERKLE_MAX_LEAVES, MERKLE_WARN_LEAVES } from '../../../src/services/merkle/buildTree';
 import {
   generateProof,
@@ -518,20 +519,22 @@ describe('buildTree guardrails', () => {
 
   it('emits a structured warn log when leaf count reaches MERKLE_WARN_LEAVES', { timeout: 30000 }, () => {
 
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const largeLeaves = Array.from({ length: MERKLE_WARN_LEAVES }, (_, i) => String(i));
     buildTree(largeLeaves);
-    expect(spy).toHaveBeenCalledOnce();
-    const logged = JSON.parse(spy.mock.calls[0][0]);
-    expect(logged.level).toBe('warn');
-    expect(logged.service).toBe('merkle');
-    expect(logged.event).toBe('large_tree');
-    expect(logged.leafCount).toBe(MERKLE_WARN_LEAVES);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        service: 'merkle',
+        event: 'large_tree',
+        leafCount: MERKLE_WARN_LEAVES,
+      }),
+      expect.stringContaining('approaching size guardrail'),
+    );
     spy.mockRestore();
   });
 
   it('does NOT warn for trees below the threshold', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const spy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     buildTree(['x', 'y', 'z']);
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();

@@ -7,6 +7,8 @@ import { buildTree, getRoot } from "../merkle/index.js";
 import { attestationRepository } from "../../repositories/attestation.js";
 import { revenueSnapshotRepository } from "../../repositories/revenueSnapshotRepository.js";
 import { roundAmount } from "../revenue/normalize.js";
+import * as attestationRepository from "../../repositories/attestationRepository.js";
+import { db } from "../../db/client.js";
 import { AppError, ExternalServiceError } from "../../types/errors.js";
 import {
   BatchingQueue,
@@ -14,30 +16,7 @@ import {
   type BatchingQueueItem,
 } from "../soroban/batchingQueue.js";
 import { sorobanBatchItemErrorsTotal } from "../../metrics.js";
-
-/**
- * Parses a period string (e.g. "2025-10" or "2025-Q4") into ISO start and end dates.
- */
-function parsePeriod(period: string): { startDate: string; endDate: string } {
-  if (period.includes("-Q")) {
-    const [year, q] = period.split("-Q");
-    const startMonth = (parseInt(q) - 1) * 3 + 1;
-    const endMonth = startMonth + 2;
-    const endDay = new Date(parseInt(year), endMonth, 0).getDate();
-    return {
-      startDate: `${year}-${String(startMonth).padStart(2, "0")}-01T00:00:00Z`,
-      endDate: `${year}-${String(endMonth).padStart(2, "0")}-${String(endDay).padStart(2, "0")}T23:59:59Z`,
-    };
-  } else {
-    // Treat as YYYY-MM
-    const [year, month] = period.split("-");
-    const endDay = new Date(parseInt(year), parseInt(month), 0).getDate();
-    return {
-      startDate: `${year}-${month}-01T00:00:00Z`,
-      endDate: `${year}-${month}-${String(endDay).padStart(2, "0")}T23:59:59Z`,
-    };
-  }
-}
+import { parsePeriodToIsoRange } from "../analytics/periods.js";
 
 type NormalizedRevenue = {
   date: string;
@@ -333,7 +312,9 @@ async function doSubmitAttestation(
   period: string,
 ): Promise<{ attestationId: string; txHash: string }> {
   try {
-    const { startDate, endDate } = parsePeriod(period);
+    // Shared parser validates the format and derives UTC-anchored bounds.
+    // PeriodParseError extends AppError, so the outer catch preserves its 400.
+    const { startDate, endDate } = parsePeriodToIsoRange(period);
 
     // 1. Fetch Revenue
     // Using Razorpay for now, as it's the only implemented fetch service.
@@ -383,9 +364,12 @@ async function doSubmitAttestation(
     }
 
     // 6. Save Attestation Record
-    const attestation = attestationRepository.create({
+    const attestation = await attestationRepository.create(db, {
       businessId,
       period,
+      merkleRoot: root,
+      txHash,
+      status: 'submitted',
     });
 
     // 6a. Upsert the revenue snapshot consumed by analytics

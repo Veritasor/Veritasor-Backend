@@ -329,7 +329,7 @@ export function requirePermissions(
 
       next();
     } catch (error) {
-      console.error('Permission middleware error:', error);
+      logger.error({ error }, 'Permission middleware error');
       res.status(500).json({
         error: 'Internal Server Error',
         message: 'Error checking permissions',

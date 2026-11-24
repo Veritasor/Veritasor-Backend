@@ -81,7 +81,8 @@ export function createShutdownOrchestrator(opts: ShutdownOptions): ShutdownOrche
         // Repeated-signal guard: force-exit immediately if already draining
         // ------------------------------------------------------------------
         if (isShuttingDown) {
-          console.error(
+          logger.error(
+            { event: 'shutdown_repeated_signal', signal },
             `[Shutdown] Received second ${signal} during active shutdown — force-exiting.`,
           );
           proc.exit(1);
@@ -100,7 +101,8 @@ export function createShutdownOrchestrator(opts: ShutdownOptions): ShutdownOrche
         // Bounded deadline timer — triggers force-exit if drain stalls
         // ------------------------------------------------------------------
         const deadline = setTimeout(() => {
-          console.error(
+          logger.error(
+            { event: 'shutdown_deadline_exceeded', timeoutMs },
             `[Shutdown] Graceful shutdown exceeded ${timeoutMs} ms deadline — force-exiting.`,
           );
           proc.exit(1);
@@ -121,7 +123,10 @@ export function createShutdownOrchestrator(opts: ShutdownOptions): ShutdownOrche
           })
           .catch((err: unknown) => {
             clearTimeout(deadline);
-            console.error('[Shutdown] Unexpected error during shutdown:', err);
+            logger.error(
+              { event: 'shutdown_unexpected_error', error: err },
+              '[Shutdown] Unexpected error during shutdown',
+            );
             proc.exit(1);
           });
       };
@@ -158,9 +163,17 @@ async function performShutdown(
 ): Promise<void> {
   // ── Step 1: stop background workers while database access is available ──
   if (opts.onCleanup) {
-    try { await opts.onCleanup(); } catch (err) { console.error('[Shutdown] Error in onCleanup hook:', err); }
+    try {
+      await opts.onCleanup();
+    } catch (error) {
+      logger.error({ event: 'shutdown_cleanup_failed', error }, '[Shutdown] Error in onCleanup hook');
+    }
   }
-  try { await opts.closeWebSockets?.(); } catch (err) { console.error('[Shutdown] Error closing WebSockets:', err); }
+  try {
+    await opts.closeWebSockets?.();
+  } catch (error) {
+    logger.error({ event: 'shutdown_websocket_close_failed', error }, '[Shutdown] Error closing WebSockets');
+  }
 
   // ── Step 2: stop accepting new HTTP connections ─────────────────────────
   logger.info({ event: 'shutdown_server_closing' });
@@ -177,7 +190,7 @@ async function performShutdown(
     logger.info({ event: 'shutdown_pool_closed' });
   } catch (err: unknown) {
     // Log but do not rethrow — a pool-close error should not block exit
-    console.error('[Shutdown] Error while closing DB pool:', err);
+    logger.error({ event: 'shutdown_pool_close_failed', error: err }, '[Shutdown] Error while closing DB pool');
   }
 }
 
@@ -212,8 +225,9 @@ function getDefaultTimeoutMs(): number {
     if (Number.isInteger(parsed) && parsed > 0) {
       return parsed;
     }
-    console.warn(
-      `[Shutdown] Invalid SHUTDOWN_TIMEOUT_MS="${raw}" — using default 15 000 ms.`,
+    logger.warn(
+      { event: 'invalid_shutdown_timeout', value: raw },
+      '[Shutdown] Invalid SHUTDOWN_TIMEOUT_MS — using default 15 000 ms.',
     );
   }
   return 15_000;

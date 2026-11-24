@@ -14,6 +14,8 @@
  */
 
 import { Router } from 'express';
+import { config } from '../config/index.js';
+import { rateLimiter } from '../middleware/rateLimiter.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { requireBusinessAuth } from '../middleware/requireBusinessAuth.js';
 import { z } from 'zod';
@@ -32,6 +34,16 @@ import { isValidWebhookUrl } from '../schemas/webhookSubscription.js';
 
 const router = Router();
 export const webhookRouter = Router({ mergeParams: true });
+
+/**
+ * Rate limiter for unauthenticated public business directory endpoints (`GET /` and `GET /:id`).
+ * Defaults to 60 requests/min per IP (`BUSINESSES_PUBLIC_RATE_LIMIT_MAX` / `BUSINESSES_PUBLIC_RATE_LIMIT_WINDOW_MS`).
+ */
+const publicBusinessesRateLimiter = rateLimiter({
+  bucket: 'businesses:public',
+  windowMs: config.rateLimits.businessesPublic.windowMs,
+  max: config.rateLimits.businessesPublic.max,
+});
 
 const MAX_LEGACY_WEBHOOK_SUBSCRIPTIONS_PER_BUSINESS = 5;
 
@@ -117,6 +129,7 @@ router.patch(
  *
  * Public endpoint - no authentication required.
  * Supports keyset pagination and filtering.
+ * Rate-limited (default 60 req/min per IP via `businesses:public` bucket).
  *
  * @route GET /api/businesses
  * @param {number} [limit] - Number of items to return (default 20, max 100)
@@ -127,9 +140,15 @@ router.patch(
  *
  * @returns {object} 200 - Paginated list of businesses
  * @returns {error} 400 - Validation error
+ * @returns {error} 429 - Too many requests
  * @returns {error} 500 - Server error
  */
-router.get('/', validateQuery(businessListQuerySchema), asyncErrorHandler(listBusinesses));
+router.get(
+  '/',
+  publicBusinessesRateLimiter,
+  validateQuery(businessListQuerySchema),
+  asyncErrorHandler(listBusinesses),
+);
 
 /**
  * GET /:id
@@ -137,15 +156,17 @@ router.get('/', validateQuery(businessListQuerySchema), asyncErrorHandler(listBu
  *
  * Public endpoint - no authentication required.
  * Returns business information by ID.
+ * Rate-limited (default 60 req/min per IP via `businesses:public` bucket).
  *
  * @route GET /api/businesses/:id
  * @param {string} id - Business UUID (required)
  *
  * @returns {object} 200 - Business object
  * @returns {error} 404 - Not found
+ * @returns {error} 429 - Too many requests
  * @returns {error} 500 - Server error
  */
-router.get('/:id', asyncErrorHandler(getBusinessById));
+router.get('/:id', publicBusinessesRateLimiter, asyncErrorHandler(getBusinessById));
 
 /**
  * POST /:id/webhooks

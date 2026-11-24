@@ -1,0 +1,264 @@
+openapi: "3.0.0"
+info:
+  title: Veritasor Users API
+  version: 1.0.0
+  description: API for user profile updates and GDPR data export lifecycle.
+
+paths:
+  /users/me:
+    patch:
+      summary: Update current user's profile
+      operationId: updateCurrentUserProfile
+      description: Updates the authenticated user's profile (`updateUserProfileSchema`).
+      tags: [users]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserProfileRequest"
+      responses:
+        "200":
+          description: Updated user profile.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "400":
+          description: Invalid input or no updatable fields provided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+
+  /users/me/export:
+    post:
+      summary: Initiate GDPR data export
+      operationId: initiateUserDataExport
+      tags: [users]
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: Data export initiated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataExportInitiatedResponse"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "500":
+          description: Failed to initiate export.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+
+  /users/me/export/{token}:
+    get:
+      summary: Download GDPR data export archive
+      operationId: downloadUserDataExport
+      description: Consumes a one-time download token and returns the encrypted export archive.
+      tags: [users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 32
+          description: One-time export download token.
+      responses:
+        "200":
+          description: Encrypted GDPR export archive.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "202":
+          description: Export is still being processed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataExportPendingResponse"
+        "400":
+          description: Invalid export token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "404":
+          description: Export or archive not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "410":
+          description: Export token not found, already downloaded, or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+
+  /users/me/export/{exportId}/status:
+    get:
+      summary: Check GDPR data export status
+      operationId: getUserDataExportStatus
+      tags: [users]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: exportId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 32
+      responses:
+        "200":
+          description: Export status details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataExportStatusResponse"
+        "400":
+          description: Invalid export ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+        "404":
+          description: Export not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    UpdateUserProfileRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          example: "Jane Doe"
+        profile:
+          type: object
+          additionalProperties: true
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          nullable: true
+        profile:
+          type: object
+          additionalProperties: true
+      required:
+        - id
+
+    DataExportInitiatedResponse:
+      type: object
+      properties:
+        exportId:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+      required:
+        - exportId
+        - status
+        - createdAt
+        - expiresAt
+        - message
+
+    DataExportPendingResponse:
+      type: object
+      properties:
+        exportId:
+          type: string
+        status:
+          type: string
+        message:
+          type: string
+      required:
+        - exportId
+        - status
+        - message
+
+    DataExportStatusResponse:
+      type: object
+      properties:
+        exportId:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+        - exportId
+        - status
+
+    MessageError:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
+
+tags:
+  - name: users
+    description: Users — user profile and account management

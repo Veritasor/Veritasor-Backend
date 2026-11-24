@@ -72,3 +72,20 @@ and does not affect application database traffic.
 Prometheus recording and alerting rules live in `ops/alerts/backend.rules.yaml`.
 They aggregate pool-user series at database scope for queue alerts and alert when
 admin authentication or connectivity remains broken.
+
+## Prometheus Metrics Security
+
+When `METRICS_ENABLED=true`, the Prometheus scrape endpoint is served at `/metrics`.
+
+Because metric labels include tenant identifiers such as business IDs and subscription IDs (e.g., `webhook_secret_rotation_status`), exposing `/metrics` publicly poses a privacy risk.
+
+### Authentication via `METRICS_AUTH_TOKEN`
+
+- Set `METRICS_AUTH_TOKEN` in the environment to enforce authentication on `/metrics`.
+- Scrapers must provide the Bearer token in the `Authorization` header:
+  ```http
+  Authorization: Bearer <token>
+  ```
+- Unauthenticated or unauthorized requests are rejected with `401 Unauthorized` and an HTTP `WWW-Authenticate: Bearer realm="metrics"` header.
+- Token validation uses constant-time string comparison (`crypto.timingSafeEqual` over SHA-256 digests) to protect against timing attacks.
+- If `METRICS_AUTH_TOKEN` is unset, the endpoint remains unauthenticated for backwards compatibility, but a warning is logged at startup in production environments (`NODE_ENV=production`).

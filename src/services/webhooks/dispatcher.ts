@@ -8,6 +8,7 @@ import { staleWebhookDeliveries } from "../../metrics.js";
 import { createAuditLog } from "../../repositories/auditLogRepository.js";
 import { createDeliveryReceipt } from "../../repositories/deliveryReceiptRepository.js";
 import { evaluateEventFilter } from "../../schemas/webhookSubscription.js";
+import { logger } from "../../utils/logger.js";
 import { BackoffError, DEFAULT_BACKOFF_OPTIONS, withBackoff } from "../../utils/backoff.js";
 import { saveDeadLetter } from "./deadLetterQueue.js";
 
@@ -69,7 +70,10 @@ export function signAndPrepareDelivery(
           payloadSize,
           maxPayloadSize: subscription.maxPayloadSize,
         }
-      }).catch(err => console.error('Failed to write audit log', err));
+      }).catch(error => logger.error(
+        { event: 'webhook_audit_log_write_failed', error },
+        'Failed to write audit log',
+      ));
       
       throw new WebhookPayloadTooLargeError(`Webhook payload size (${payloadSize} bytes) exceeds maximum allowed size (${subscription.maxPayloadSize} bytes)`);
     }
@@ -296,7 +300,10 @@ export async function sendWebhookDelivery(options: SendWebhookDeliveryOptions): 
           reason: 'MTLS_CERT_EXPIRED',
           validTo: validTo.toISOString(),
         }
-      }).catch(err => console.error('Failed to write audit log', err));
+      }).catch(error => logger.error(
+        { event: 'webhook_audit_log_write_failed', error },
+        'Failed to write audit log',
+      ));
 
       throw new Error(`Client certificate for subscription ${subscription.id} expired on ${validTo.toISOString()}`);
     }

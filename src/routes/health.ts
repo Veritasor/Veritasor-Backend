@@ -16,7 +16,9 @@
  * @rate_limit - Not subject to rate limiting (health checks should be lightweight)
  */
 import { Router, Request, Response } from "express";
+import { rpc } from "@stellar/stellar-sdk";
 import { z } from "zod";
+import { getRedisClient } from "../redis.js";
 import { checkDatabase } from "../startup/readiness.js";
 
 /**
@@ -67,28 +69,14 @@ async function checkDb(): Promise<"ok" | "down" | undefined> {
 }
 
 /**
- * Check Redis connectivity by executing a PING command.
- * @returns Promise resolving to 'ok', 'down', or undefined if REDIS_URL not set
+ * Check Redis connectivity by executing a PING command on the shared ioredis client.
+ * @returns Promise resolving to 'ok', 'down', or undefined if REDIS_URL and REDIS_CLUSTER_NODES are not set
  */
 async function checkRedis(): Promise<"ok" | "down" | undefined> {
-  const url = process.env.REDIS_URL;
-  if (!url) return undefined;
+  if (!process.env.REDIS_URL && !process.env.REDIS_CLUSTER_NODES) return undefined;
   try {
-    // @ts-expect-error redis is an optional dependency
-    const redisModule = await import("redis");
-    const createClient = redisModule.createClient;
-    const client = createClient({ url });
-    await withTimeout(
-      (async () => {
-        await client.connect();
-        try {
-          await client.ping();
-        } finally {
-          await client.quit();
-        }
-      })(),
-      PING_TIMEOUT_MS,
-    );
+    const client = getRedisClient();
+    await withTimeout(client.ping(), PING_TIMEOUT_MS);
     return "ok";
   } catch {
     return "down";
@@ -96,7 +84,7 @@ async function checkRedis(): Promise<"ok" | "down" | undefined> {
 }
 
 /**
- * Check Soroban RPC connectivity by attempting to get network status.
+ * Check Soroban RPC connectivity by calling getHealth via @stellar/stellar-sdk.
  * Only runs if SOROBAN_RPC_URL is configured.
  * @returns Promise resolving to 'ok', 'down', or undefined if SOROBAN_RPC_URL not set
  */
@@ -104,20 +92,7 @@ async function checkSoroban(): Promise<"ok" | "down" | undefined> {
   const rpcUrl = process.env.SOROBAN_RPC_URL;
   if (!rpcUrl) return undefined;
   try {
-    // Dynamic import to handle optional dependency
-    // Try to load soroban-client; if not available, mark as down
-    let SorobanClient: any;
-    try {
-      // @ts-expect-error soroban-client is an optional dependency
-      SorobanClient = await import("soroban-client");
-    } catch {
-      // Module not installed - treat as unavailable
-      return undefined;
-    }
-    if (!SorobanClient?.default) {
-      return undefined;
-    }
-    const server = new SorobanClient.default.Server(rpcUrl, {
+    const server = new rpc.Server(rpcUrl, {
       allowHttp: rpcUrl.startsWith("http://"),
     });
     await withTimeout(server.getHealth(), PING_TIMEOUT_MS);

@@ -184,6 +184,12 @@ const maxPayloadSizeField = z
 
 const enabledField = z.boolean().optional().default(true);
 
+const mtlsConfigSchema = z.object({
+  clientCertSecretId: z.string().min(1),
+  clientKeySecretId: z.string().min(1),
+  caPinSecretId: z.string().min(1),
+});
+
 /**
  * Schema for creating a new webhook subscription.
  */
@@ -193,6 +199,7 @@ export const createWebhookSubscriptionSchema = z.object({
   eventFilters: eventFiltersSchema.optional(),
   maxPayloadSize: maxPayloadSizeField,
   enabled: enabledField,
+  mtlsConfig: mtlsConfigSchema.nullable().optional(),
 }).strict();
 
 export type CreateWebhookSubscriptionInput = z.infer<
@@ -210,6 +217,7 @@ export const updateWebhookSubscriptionSchema = z.object({
   eventFilters: eventFiltersSchema.optional(),
   enabled: z.boolean().optional(),
   maxPayloadSize: maxPayloadSizeField,
+  mtlsConfig: mtlsConfigSchema.nullable().optional(),
 }).strict();
 
 export type UpdateWebhookSubscriptionInput = z.infer<

@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { logger } from '../../utils/logger.js';
 
 export type MerkleAlgorithmVersion = 1 | 2;
 
@@ -128,16 +129,15 @@ export function buildTree(
 
   // ── Structured warning for large trees ───────────────────────────────────
   if (leaves.length >= MERKLE_WARN_LEAVES) {
-    console.warn(
-      JSON.stringify({
-        level: 'warn',
+    logger.warn(
+      {
         service: 'merkle',
         event: 'large_tree',
         leafCount: leaves.length,
         warnThreshold: MERKLE_WARN_LEAVES,
         maxAllowed: MERKLE_MAX_LEAVES,
-        message: `Building Merkle tree with ${leaves.length} leaves — approaching size guardrail`,
-      })
+      },
+      `Building Merkle tree with ${leaves.length} leaves — approaching size guardrail`,
     );
   }
 
