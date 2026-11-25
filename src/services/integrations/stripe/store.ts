@@ -1,8 +1,13 @@
 /**
- * In-memory store for Stripe OAuth state tokens and integration records.
+ * Store for Stripe OAuth state tokens and integration records.
  * Implements CSRF protection for OAuth flow.
  * Tokens are never logged.
+ *
+ * OAuth state is stored in Redis for multi-pod deployments,
+ * with in-memory fallback for tests and when Redis is not configured.
  */
+
+import { getRedisClient, type RedisClient } from '../../redis.js'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +40,21 @@ interface StateRecord {
 
 let stateStore = new Map<string, StateRecord>()
 
+/**
+ * Check if Redis is configured and available.
+ * Returns true if REDIS_URL or REDIS_CLUSTER_NODES is set.
+ */
+function isRedisConfigured(): boolean {
+  return !!(process.env.REDIS_URL || process.env.REDIS_CLUSTER_NODES || process.env.REDIS_MODE)
+}
+
+/**
+ * Get the Redis key for OAuth state storage.
+ */
+function getOAuthStateKey(state: string): string {
+  return `oauth:state:${state}`
+}
+
 
 /**
  * In-memory store for Stripe integrations.
@@ -65,29 +85,82 @@ function assertNonEmptyString(value: unknown, field: string): asserts value is s
 
 /**
  * Store an OAuth state token with expiration timestamp.
+ * Uses Redis when configured, falls back to in-memory storage.
  * @throws {StripeStoreValidationError} if state is empty or expiresAt is not a positive number.
  */
-export function setOAuthState(state: string, expiresAt: number): void {
+export async function setOAuthState(state: string, expiresAt: number): Promise<void> {
   assertNonEmptyString(state, 'state')
   if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) {
     throw new StripeStoreValidationError('expiresAt must be a finite number', 'expiresAt')
   }
-  stateStore.set(state, { expiresAt })
+
+  if (isRedisConfigured()) {
+    const client = getRedisClient()
+    const key = getOAuthStateKey(state)
+    const ttlMs = expiresAt - Date.now()
+
+    if (ttlMs <= 0) {
+      throw new StripeStoreValidationError('expiresAt must be in the future', 'expiresAt')
+    }
+
+    // Store with TTL in milliseconds (converted to seconds for Redis)
+    await client.set(key, JSON.stringify({ expiresAt }), 'PX', ttlMs)
+  } else {
+    // Fallback to in-memory storage
+    stateStore.set(state, { expiresAt })
+  }
 }
 
 /**
  * Consume an OAuth state token (one-time use).
+ * Uses Redis when configured, falls back to in-memory storage.
  * Returns true if valid and not expired, false otherwise.
- * Removes the token from storage after retrieval.
+ * Removes the token from storage after retrieval (atomic in Redis).
  */
-export function consumeOAuthState(state: string): boolean {
-  const record = stateStore.get(state)
-  stateStore.delete(state)
+export async function consumeOAuthState(state: string): Promise<boolean> {
+  if (isRedisConfigured()) {
+    const client = getRedisClient()
+    const key = getOAuthStateKey(state)
 
-  if (!record) return false
-  if (record.expiresAt < Date.now()) return false
+    // Use GETDEL for atomic get-and-delete (Redis 6.2+)
+    // Fallback to Lua script for older versions
+    try {
+      const value = await client.getdel(key)
+      if (!value) return false
 
-  return true
+      const record = JSON.parse(value) as StateRecord
+      if (record.expiresAt < Date.now()) return false
+
+      return true
+    } catch (err) {
+      // GETDEL might not be available in older Redis versions
+      // Fall back to Lua script for atomic GET + DEL
+      const script = `
+        local value = redis.call('GET', KEYS[1])
+        if not value then
+          return nil
+        end
+        redis.call('DEL', KEYS[1])
+        return value
+      `
+      const value = await client.eval(script, 1, key)
+      if (!value) return false
+
+      const record = JSON.parse(value as string) as StateRecord
+      if (record.expiresAt < Date.now()) return false
+
+      return true
+    }
+  } else {
+    // Fallback to in-memory storage
+    const record = stateStore.get(state)
+    stateStore.delete(state)
+
+    if (!record) return false
+    if (record.expiresAt < Date.now()) return false
+
+    return true
+  }
 }
 
 // ── Integration store ─────────────────────────────────────────────────────────
@@ -125,10 +198,13 @@ export function getStripeIntegration(stripeUserId: string): StripeIntegration | 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 
 /**
- * Clean up expired state tokens.
- * Called periodically to prevent memory leaks.
+ * Clean up expired state tokens (in-memory only).
+ * Called periodically to prevent memory leaks when Redis is not configured.
  */
 function cleanupExpiredStates(): void {
+  // Only run cleanup for in-memory storage
+  if (isRedisConfigured()) return
+
   const now = Date.now()
   for (const [state, record] of stateStore.entries()) {
     if (record.expiresAt < now) {
@@ -137,7 +213,7 @@ function cleanupExpiredStates(): void {
   }
 }
 
-// Run cleanup every 5 minutes
+// Run cleanup every 5 minutes (only for in-memory storage)
 setInterval(cleanupExpiredStates, 5 * 60 * 1000).unref()
 
 /**

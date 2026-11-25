@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { setOAuthState, consumeOAuthState } from '../services/integrations/stripe/store.js';
 import { generateAuthUrl } from '../services/integrations/oauth.js';
 import { logger } from '../utils/logger.js';
+import { getRedisClient } from '../redis.js';
 
 export { generateAuthUrl };
 
