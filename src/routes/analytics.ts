@@ -134,7 +134,6 @@ analyticsRouter.get(
   setBusinessLocals,
   validateQuery(revenueReportQuerySchema),
 
-  async (req: Request, res: Response) => {
   async (req: Request, res: Response, next: NextFunction) => {
     const businessId = res.locals.businessId as string
     const { period, from, to } = req.query as Record<string, string | undefined>

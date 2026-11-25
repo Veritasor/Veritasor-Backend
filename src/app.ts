@@ -37,13 +37,12 @@ import { integrationsShopifyRouter } from "./routes/integrations-shopify.js";
 import { integrationsStripeRouter } from "./routes/integrations-stripe.js";
 import { publicAttestationsRouter } from "./routes/publicAttestations.js";
 import usersRouter from "./routes/users.js";
-import { jwksManager } from "./utils/jwks.js";
-import { formatCacheControl, CACHE_POLICIES } from "./utils/cachePolicy.js";
 import { razorpayWebhookRouter } from "./routes/webhooks-razorpay.js";
 import { webhookEgressIpsRouter } from "./routes/webhookEgressIps.js";
 import { webhookSubscriptionsRouter } from "./routes/webhook-subscriptions.js";
 import adminRouter from "./routes/admin.js";
 import dlqRouter from "./routes/dlqRoutes.js";
+import { jwksRouter } from "./routes/jwks.js";
 import {
   runStartupDependencyReadinessChecks,
   StartupReadinessReport,
@@ -162,23 +161,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/v1/admin", adminRouter);
   app.use("/api/admin", adminRouter);
 
-  app.get("/.well-known/jwks.json", async (_req: Request, res: Response) => {
-    await jwksManager.ensureLoaded()
-
-    const jwks = jwksManager.getJwksResponse()
-    const etag = jwksManager.getEtag()
-    const cacheSeconds = jwksManager.getCacheTtlSeconds()
-
-    const jwksPolicy = CACHE_POLICIES.find((p) => p.name === 'jwks');
-    res.set(
-      "Cache-Control",
-      jwksPolicy
-        ? formatCacheControl(jwksPolicy.directives)
-        : `public, max-age=${cacheSeconds}, stale-while-revalidate=60`,
-    );
-    res.set("ETag", etag)
-    res.json(jwks)
-  });
+  app.use("/.well-known/jwks.json", jwksRouter);
 
   // Webhook egress IP allow-list (issue #534)
   app.use(webhookEgressIpsRouter);
