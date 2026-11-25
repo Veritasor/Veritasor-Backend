@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { logger } from '../../../src/utils/logger.js';
 
 import {
@@ -1290,5 +1291,12 @@ describe('Attestation Repository - High-Volume Query Patterns', () => {
       expect(result.total).toBeGreaterThanOrEqual(2);
       expect(result.items.length).toBeGreaterThanOrEqual(2);
     });
+  });
+});
+
+describe('attestationRepository unit suite hygiene', () => {
+  it('does not contain skipped tests', async () => {
+    const source = await readFile(new URL(import.meta.url), 'utf8');
+    expect(source).not.toMatch(/\b(?:it|test)\.skip\s*\(/);
   });
 });
