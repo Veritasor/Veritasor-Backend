@@ -115,7 +115,7 @@ abstract class BaseSecretAdapter implements SecretLoader {
   }
 }
 
-export class EnvAdapter extends BaseSecretAdapter {
+class EnvAdapter extends BaseSecretAdapter {
   async reload(): Promise<void> {
     const entries = Object.entries(process.env)
       .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim() !== '')
@@ -135,7 +135,7 @@ export class EnvAdapter extends BaseSecretAdapter {
   }
 }
 
-export class FileAdapter extends BaseSecretAdapter {
+class FileAdapter extends BaseSecretAdapter {
   constructor(private readonly filePath: string) {
     super()
   }
@@ -200,7 +200,7 @@ export interface VaultAdapterOptions {
   randomFn?: () => number
 }
 
-export class VaultAdapter extends BaseSecretAdapter {
+class VaultAdapter extends BaseSecretAdapter {
   private lease: VaultLease | undefined
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private renewalTimer: any
@@ -418,7 +418,7 @@ export class VaultAdapter extends BaseSecretAdapter {
   }
 }
 
-export class AwsSecretsAdapter extends BaseSecretAdapter {
+class AwsSecretsAdapter extends BaseSecretAdapter {
   constructor(
     private readonly primaryRegion: string,
     private readonly secondaryRegion?: string,
@@ -488,7 +488,7 @@ export class AwsSecretsAdapter extends BaseSecretAdapter {
   }
 }
 
-export class GsmSecretAdapter extends BaseSecretAdapter {
+class GsmSecretAdapter extends BaseSecretAdapter {
   private client: { accessSecretVersion: (params: { name: string }) => Promise<[{ payload?: { data?: Uint8Array | string | null } | null }, ...unknown[]]> } | null = null
 
   constructor(private readonly projectId: string) {
@@ -726,8 +726,6 @@ import { KmsDiskCache } from './secrets/kms-disk-cache.js'
 import { FailoverSecretLoader } from './secrets/failover.js'
 
 export type { SecretAdapter, SecretLoader, SecretLoaderOptions, SecretProvider } from './secrets/base.js'
-export { SecretLoaderError, SecretNotFoundError, SecretNotLoadedError, SecretLoadError } from './secrets/base.js'
-export { EnvAdapter, FileAdapter, AwsSecretsAdapter, GsmSecretAdapter, VaultAdapter }
 export type { VaultLease, VaultAdapterOptions } from './secrets/vault.js'
 
 export function createSecretLoader(options: SecretLoaderOptions = {}): SecretAdapter {
