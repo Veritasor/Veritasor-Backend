@@ -263,6 +263,42 @@ describeFn('Attestation lifecycle (real Postgres)', () => {
     expect(isValid).toBe(true);
   });
 
+  it('POST /api/attestations/:id/proof — returns the same payload as GET for identical inputs', async () => {
+    const attId = (globalThis as any).__lc_attId;
+    const leaves = ['leaf_a', 'leaf_b', 'leaf_c'];
+    const leafIndex = 1;
+
+    // Get response via GET
+    const getRes = await request(app)
+      .get(`/api/attestations/${attId}/proof`)
+      .set(AUTH_HEADER)
+      .query({ leaves, leafIndex });
+
+    expect(getRes.status).toBe(200);
+
+    // Get response via POST
+    const postRes = await request(app)
+      .post(`/api/attestations/${attId}/proof`)
+      .set(AUTH_HEADER)
+      .send({ leaves, leafIndex });
+
+    expect(postRes.status).toBe(200);
+
+    // Verify both endpoints return identical payloads
+    expect(postRes.body).toEqual(getRes.body);
+    expect(postRes.body.data.leaf).toBe('leaf_b');
+    expect(Array.isArray(postRes.body.data.proof)).toBe(true);
+
+    // Self-verify the proof from POST
+    const { verifyProof } = await import('../../src/services/merkle/generateProof.js');
+    const isValid = verifyProof(
+      postRes.body.data.leaf,
+      postRes.body.data.proof,
+      postRes.body.data.root,
+    );
+    expect(isValid).toBe(true);
+  });
+
   it('POST /api/attestations/:id/revoke — revokes the attestation', async () => {
     const attId = (globalThis as any).__lc_attId;
     const res = await request(app)
