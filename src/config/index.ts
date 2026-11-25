@@ -665,6 +665,7 @@ export const config = {
     } else {
       process.env.METRICS_AUTH_TOKEN = val;
     }
+  },
   rateLimits: {
     /**
      * Public business directory endpoints (`GET /api/businesses` and `GET /api/businesses/:id`).
