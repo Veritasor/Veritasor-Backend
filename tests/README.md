@@ -368,10 +368,8 @@ that implement their own cache layer:
 
 Tests use:
 
-- **Jest** - Test framework (integration tests)
-- **Vitest** - Unit test framework (`unit/`)
+- **Vitest** - Test framework (all tests)
 - **Supertest** - HTTP assertion library for testing Express apps
-- **ts-jest** - TypeScript support for Jest
 
 ### `normalize.test.ts`
 
