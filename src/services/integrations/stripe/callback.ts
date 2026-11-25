@@ -62,7 +62,7 @@ export async function handleCallback(
   }
 
   // Consume and validate state token
-  const isValidState = consumeOAuthState(state)
+  const isValidState = await consumeOAuthState(state)
   if (!isValidState) {
     return {
       success: false,

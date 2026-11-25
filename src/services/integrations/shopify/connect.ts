@@ -30,11 +30,11 @@ function resolveOAuthStateTtlMs(): number {
  * Start Shopify OAuth: generate state, store it, return redirect URL.
  * Caller should redirect the user to redirectUrl.
  */
-export function startConnect(
+export async function startConnect(
   shop: string,
   userId: string,
   businessId: string,
-): ConnectResult {
+): Promise<ConnectResult> {
   const clientId = process.env.SHOPIFY_CLIENT_ID ?? "";
   const scopes = process.env.SHOPIFY_SCOPES ?? "read_orders";
   const redirectUri = process.env.SHOPIFY_REDIRECT_URI ?? "";
@@ -49,7 +49,7 @@ export function startConnect(
 
   const ttlMs = resolveOAuthStateTtlMs();
   const expiresAt = Date.now() + ttlMs;
-  store.setOAuthState(state, shopHost, userId, businessId, expiresAt);
+  await store.setOAuthState(state, shopHost, userId, businessId, expiresAt);
 
   const params = new URLSearchParams({
     client_id: clientId,

@@ -87,15 +87,67 @@ export function isAllowedRedirectUri(redirectUri: string): boolean {
 const genericOAuthStates = new Map<string, { userId: string; businessId: string; expiresAt: number }>();
 
 /**
+ * Check if Redis is configured and available.
+ */
+function isRedisConfigured(): boolean {
+  return !!(process.env.REDIS_URL || process.env.REDIS_CLUSTER_NODES || process.env.REDIS_MODE);
+}
+
+/**
+ * Get the Redis key for generic OAuth state storage.
+ */
+function getGenericOAuthStateKey(state: string): string {
+  return `oauth:generic:state:${state}`;
+}
+
+/**
  * @notice Consume and validate a generic integration OAuth state for the caller.
+ * Uses Redis when configured, falls back to in-memory storage.
  * @returns true only if the state exists, has not expired, and is bound to the caller's user/business.
  */
-export function consumeGenericOAuthState(state: string, userId: string, businessId: string): boolean {
-  const record = genericOAuthStates.get(state)
-  genericOAuthStates.delete(state)
-  if (!record || record.expiresAt < Date.now()) return false
-  if (record.userId !== userId || record.businessId !== businessId) return false
-  return true
+export async function consumeGenericOAuthState(state: string, userId: string, businessId: string): Promise<boolean> {
+  if (isRedisConfigured()) {
+    const client = getRedisClient();
+    const key = getGenericOAuthStateKey(state);
+
+    // Use GETDEL for atomic get-and-delete (Redis 6.2+)
+    try {
+      const value = await client.getdel(key);
+      if (!value) return false;
+
+      const record = JSON.parse(value) as { userId: string; businessId: string; expiresAt: number };
+      if (record.expiresAt < Date.now()) return false;
+      if (record.userId !== userId || record.businessId !== businessId) return false;
+
+      return true;
+    } catch (err) {
+      // GETDEL might not be available in older Redis versions
+      // Fall back to Lua script for atomic GET + DEL
+      const script = `
+        local value = redis.call('GET', KEYS[1])
+        if not value then
+          return nil
+        end
+        redis.call('DEL', KEYS[1])
+        return value
+      `;
+      const value = await client.eval(script, 1, key);
+      if (!value) return false;
+
+      const record = JSON.parse(value as string) as { userId: string; businessId: string; expiresAt: number };
+      if (record.expiresAt < Date.now()) return false;
+      if (record.userId !== userId || record.businessId !== businessId) return false;
+
+      return true;
+    }
+  } else {
+    // Fallback to in-memory storage
+    const record = genericOAuthStates.get(state);
+    genericOAuthStates.delete(state);
+    if (!record || record.expiresAt < Date.now()) return false;
+    if (record.userId !== userId || record.businessId !== businessId) return false;
+    return true;
+  }
 }
 
 /**
@@ -107,9 +159,24 @@ export function generateGenericOAuthState(): string {
 
 /**
  * @notice Persist the generic OAuth state bound to the initiating user/business.
+ * Uses Redis when configured, falls back to in-memory storage.
  */
-export function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): void {
-  genericOAuthStates.set(state, { userId, businessId, expiresAt })
+export async function storeGenericOAuthState(state: string, userId: string, businessId: string, expiresAt: number): Promise<void> {
+  if (isRedisConfigured()) {
+    const client = getRedisClient();
+    const key = getGenericOAuthStateKey(state);
+    const ttlMs = expiresAt - Date.now();
+
+    if (ttlMs <= 0) {
+      throw new Error('expiresAt must be in the future');
+    }
+
+    // Store with TTL in milliseconds (converted to seconds for Redis)
+    await client.set(key, JSON.stringify({ userId, businessId, expiresAt }), 'PX', ttlMs);
+  } else {
+    // Fallback to in-memory storage
+    genericOAuthStates.set(state, { userId, businessId, expiresAt });
+  }
 }
 
 /**
@@ -125,7 +192,7 @@ router.get('/callback',
       return res.status(400).json({ error: 'Bad Request', message: 'Invalid or expired state' })
     }
 
-    const ok = consumeGenericOAuthState(state, req.user!.userId, req.business!.id)
+    const ok = await consumeGenericOAuthState(state, req.user!.userId, req.business!.id)
     if (!ok) {
       return res.status(400).json({ error: 'Bad Request', message: 'Invalid or expired state' })
     }
@@ -283,7 +350,7 @@ router.post('/connect',
       // Generate a random OAuth state bound to the initiating user/business.
       const state = generateGenericOAuthState();
       const expiresAt = Date.now() + 10 * 60 * 1000;
-      storeGenericOAuthState(state, req.user!.userId, req.business!.id, expiresAt);
+      await storeGenericOAuthState(state, req.user!.userId, req.business!.id, expiresAt);
 
       const authUrl = generateAuthUrl(provider, state, redirectUri);
 

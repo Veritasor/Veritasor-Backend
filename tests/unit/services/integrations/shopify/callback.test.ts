@@ -96,7 +96,7 @@ describe('Shopify OAuth Callback Service', () => {
     vi.mocked(store.isValidShopHost).mockReturnValue(true)
 
     // Default: state record matches the shop
-    vi.mocked(store.consumeOAuthState).mockReturnValue({
+    vi.mocked(store.consumeOAuthState).mockResolvedValue({
       shop: SHOP_HOST,
       userId: USER_ID,
       businessId: BIZ_ID,
@@ -299,7 +299,7 @@ describe('Shopify OAuth Callback Service', () => {
 
   describe('State validation', () => {
     it('returns failure when state is not found in the store', async () => {
-      vi.mocked(store.consumeOAuthState).mockReturnValue(undefined)
+      vi.mocked(store.consumeOAuthState).mockResolvedValue(undefined)
       const result = await handleCallback(makeParams())
       expect(result).toMatchObject<CallbackResult>({
         success: false,
@@ -308,7 +308,7 @@ describe('Shopify OAuth Callback Service', () => {
     })
 
     it('returns failure when state record shop does not match normalised shop', async () => {
-      vi.mocked(store.consumeOAuthState).mockReturnValue({
+      vi.mocked(store.consumeOAuthState).mockResolvedValue({
         shop: 'other-store.myshopify.com',
         userId: USER_ID,
         businessId: BIZ_ID,
@@ -326,7 +326,7 @@ describe('Shopify OAuth Callback Service', () => {
     })
 
     it('does not call fetch when state is invalid', async () => {
-      vi.mocked(store.consumeOAuthState).mockReturnValue(undefined)
+      vi.mocked(store.consumeOAuthState).mockResolvedValue(undefined)
       await handleCallback(makeParams())
       expect(global.fetch).not.toHaveBeenCalled()
     })
