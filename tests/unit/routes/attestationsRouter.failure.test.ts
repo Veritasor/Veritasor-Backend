@@ -35,6 +35,8 @@ const mocks = vi.hoisted(() => ({
   observeAttestationSubmitLatency: vi.fn(),
   getPagination: vi.fn(),
   formatPaginatedResponse: vi.fn(),
+  generateProof: vi.fn(),
+  verifyProof: vi.fn(() => true),
 }));
 
 vi.mock("../../../src/repositories/business.js", () => ({
@@ -91,9 +93,11 @@ vi.mock("../../../src/services/soroban/submitAttestation.js", () => ({
 }));
 
 vi.mock("../../../src/services/merkle/generateProof.js", () => ({
-  generateProof: vi.fn(),
-  verifyProof: vi.fn(() => true),
+  generateProof: mocks.generateProof,
+  verifyProof: mocks.verifyProof,
 }));
+
+const { MERKLE_MAX_LEAVES } = await import("../../../src/services/merkle/buildTree.js");
 
 vi.mock("../../../src/ws/attestationStream.js", () => ({
   broadcaster: { publish: mocks.broadcasterPublish },
@@ -152,6 +156,9 @@ beforeEach(() => {
   mocks.attestationRepository.updateStatus.mockReset();
   mocks.createAuditLog.mockReset();
   mocks.broadcasterPublish.mockReset();
+  mocks.generateProof.mockReset();
+  mocks.verifyProof.mockReset();
+  mocks.verifyProof.mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -464,5 +471,130 @@ describe("resolveBusinessIdForUser returns null (evidence line 203)", () => {
     expect(res.body.vrtCode).toBe("BUSINESS_NOT_FOUND");
     expect(mocks.attestationRepository.getById).not.toHaveBeenCalled();
     expect(mocks.attestationRepository.updateStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /:id/proof — new POST endpoint for large leaf arrays", () => {
+  it("returns 200 with a valid proof on success", async () => {
+    const mockProof = [{ sibling: "hash1", position: "left" as const }];
+    mocks.attestationRepository.getById.mockResolvedValue(row());
+    mocks.generateProof.mockReturnValue(mockProof);
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a", "leaf_b", "leaf_c"], leafIndex: 1 });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("success");
+    expect(res.body.data).toHaveProperty("leaf", "leaf_b");
+    expect(res.body.data).toHaveProperty("proof", mockProof);
+    expect(res.body.data).toHaveProperty("root", "root_abc");
+    expect(mocks.generateProof).toHaveBeenCalledWith(["leaf_a", "leaf_b", "leaf_c"], 1);
+    expect(mocks.verifyProof).toHaveBeenCalledWith("leaf_b", mockProof, "root_abc");
+  });
+
+  it("returns 400 INVALID_LEAVES when the leaves do not match the attestation root", async () => {
+    const mockProof = [{ sibling: "hash1", position: "left" as const }];
+    mocks.attestationRepository.getById.mockResolvedValue(row());
+    mocks.generateProof.mockReturnValue(mockProof);
+    mocks.verifyProof.mockReturnValue(false);
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a", "leaf_b", "leaf_c"], leafIndex: 1 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.vrtCode).toBe("INVALID_LEAVES");
+    expect(res.body.message).toBe("Provided leaves do not match the attestation Merkle root");
+  });
+
+  it("returns 413 when body size exceeds the configured limit", async () => {
+    // Create a body that exceeds the 10MB limit
+    const oversizedLeaves = Array(2_000_000).fill("leaf");
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: oversizedLeaves, leafIndex: 0 });
+
+    expect(res.status).toBe(413);
+  });
+
+  it("returns 400 when leafIndex is out of bounds", async () => {
+    mocks.attestationRepository.getById.mockResolvedValue(row());
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a", "leaf_b"], leafIndex: 5 });
+
+    expect(res.status).toBe(404);
+    expect(res.body.vrtCode).toBe("LEAF_NOT_FOUND");
+  });
+
+  it("returns 404 when attestation is revoked", async () => {
+    mocks.attestationRepository.getById.mockResolvedValue(row({ status: "revoked" }));
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a"], leafIndex: 0 });
+
+    expect(res.status).toBe(404);
+    expect(res.body.vrtCode).toBe("ATTESTATION_NOT_FOUND");
+  });
+
+  it("returns 404 when attestation does not exist", async () => {
+    mocks.attestationRepository.getById.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a"], leafIndex: 0 });
+
+    expect(res.status).toBe(404);
+    expect(res.body.vrtCode).toBe("ATTESTATION_NOT_FOUND");
+  });
+
+  it("returns 400 when leaves array is empty", async () => {
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: [], leafIndex: 0 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.status).toBe("error");
+  });
+
+  it("returns 400 when leaves contains empty strings", async () => {
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a", "", "leaf_c"], leafIndex: 1 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.status).toBe("error");
+  });
+
+  it("returns 400 when leafIndex is negative", async () => {
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a"], leafIndex: -1 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.status).toBe("error");
+  });
+
+  it("returns 400 when leafIndex is not an integer", async () => {
+    const res = await request(app)
+      .post("/api/attestations/att_1/proof")
+      .set(AUTH)
+      .send({ leaves: ["leaf_a"], leafIndex: 1.5 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.status).toBe("error");
   });
 });

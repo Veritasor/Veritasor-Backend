@@ -28,6 +28,7 @@ import { AppError } from '../types/errors.js';
 import { PERIOD_REGEX, PERIOD_FORMAT } from '../services/analytics/periods.js';
 import { getPagination, formatPaginatedResponse } from '../utils/pagination.js';
 import { generateProof, verifyProof } from '../services/merkle/generateProof.js';
+import { MERKLE_MAX_LEAVES } from '../services/merkle/buildTree.js';
 import { rateLimiter } from '../middleware/rateLimiter.js';
 import { broadcaster } from '../ws/attestationStream.js';
 import { observeAttestationSubmitLatency } from '../metrics.js';
@@ -128,8 +129,9 @@ const revokeBodySchema = z.object({
 }).strict();
 
 /**
- * @notice NatSpec: Schema for requesting a Merkle inclusion proof.
+ * @notice NatSpec: Schema for requesting a Merkle inclusion proof via query params.
  * @dev Enforces strict query parameters and handles array preprocessing.
+ * @deprecated Use POST /api/attestations/:id/proof instead to avoid URL length limits.
  */
 const proofQuerySchema = z.object({
   leaves: z.preprocess((val) => {
@@ -146,10 +148,55 @@ const proofQuerySchema = z.object({
   leafIndex: z.coerce.number().int('leafIndex must be an integer').nonnegative('leafIndex must be ≥ 0'),
 }).strict();
 
+/**
+ * @notice NatSpec: Schema for requesting a Merkle inclusion proof via POST body.
+ * @dev Enforces strict body parameters and maximum leaf count.
+ */
+const proofBodySchema = z.object({
+  leaves: z.array(z.string().min(1)).min(1).max(MERKLE_MAX_LEAVES, 'leaves must not exceed MERKLE_MAX_LEAVES'),
+  leafIndex: z.coerce.number().int('leafIndex must be an integer').nonnegative('leafIndex must be ≥ 0'),
+}).strict();
+
 const proofRateLimiter = rateLimiter({
   bucket: 'attestations:proof',
   max: 30,
 });
+
+/**
+ * @notice NatSpec: Shared handler for Merkle proof generation.
+ * @dev Extracted to be reused by both GET and POST endpoints.
+ */
+async function handleProofRequest(
+  id: string,
+  leaves: string[],
+  leafIndex: number,
+  businessId: string,
+): Promise<{ leaf: string; proof: ReturnType<typeof generateProof>; root: string }> {
+  const attestation = await getById(id, businessId);
+  if (!attestation || attestation.status === 'revoked') {
+    throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
+  }
+
+  if (leafIndex < 0 || leafIndex >= leaves.length) {
+    throw createHttpError(404, 'LEAF_NOT_FOUND', 'Leaf not found at specified index');
+  }
+
+  const leaf = leaves[leafIndex];
+  const root = attestation.merkleRoot;
+  if (!root) {
+    throw createHttpError(404, 'MERKLE_ROOT_NOT_FOUND', 'Merkle root not found for attestation');
+  }
+
+  const proof = generateProof(leaves, leafIndex);
+
+  // Self-check: verify that the generated proof is indeed valid for this leaf and root
+  const isValid = verifyProof(leaf, proof, root);
+  if (!isValid) {
+    throw createHttpError(400, 'INVALID_LEAVES', 'Provided leaves do not match the attestation Merkle root');
+  }
+
+  return { leaf, proof, root };
+}
 
 function createHttpError(status: number, code: string, message: string): AppError {
   return new AppError(message, status, code);
@@ -501,36 +548,32 @@ attestationsRouter.get(
 
     const businessId = await resolveAuthorizedBusinessId(req);
 
-    const attestation = await getById(id, businessId);
-    if (!attestation || attestation.status === 'revoked') {
-      throw createHttpError(404, 'ATTESTATION_NOT_FOUND', 'Attestation not found');
-    }
-
-    if (leafIndex < 0 || leafIndex >= leaves.length) {
-      throw createHttpError(404, 'LEAF_NOT_FOUND', 'Leaf not found at specified index');
-    }
-
-    const leaf = leaves[leafIndex];
-    const root = attestation.merkleRoot;
-    if (!root) {
-      throw createHttpError(404, 'MERKLE_ROOT_NOT_FOUND', 'Merkle root not found for attestation');
-    }
-
-    const proof = generateProof(leaves, leafIndex);
-
-    // Self-check: verify that the generated proof is indeed valid for this leaf and root
-    const isValid = verifyProof(leaf, proof, root);
-    if (!isValid) {
-      throw createHttpError(400, 'INVALID_LEAVES', 'Provided leaves do not match the attestation Merkle root');
-    }
+    const result = await handleProofRequest(id, leaves, leafIndex, businessId);
 
     res.status(200).json({
       status: 'success',
-      data: {
-        leaf,
-        proof,
-        root,
-      },
+      data: result,
+    });
+  }),
+);
+
+attestationsRouter.post(
+  '/:id/proof',
+  requireAuth,
+  proofRateLimiter,
+  validateBody(proofBodySchema),
+  asyncHandler(async (req, res) => {
+    const id = parseIdParam(req.params.id);
+    const body = req.body as z.infer<typeof proofBodySchema>;
+    const { leaves, leafIndex } = body;
+
+    const businessId = await resolveAuthorizedBusinessId(req);
+
+    const result = await handleProofRequest(id, leaves, leafIndex, businessId);
+
+    res.status(200).json({
+      status: 'success',
+      data: result,
     });
   }),
 );
