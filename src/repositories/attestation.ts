@@ -16,7 +16,7 @@ export type Attestation = {
 if (process.env.NODE_ENV !== 'test') {
   throw new Error('The in-memory attestation repository is available only in tests');
 }
-const attestationStore: Attestation[] = [
+
 /**
  * Fixture rows used exclusively by tests. They are never loaded into the store
  * automatically; call `seedForTests()` to opt in.
@@ -61,6 +61,7 @@ const SEED_ATTESTATIONS: readonly Attestation[] = [
 // Temporary in-memory records until DB integration lands. The store starts
 // empty in every environment; fixtures must be opted into via seedForTests().
 const attestationStore: Attestation[] = [];
+
 
 let productionWarningEmitted = false;
 
