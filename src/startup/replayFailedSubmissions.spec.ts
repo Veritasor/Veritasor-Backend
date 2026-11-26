@@ -23,7 +23,7 @@ vi.mock("../metrics.js", () => ({
   submissionReplayProgress: { set: vi.fn() },
 }));
 vi.mock("../config/index.js", () => ({
-  config: { soroban: { replayMaxAgeDays: 7 } },
+  config: { soroban: { replayMaxAgeDays: 7, replayLockTtlMs: 60000 } },
 }));
 vi.mock("../utils/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn() },
@@ -54,6 +54,10 @@ describe("replayFailedSubmissions", () => {
     mocks.canRetry.mockReturnValue(true);
     vi.stubEnv("SOROBAN_SOURCE_PUBLIC_KEY", "source-public-key");
     vi.stubEnv("SOROBAN_SOURCE_SECRET", "source-secret");
+    // Clear Redis env to test without lock by default
+    delete process.env.REDIS_URL;
+    delete process.env.REDIS_CLUSTER_NODES;
+    delete process.env.REDIS_MODE;
   });
 
   it("skips empty, non-object, and invalid replay parameters deterministically", async () => {
@@ -127,5 +131,72 @@ describe("replayFailedSubmissions", () => {
       skippedBudget: 0,
     });
     expect(mocks.recordRetry).toHaveBeenCalledWith("replay");
+  });
+
+  describe("Distributed lock behavior", () => {
+    it("runs without lock when Redis is not configured", async () => {
+      mocks.queryAuditLogs.mockResolvedValueOnce({
+        data: [auditEntry({ params: validParams })],
+        nextCursor: null,
+        hasMore: false,
+      });
+
+      const result = await replayFailedSubmissions();
+
+      expect(result.attempted).toBe(1);
+      expect(result.succeeded).toBe(1);
+    });
+
+    it("skips replay when lock is held by another instance", async () => {
+      // Mock Redis as configured
+      process.env.REDIS_URL = "redis://localhost:6379";
+
+      // Mock distributed lock to simulate lock held by another instance
+      vi.doMock("../utils/distributedLock.js", () => ({
+        withLock: vi.fn().mockResolvedValue(undefined),
+      }));
+
+      const { replayFailedSubmissions: replayWithMockedLock } = await import("./replayFailedSubmissions.js");
+
+      const result = await replayWithMockedLock();
+
+      expect(result).toEqual({
+        scanned: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        skippedExpired: 0,
+        skippedBudget: 0,
+      });
+
+      delete process.env.REDIS_URL;
+    });
+
+    it("replays when lock is acquired", async () => {
+      // Mock Redis as configured
+      process.env.REDIS_URL = "redis://localhost:6379";
+
+      const mockSummary = {
+        scanned: 1,
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        skippedExpired: 0,
+        skippedBudget: 0,
+      };
+
+      // Mock distributed lock to simulate successful acquisition
+      vi.doMock("../utils/distributedLock.js", () => ({
+        withLock: vi.fn().mockResolvedValue(mockSummary),
+      }));
+
+      const { replayFailedSubmissions: replayWithMockedLock } = await import("./replayFailedSubmissions.js");
+
+      const result = await replayWithMockedLock();
+
+      expect(result).toEqual(mockSummary);
+
+      delete process.env.REDIS_URL;
+    });
   });
 });

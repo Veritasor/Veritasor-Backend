@@ -104,30 +104,30 @@ describe('Stripe OAuth Callback Service', () => {
     })
 
     it('should return error when state token is invalid', async () => {
-      vi.mocked(store.consumeOAuthState).mockReturnValue(false)
-      
+      vi.mocked(store.consumeOAuthState).mockResolvedValue(false)
+
       const result = await handleCallback(
         { code: mockCode, state: mockState },
         mockUserId,
         mockBusinessId
       )
 
-      
+
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid or expired state')
       expect(store.consumeOAuthState).toHaveBeenCalledWith(mockState)
     })
-    
+
     it('should return error when state token has expired', async () => {
-      vi.mocked(store.consumeOAuthState).mockReturnValue(false)
-      
+      vi.mocked(store.consumeOAuthState).mockResolvedValue(false)
+
       const result = await handleCallback(
         { code: mockCode, state: 'b'.repeat(64) },
         mockUserId,
         mockBusinessId
       )
 
-      
+
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid or expired state')
     })
@@ -135,7 +135,7 @@ describe('Stripe OAuth Callback Service', () => {
   
   describe('Token Exchange', () => {
     beforeEach(() => {
-      vi.mocked(store.consumeOAuthState).mockReturnValue(true)
+      vi.mocked(store.consumeOAuthState).mockResolvedValue(true)
     })
     
     it('should return error when network request fails', async () => {

@@ -39,6 +39,7 @@ export const rawEnvSchema = z.object({
   SOROBAN_NETWORK_PASSPHRASE: z.string().default("Test SDF Network ; September 2015"),
   SOROBAN_RETRY_BUDGET_MAX_RETRIES: z.string().optional(),
   SOROBAN_REPLAY_MAX_AGE_DAYS: z.string().optional(),
+  SOROBAN_REPLAY_LOCK_TTL_MS: z.string().optional(),
   SOROBAN_ADAPTIVE_BATCH_MIN_SIZE: z.string().optional(),
   SOROBAN_ADAPTIVE_BATCH_MAX_SIZE: z.string().optional(),
   SOROBAN_ADAPTIVE_BATCH_EWMA_ALPHA: z.string().optional(),
@@ -490,6 +491,11 @@ export const config = {
       "SOROBAN_REPLAY_MAX_AGE_DAYS",
       parsedEnv.SOROBAN_REPLAY_MAX_AGE_DAYS,
       7,
+    ),
+    replayLockTtlMs: parsePositiveIntEnv(
+      "SOROBAN_REPLAY_LOCK_TTL_MS",
+      parsedEnv.SOROBAN_REPLAY_LOCK_TTL_MS,
+      60000, // 60 seconds
     ),
     adaptiveBatch: {
       minBatchSize: parsePositiveIntEnv(

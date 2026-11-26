@@ -106,7 +106,7 @@ export async function handleCallback(
     return { success: false, error: "Invalid shop hostname" };
   }
 
-  const stateRecord = store.consumeOAuthState(state);
+  const stateRecord = await store.consumeOAuthState(state);
 
   if (!stateRecord || stateRecord.shop !== shopHost) {
     logger.warn(
