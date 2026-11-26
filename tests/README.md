@@ -2,6 +2,10 @@
 
 This directory contains unit and integration tests for the Veritasor Backend API.
 
+## Docker requirement
+
+Integration suites that use `testcontainers` require a running Docker daemon. Each such suite probes Docker at module load and skips gracefully when Docker is unavailable, so `pnpm test` remains usable without Docker. To run the real database suites, start Docker first.
+
 ---
 
 ## Enhanced Optional Auth Middleware Tests
@@ -368,10 +372,8 @@ that implement their own cache layer:
 
 Tests use:
 
-- **Jest** - Test framework (integration tests)
-- **Vitest** - Unit test framework (`unit/`)
+- **Vitest** - Test framework (all tests)
 - **Supertest** - HTTP assertion library for testing Express apps
-- **ts-jest** - TypeScript support for Jest
 
 ### `normalize.test.ts`
 
@@ -791,6 +793,39 @@ Tests within the file are **order-dependent** — they share container state and
 | **Container start failure** | `beforeAll` throws a clear error pointing to Docker/container issue |
 | **Migration failure** | `execSync` throws with `DATABASE_URL` context in the error message |
 | **Parallel suite isolation** | Each run uses a unique `RUN_ID` prefix for idempotency keys; a fresh container is started per process |
+
+---
+
+## attestationRepository Postgres Integration Test
+
+**Location**: `tests/integration/attestationRepository.pg.test.ts`
+
+### Overview
+
+This suite exercises `src/repositories/attestationRepository.ts` against a real PostgreSQL 16 container. It covers:
+
+- `create` persistence, version initialisation and duplicate-key conflict mapping
+- `list` pagination (limit, offset and total) with deterministic ordering
+- `updateStatus` with matching and stale versions, including optimistic-lock conflict details
+- `createWithConflictCheck` for the no-conflict, duplicate-conflict and return-existing paths
+
+The suite applies `src/db/migrations/20260225_001_create_attestations_table.sql` directly through the migration helper `getUpSql`, so it verifies the real table schema, unique constraint and `updated_at` trigger. It uses a fresh container per run and truncates the table between tests.
+
+The mock-based unit suite in `tests/unit/repositories/attestationRepository.test.ts` retains fast coverage, including the enabled version-match test. This real-DB suite complements it with SQL-level verification of version bumps and conflicts; a hygiene test asserts that no skipped tests remain in the unit suite.
+
+### Docker Availability
+
+The suite uses a Docker probe (`docker info`) at module load. If the daemon is unavailable, the real-DB `describe` block is skipped while the guard assertions still run and pass. No container is started without Docker.
+
+### Running
+
+```bash
+# Requires a running Docker daemon
+pnpm exec vitest run tests/integration/attestationRepository.pg.test.ts
+
+# Unit suite, including the no-skipped-tests hygiene assertion
+pnpm exec vitest run tests/unit/repositories/attestationRepository.test.ts
+```
 
 ---
 

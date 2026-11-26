@@ -187,5 +187,4 @@ analyticsRouter.get(
       next(err)
     }
   },
-
 )

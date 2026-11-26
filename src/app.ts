@@ -99,7 +99,7 @@ export function createApp(readinessReport: StartupReadinessReport): Express {
   app.use("/api/webhooks/razorpay", razorpayWebhookRouter);
 
   // 3. Body Parsing
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
   app.use(securityHeadersMiddleware);
   app.use(prototypePollutionGuard);
   app.use(createCorsMiddleware());

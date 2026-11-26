@@ -4,6 +4,7 @@ import { sorobanRetryBudget } from "../services/soroban/retry-budget.js";
 import { submissionReplayProgress } from "../metrics.js";
 import { config } from "../config/index.js";
 import { logger } from "../utils/logger.js";
+import { withLock } from "../utils/distributedLock.js";
 
 const SUBMIT_FAILED_ACTION = "ATTESTATION_SUBMIT_FAILED";
 
@@ -78,6 +79,10 @@ function deduplicateEntries(entries: { params: ReplayEntryParams }[]): ReplayEnt
  * SOROBAN_REPLAY_MAX_AGE_DAYS (default 7), and deduplicates entries
  * by (business, period, merkleRoot).
  *
+ * Uses a distributed lock when Redis is configured to ensure only one
+ * instance replays failed submissions at a time. Skips silently (logs at info)
+ * when another instance holds the lock.
+ *
  * Emits submission_replay_progress gauge with phase label ("scanning",
  * "replaying", "done") and returns a summary of results.
  *
@@ -87,123 +92,151 @@ function deduplicateEntries(entries: { params: ReplayEntryParams }[]): ReplayEnt
 export async function replayFailedSubmissions(
   maxAgeDays: number = config.soroban.replayMaxAgeDays,
 ): Promise<ReplaySummary> {
-  const summary: ReplaySummary = {
-    scanned: 0,
-    attempted: 0,
-    succeeded: 0,
-    failed: 0,
-    skippedExpired: 0,
-    skippedBudget: 0,
-  };
+  // Acquire distributed lock to prevent concurrent replays across instances
+  const lockResult = await withLock(
+    {
+      key: 'replay-failed-submissions',
+      ttlMs: config.soroban.replayLockTtlMs,
+    },
+    async () => {
+      const summary: ReplaySummary = {
+        scanned: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        skippedExpired: 0,
+        skippedBudget: 0,
+      };
 
-  const collectedEntries: { params: ReplayEntryParams }[] = [];
+      const collectedEntries: { params: ReplayEntryParams }[] = [];
 
-  submissionReplayProgress.set({ phase: "scanning" }, 0);
+      submissionReplayProgress.set({ phase: "scanning" }, 0);
 
-  let cursor: string | undefined;
-  let hasMore = true;
+      let cursor: string | undefined;
+      let hasMore = true;
 
-  while (hasMore) {
-    const page = await queryAuditLogs({
-      action: SUBMIT_FAILED_ACTION,
-      limit: 50,
-      cursor,
-    });
+      while (hasMore) {
+        const page = await queryAuditLogs({
+          action: SUBMIT_FAILED_ACTION,
+          limit: 50,
+          cursor,
+        });
 
-    for (const entry of page.data) {
-      summary.scanned++;
+        for (const entry of page.data) {
+          summary.scanned++;
 
-      if (isExpired(entry.timestamp, maxAgeDays)) {
-        summary.skippedExpired++;
-        continue;
+          if (isExpired(entry.timestamp, maxAgeDays)) {
+            summary.skippedExpired++;
+            continue;
+          }
+
+          const params = parseReplayParams(entry.metadata?.params);
+          if (!params) {
+            continue;
+          }
+
+          collectedEntries.push({ params });
+        }
+
+        cursor = page.nextCursor ?? undefined;
+        hasMore = page.hasMore;
       }
 
-      const params = parseReplayParams(entry.metadata?.params);
-      if (!params) {
-        continue;
+      submissionReplayProgress.set({ phase: "scanning" }, 0.5);
+
+      const deduplicated = deduplicateEntries(collectedEntries);
+
+      submissionReplayProgress.set({ phase: "replaying" }, 0);
+
+      const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY ?? "";
+      const sourceSecret = process.env.SOROBAN_SOURCE_SECRET ?? "";
+
+      const total = deduplicated.length;
+      for (let i = 0; i < total; i++) {
+        const params = deduplicated[i];
+
+        submissionReplayProgress.set(
+          { phase: "replaying" },
+          total > 0 ? (i + 1) / total : 1,
+        );
+
+        if (sourcePublicKey === "" || sourceSecret === "") {
+          logger.warn({
+            event: "submission_replay_skipped",
+            reason: "Missing SOROBAN_SOURCE_PUBLIC_KEY or SOROBAN_SOURCE_SECRET",
+          });
+          summary.skippedBudget += total - i;
+          break;
+        }
+
+        if (!sorobanRetryBudget.canRetry()) {
+          logger.warn({
+            event: "submission_replay_budget_exhausted",
+            remaining: total - i,
+          });
+          summary.skippedBudget += total - i;
+          break;
+        }
+
+        summary.attempted++;
+
+        try {
+          await submitAttestation({
+            business: params.business,
+            period: params.period,
+            merkleRoot: params.merkleRoot,
+            timestamp: params.timestamp,
+            version: params.version,
+            sourcePublicKey: sourcePublicKey,
+            signerSecret: sourceSecret,
+          });
+          sorobanRetryBudget.recordRetry("replay");
+          summary.succeeded++;
+          logger.info({
+            event: "submission_replay_succeeded",
+            business: params.business,
+            period: params.period,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          sorobanRetryBudget.recordRetry("replay");
+          summary.failed++;
+          logger.warn({
+            event: "submission_replay_failed",
+            business: params.business,
+            period: params.period,
+            error: message,
+          });
+        }
       }
 
-      collectedEntries.push({ params });
-    }
+      submissionReplayProgress.set({ phase: "done" }, 1);
 
-    cursor = page.nextCursor ?? undefined;
-    hasMore = page.hasMore;
-  }
-
-  submissionReplayProgress.set({ phase: "scanning" }, 0.5);
-
-  const deduplicated = deduplicateEntries(collectedEntries);
-
-  submissionReplayProgress.set({ phase: "replaying" }, 0);
-
-  const sourcePublicKey = process.env.SOROBAN_SOURCE_PUBLIC_KEY ?? "";
-  const sourceSecret = process.env.SOROBAN_SOURCE_SECRET ?? "";
-
-  const total = deduplicated.length;
-  for (let i = 0; i < total; i++) {
-    const params = deduplicated[i];
-
-    submissionReplayProgress.set(
-      { phase: "replaying" },
-      total > 0 ? (i + 1) / total : 1,
-    );
-
-    if (sourcePublicKey === "" || sourceSecret === "") {
-      logger.warn({
-        event: "submission_replay_skipped",
-        reason: "Missing SOROBAN_SOURCE_PUBLIC_KEY or SOROBAN_SOURCE_SECRET",
-      });
-      summary.skippedBudget += total - i;
-      break;
-    }
-
-    if (!sorobanRetryBudget.canRetry()) {
-      logger.warn({
-        event: "submission_replay_budget_exhausted",
-        remaining: total - i,
-      });
-      summary.skippedBudget += total - i;
-      break;
-    }
-
-    summary.attempted++;
-
-    try {
-      await submitAttestation({
-        business: params.business,
-        period: params.period,
-        merkleRoot: params.merkleRoot,
-        timestamp: params.timestamp,
-        version: params.version,
-        sourcePublicKey: sourcePublicKey,
-        signerSecret: sourceSecret,
-      });
-      sorobanRetryBudget.recordRetry("replay");
-      summary.succeeded++;
       logger.info({
-        event: "submission_replay_succeeded",
-        business: params.business,
-        period: params.period,
+        event: "submission_replay_completed",
+        ...summary,
       });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      sorobanRetryBudget.recordRetry("replay");
-      summary.failed++;
-      logger.warn({
-        event: "submission_replay_failed",
-        business: params.business,
-        period: params.period,
-        error: message,
-      });
+
+      return summary;
     }
+  );
+
+  if (lockResult === undefined) {
+    // Lock was not acquired - another instance is handling replay
+    logger.info({
+      event: "submission_replay_skipped_lock_held",
+      message: "Another instance is replaying failed submissions",
+    });
+    // Return empty summary since no work was done
+    return {
+      scanned: 0,
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      skippedExpired: 0,
+      skippedBudget: 0,
+    };
   }
 
-  submissionReplayProgress.set({ phase: "done" }, 1);
-
-  logger.info({
-    event: "submission_replay_completed",
-    ...summary,
-  });
-
-  return summary;
+  return lockResult;
 }

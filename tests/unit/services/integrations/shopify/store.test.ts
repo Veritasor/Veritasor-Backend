@@ -79,80 +79,80 @@ describe('Shopify OAuth store', () => {
   })
 
   describe('setOAuthState rejection branches', () => {
-    it('rejects an empty or whitespace-only state key', () => {
+    it('rejects an empty or whitespace-only state key', async () => {
       const expiresAt = Date.now() + TEN_MINUTES_MS
 
-      setOAuthState('', 'test-shop', 'user-1', 'biz-1', expiresAt)
-      setOAuthState('   ', 'test-shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState('', 'test-shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState('   ', 'test-shop', 'user-1', 'biz-1', expiresAt)
 
-      expect(consumeOAuthState('')).toBeUndefined()
-      expect(consumeOAuthState('   ')).toBeUndefined()
+      expect(await consumeOAuthState('')).toBeUndefined()
+      expect(await consumeOAuthState('   ')).toBeUndefined()
     })
 
-    it('rejects an empty or whitespace-only shop', () => {
+    it('rejects an empty or whitespace-only shop', async () => {
       const expiresAt = Date.now() + TEN_MINUTES_MS
       const state = 'state-empty-shop'
-      setOAuthState(state, '', 'user-1', 'biz-1', expiresAt)
-      expect(consumeOAuthState(state)).toBeUndefined()
+      await setOAuthState(state, '', 'user-1', 'biz-1', expiresAt)
+      expect(await consumeOAuthState(state)).toBeUndefined()
 
-      setOAuthState(state, '   ', 'user-1', 'biz-1', expiresAt)
-      expect(consumeOAuthState(state)).toBeUndefined()
+      await setOAuthState(state, '   ', 'user-1', 'biz-1', expiresAt)
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
 
-    it('rejects a shop that is not a valid myshopify host', () => {
+    it('rejects a shop that is not a valid myshopify host', async () => {
       const expiresAt = Date.now() + TEN_MINUTES_MS
       const state = 'state-bad-shop'
 
-      setOAuthState(state, '-leading-dash', 'user-1', 'biz-1', expiresAt)
-      expect(consumeOAuthState(state)).toBeUndefined()
+      await setOAuthState(state, '-leading-dash', 'user-1', 'biz-1', expiresAt)
+      expect(await consumeOAuthState(state)).toBeUndefined()
 
-      setOAuthState(state, 'under_score', 'user-1', 'biz-1', expiresAt)
-      expect(consumeOAuthState(state)).toBeUndefined()
+      await setOAuthState(state, 'under_score', 'user-1', 'biz-1', expiresAt)
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
 
-    it('rejects non-finite expiry values', () => {
+    it('rejects non-finite expiry values', async () => {
       const state = 'state-non-finite'
 
       for (const expiresAt of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
-        setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
-        expect(consumeOAuthState(state)).toBeUndefined()
+        await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
+        expect(await consumeOAuthState(state)).toBeUndefined()
       }
     })
 
-    it('rejects expiry that is already in the past', () => {
+    it('rejects expiry that is already in the past', async () => {
       const state = 'state-past'
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() - 1)
-      expect(consumeOAuthState(state)).toBeUndefined()
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() - 1)
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
 
-    it('clears a previously stored entry when the same state is re-set with a past expiry', () => {
+    it('clears a previously stored entry when the same state is re-set with a past expiry', async () => {
       const state = 'state-invalidate'
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
 
       // Re-setting the same key with a past expiry must invalidate the old record.
-      setOAuthState(state, 'test-shop', 'user-2', 'biz-2', Date.now() - 1)
+      await setOAuthState(state, 'test-shop', 'user-2', 'biz-2', Date.now() - 1)
 
-      expect(consumeOAuthState(state)).toBeUndefined()
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
 
-    it('clears a previously stored entry when the same state is re-set with a non-finite expiry', () => {
+    it('clears a previously stored entry when the same state is re-set with a non-finite expiry', async () => {
       const state = 'state-invalidate-nan'
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
 
-      setOAuthState(state, 'test-shop', 'user-2', 'biz-2', Number.NaN)
+      await setOAuthState(state, 'test-shop', 'user-2', 'biz-2', Number.NaN)
 
-      expect(consumeOAuthState(state)).toBeUndefined()
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
   })
 
   describe('setOAuthState acceptance branches', () => {
-    it('stores a valid state and returns the normalized record', () => {
+    it('stores a valid state and returns the normalized record', async () => {
       const state = 'state-valid'
       const expiresAt = Date.now() + TEN_MINUTES_MS
 
-      setOAuthState(state, 'TEST-Shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState(state, 'TEST-Shop', 'user-1', 'biz-1', expiresAt)
 
-      expect(consumeOAuthState(state)).toEqual({
+      expect(await consumeOAuthState(state)).toEqual({
         shop: 'test-shop.myshopify.com',
         userId: 'user-1',
         businessId: 'biz-1',
@@ -160,60 +160,60 @@ describe('Shopify OAuth store', () => {
       })
     })
 
-    it('accepts an expiry exactly 1ms in the future', () => {
+    it('accepts an expiry exactly 1ms in the future', async () => {
       const state = 'state-boundary-accept'
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + 1)
-      expect(consumeOAuthState(state)).toBeDefined()
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + 1)
+      expect(await consumeOAuthState(state)).toBeDefined()
     })
 
-    it('trims the stored state key so lookup ignores surrounding whitespace', () => {
+    it('trims the stored state key so lookup ignores surrounding whitespace', async () => {
       const expiresAt = Date.now() + TEN_MINUTES_MS
-      setOAuthState('  padded-state  ', 'test-shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState('  padded-state  ', 'test-shop', 'user-1', 'biz-1', expiresAt)
 
-      expect(consumeOAuthState('padded-state')).toBeDefined()
+      expect(await consumeOAuthState('padded-state')).toBeDefined()
     })
   })
 
   describe('consumeOAuthState failure handling', () => {
-    it('returns undefined for an unknown state', () => {
-      expect(consumeOAuthState('never-stored')).toBeUndefined()
+    it('returns undefined for an unknown state', async () => {
+      expect(await consumeOAuthState('never-stored')).toBeUndefined()
     })
 
-    it('returns a valid record once and then undefined on replay', () => {
+    it('returns a valid record once and then undefined on replay', async () => {
       const state = 'state-single-use'
       const expiresAt = Date.now() + TEN_MINUTES_MS
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
 
-      expect(consumeOAuthState(state)).toBeDefined()
-      expect(consumeOAuthState(state)).toBeUndefined()
+      expect(await consumeOAuthState(state)).toBeDefined()
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
 
-    it('returns undefined for an expired record and keeps it consumed', () => {
+    it('returns undefined for an expired record and keeps it consumed', async () => {
       const state = 'state-expired'
       const expiresAt = Date.now() + TEN_MINUTES_MS
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
 
       vi.setSystemTime(expiresAt + 1)
 
-      expect(consumeOAuthState(state)).toBeUndefined()
-      expect(consumeOAuthState(state)).toBeUndefined()
+      expect(await consumeOAuthState(state)).toBeUndefined()
+      expect(await consumeOAuthState(state)).toBeUndefined()
     })
 
-    it('returns the record at the inclusive expiry boundary', () => {
+    it('returns the record at the inclusive expiry boundary', async () => {
       const state = 'state-at-expiry'
       const expiresAt = Date.now() + TEN_MINUTES_MS
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', expiresAt)
 
       vi.setSystemTime(expiresAt)
 
-      expect(consumeOAuthState(state)).toBeDefined()
+      expect(await consumeOAuthState(state)).toBeDefined()
     })
 
-    it('trims the lookup key before matching', () => {
+    it('trims the lookup key before matching', async () => {
       const state = 'state-trim-lookup'
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
 
-      expect(consumeOAuthState('  state-trim-lookup  ')).toBeDefined()
+      expect(await consumeOAuthState('  state-trim-lookup  ')).toBeDefined()
     })
   })
 
@@ -247,14 +247,14 @@ describe('Shopify OAuth store', () => {
   })
 
   describe('clearAll', () => {
-    it('clears both the state map and the token map', () => {
+    it('clears both the state map and the token map', async () => {
       const state = 'state-clear'
-      setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
+      await setOAuthState(state, 'test-shop', 'user-1', 'biz-1', Date.now() + TEN_MINUTES_MS)
       saveToken('test-shop', 'token-1')
 
       clearAll()
 
-      expect(consumeOAuthState(state)).toBeUndefined()
+      expect(await consumeOAuthState(state)).toBeUndefined()
       expect(getToken('test-shop')).toBeUndefined()
       expect(deleteToken('test-shop')).toBe(false)
     })

@@ -100,7 +100,6 @@ Coverage reports are saved to the `coverage/` directory.
 If you encounter module resolution errors, ensure:
 1. `"type": "module"` is in package.json
 2. Import statements use `.js` extensions
-3. Jest config has proper ESM settings
 
 ### TypeScript Errors
 

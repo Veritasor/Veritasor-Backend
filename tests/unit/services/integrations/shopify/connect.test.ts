@@ -38,7 +38,7 @@ describe('Shopify OAuth Connect Service', () => {
         // Mock store defaults for success path
         vi.mocked(store.normalizeShop).mockImplementation((s) => s.trim())
         vi.mocked(store.isValidShopHost).mockReturnValue(true)
-        vi.mocked(store.setOAuthState).mockImplementation(() => undefined)
+        vi.mocked(store.setOAuthState).mockImplementation(async () => undefined)
     })
 
     afterEach(() => {
@@ -51,31 +51,31 @@ describe('Shopify OAuth Connect Service', () => {
     // -------------------------------------------------------------------------
 
     describe('Validation and Failure Paths', () => {
-        it('throws when SHOPIFY_CLIENT_ID is missing', () => {
+        it('throws when SHOPIFY_CLIENT_ID is missing', async () => {
             delete process.env.SHOPIFY_CLIENT_ID
-            expect(() => startConnect(SHOP, USER_ID, BIZ_ID)).toThrow(
+            await expect(() => startConnect(SHOP, USER_ID, BIZ_ID)).rejects.toThrow(
                 'Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop'
             )
         })
 
-        it('throws when SHOPIFY_REDIRECT_URI is missing', () => {
+        it('throws when SHOPIFY_REDIRECT_URI is missing', async () => {
             delete process.env.SHOPIFY_REDIRECT_URI
-            expect(() => startConnect(SHOP, USER_ID, BIZ_ID)).toThrow(
+            await expect(() => startConnect(SHOP, USER_ID, BIZ_ID)).rejects.toThrow(
                 'Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop'
             )
         })
 
-        it('throws when shop hostname is invalid', () => {
+        it('throws when shop hostname is invalid', async () => {
             vi.mocked(store.isValidShopHost).mockReturnValue(false)
-            expect(() => startConnect('not-a-valid-shop', USER_ID, BIZ_ID)).toThrow(
+            await expect(() => startConnect('not-a-valid-shop', USER_ID, BIZ_ID)).rejects.toThrow(
                 'Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop'
             )
         })
 
-        it('throws when both environment variables are missing', () => {
+        it('throws when both environment variables are missing', async () => {
             delete process.env.SHOPIFY_CLIENT_ID
             delete process.env.SHOPIFY_REDIRECT_URI
-            expect(() => startConnect(SHOP, USER_ID, BIZ_ID)).toThrow(
+            await expect(() => startConnect(SHOP, USER_ID, BIZ_ID)).rejects.toThrow(
                 'Missing SHOPIFY_CLIENT_ID, SHOPIFY_REDIRECT_URI, or invalid shop'
             )
         })
@@ -86,10 +86,10 @@ describe('Shopify OAuth Connect Service', () => {
     // -------------------------------------------------------------------------
 
     describe('Normal Path', () => {
-        it('returns a valid ConnectResult shape with expected redirect URL format', () => {
+        it('returns a valid ConnectResult shape with expected redirect URL format', async () => {
             vi.mocked(store.normalizeShop).mockReturnValue('normalized.myshopify.com')
 
-            const result: ConnectResult = startConnect(SHOP, USER_ID, BIZ_ID)
+            const result: ConnectResult = await startConnect(SHOP, USER_ID, BIZ_ID)
 
             // Result shape
             expect(result.redirectUrl).toBeDefined()
@@ -118,10 +118,10 @@ describe('Shopify OAuth Connect Service', () => {
             )
         })
 
-        it('falls back to default scope if SHOPIFY_SCOPES is not set', () => {
+        it('falls back to default scope if SHOPIFY_SCOPES is not set', async () => {
             delete process.env.SHOPIFY_SCOPES
 
-            const result = startConnect(SHOP, USER_ID, BIZ_ID)
+            const result = await startConnect(SHOP, USER_ID, BIZ_ID)
             const url = new URL(result.redirectUrl)
 
             expect(url.searchParams.get('scope')).toBe('read_orders')
@@ -140,8 +140,8 @@ describe('Shopify OAuth Connect Service', () => {
             vi.setSystemTime(new Date('2026-09-28T20:00:00.000Z')) // 1790625600000 ms UTC
         })
 
-        it('uses default TTL when env var is missing', () => {
-            startConnect(SHOP, USER_ID, BIZ_ID)
+        it('uses default TTL when env var is missing', async () => {
+            await startConnect(SHOP, USER_ID, BIZ_ID)
             const expiresAt = Date.now() + DEFAULT_TTL_MS
 
             expect(store.setOAuthState).toHaveBeenCalledWith(
@@ -153,27 +153,27 @@ describe('Shopify OAuth Connect Service', () => {
             )
         })
 
-        it('uses default TTL when env var is blank', () => {
+        it('uses default TTL when env var is blank', async () => {
             process.env.SHOPIFY_OAUTH_STATE_TTL_MS = '   '
-            startConnect(SHOP, USER_ID, BIZ_ID)
+            await startConnect(SHOP, USER_ID, BIZ_ID)
 
             expect(store.setOAuthState).toHaveBeenCalledWith(
                 expect.any(String), SHOP, USER_ID, BIZ_ID, Date.now() + DEFAULT_TTL_MS
             )
         })
 
-        it('uses default TTL when env var cannot be parsed as a finite number', () => {
+        it('uses default TTL when env var cannot be parsed as a finite number', async () => {
             process.env.SHOPIFY_OAUTH_STATE_TTL_MS = 'invalid-number'
-            startConnect(SHOP, USER_ID, BIZ_ID)
+            await startConnect(SHOP, USER_ID, BIZ_ID)
 
             expect(store.setOAuthState).toHaveBeenCalledWith(
                 expect.any(String), SHOP, USER_ID, BIZ_ID, Date.now() + DEFAULT_TTL_MS
             )
         })
 
-        it('uses default TTL when env var is negative or zero', () => {
+        it('uses default TTL when env var is negative or zero', async () => {
             process.env.SHOPIFY_OAUTH_STATE_TTL_MS = '0'
-            startConnect(SHOP, USER_ID, BIZ_ID)
+            await startConnect(SHOP, USER_ID, BIZ_ID)
 
             expect(store.setOAuthState).toHaveBeenCalledWith(
                 expect.any(String), SHOP, USER_ID, BIZ_ID, Date.now() + DEFAULT_TTL_MS
@@ -181,18 +181,18 @@ describe('Shopify OAuth Connect Service', () => {
 
             vi.clearAllMocks()
             process.env.SHOPIFY_OAUTH_STATE_TTL_MS = '-5000'
-            startConnect(SHOP, USER_ID, BIZ_ID)
+            await startConnect(SHOP, USER_ID, BIZ_ID)
 
             expect(store.setOAuthState).toHaveBeenCalledWith(
                 expect.any(String), SHOP, USER_ID, BIZ_ID, Date.now() + DEFAULT_TTL_MS
             )
         })
 
-        it('uses custom TTL from env var when appropriately configured', () => {
+        it('uses custom TTL from env var when appropriately configured', async () => {
             const customTtl = 1200000 // 20 mins
             process.env.SHOPIFY_OAUTH_STATE_TTL_MS = customTtl.toString()
 
-            startConnect(SHOP, USER_ID, BIZ_ID)
+            await startConnect(SHOP, USER_ID, BIZ_ID)
 
             expect(store.setOAuthState).toHaveBeenCalledWith(
                 expect.any(String), SHOP, USER_ID, BIZ_ID, Date.now() + customTtl
