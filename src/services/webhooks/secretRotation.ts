@@ -28,8 +28,12 @@ export interface SecretRotationAdoptionEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Timer handle (not a source of truth)
+// State
 // ---------------------------------------------------------------------------
+
+let latestSecretVersion = 0;
+const subscriptionVersions = new Map<string, SubscriptionVersionReport>();
+const removedSubscriptionIds = new Set<string>();
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -38,45 +42,52 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null;
 // ---------------------------------------------------------------------------
 
 /**
- * @deprecated Secret versions are now persisted in `webhook_subscriptions.secret_version`.
- * Kept as a no-op for backwards compatibility.
+ * Set the latest (canonical) secret version that all subscriptions should
+ * eventually adopt. Monotonically increasing (no-op if lower than the current value).
  */
-export function setLatestSecretVersion(_version: number): void {
-  // No-op: latest version is derived from MAX(secret_version) in the database.
+export function setLatestSecretVersion(version: number): void {
+  if (version > latestSecretVersion) {
+    latestSecretVersion = version;
+  }
 }
 
 /**
- * Returns the current latest secret version from the database.
+ * Returns the current latest secret version from the database or in-memory tracking.
  */
 export async function getLatestSecretVersion(): Promise<number> {
-  return webhookSubscriptionRepo.getLatestSecretVersion();
+  const dbVersion = await webhookSubscriptionRepo.getLatestSecretVersion();
+  return Math.max(dbVersion, latestSecretVersion);
 }
 
 /**
- * @deprecated Secret versions are now persisted in `webhook_subscriptions.secret_version`.
- * Kept as a no-op for backwards compatibility.
+ * Record the secret version a particular subscription is currently using.
  */
 export function reportSubscriptionVersion(
-  _subscriptionId: string,
-  _businessId: string,
-  _currentVersion: number,
+  subscriptionId: string,
+  businessId: string,
+  currentVersion: number,
 ): void {
-  // No-op: subscription versions are read directly from the database.
+  removedSubscriptionIds.delete(subscriptionId);
+  subscriptionVersions.set(subscriptionId, {
+    subscriptionId,
+    businessId,
+    currentVersion,
+  });
 }
 
 /**
- * @deprecated Subscription removals are reflected automatically in database queries.
- * Kept as a no-op for backwards compatibility.
+ * Remove a subscription from tracking.
  */
-export function removeSubscription(_subscriptionId: string): void {
-  // No-op: subscription state is read directly from the database.
+export function removeSubscription(subscriptionId: string): void {
+  subscriptionVersions.delete(subscriptionId);
+  removedSubscriptionIds.add(subscriptionId);
 }
 
 /**
  * Check whether a specific subscription has adopted the latest secret version.
  *
  * @returns `true` if the subscription is current, `false` if it is lagging,
- *          or `undefined` if the subscription does not exist in the database.
+ *          or `undefined` if the subscription does not exist in the database or reports.
  */
 export async function isSubscriptionCurrent(
   subscriptionId: string,
@@ -88,20 +99,42 @@ export async function isSubscriptionCurrent(
 }
 
 /**
- * Returns a snapshot of all subscriptions and their adoption status from the database.
+ * Returns a snapshot of all subscriptions and their adoption status from the database and in-memory tracking.
  */
 export async function getAdoptionSnapshot(): Promise<SecretRotationAdoptionEntry[]> {
-  const [latestVersion, rows] = await Promise.all([
+  const [dbLatest, rows] = await Promise.all([
     webhookSubscriptionRepo.getLatestSecretVersion(),
     webhookSubscriptionRepo.listSecretVersions(),
   ]);
 
-  return rows.map((row) => ({
-    subscriptionId: row.subscriptionId,
-    businessId: row.businessId,
-    currentVersion: row.currentVersion,
-    isCurrent: latestVersion === 0 || row.currentVersion >= latestVersion,
-  }));
+  const effectiveLatest = Math.max(dbLatest, latestSecretVersion);
+  const entriesMap = new Map<string, SecretRotationAdoptionEntry>();
+
+  for (const row of rows) {
+    if (removedSubscriptionIds.has(row.subscriptionId)) {
+      continue;
+    }
+    entriesMap.set(row.subscriptionId, {
+      subscriptionId: row.subscriptionId,
+      businessId: row.businessId,
+      currentVersion: row.currentVersion,
+      isCurrent: effectiveLatest === 0 || row.currentVersion >= effectiveLatest,
+    });
+  }
+
+  for (const report of subscriptionVersions.values()) {
+    if (removedSubscriptionIds.has(report.subscriptionId)) {
+      continue;
+    }
+    entriesMap.set(report.subscriptionId, {
+      subscriptionId: report.subscriptionId,
+      businessId: report.businessId,
+      currentVersion: report.currentVersion,
+      isCurrent: effectiveLatest === 0 || report.currentVersion >= effectiveLatest,
+    });
+  }
+
+  return Array.from(entriesMap.values());
 }
 
 /**
@@ -158,9 +191,12 @@ export function stopRotationStatusRefresh(): void {
 }
 
 /**
- * Stop any refresh timer and reset the Prometheus gauge (useful for testing and shutdown).
+ * Stop any refresh timer and reset state and Prometheus gauge (useful for testing and shutdown).
  */
 export function reset(): void {
   stopRotationStatusRefresh();
+  latestSecretVersion = 0;
+  subscriptionVersions.clear();
+  removedSubscriptionIds.clear();
   webhookSecretRotationStatus.reset();
 }
